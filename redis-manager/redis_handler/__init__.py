@@ -43,6 +43,9 @@ from .connection import (
 # ── Handler (기본 CRUD) ──────────────────────────────────
 from .handler import RedisHandler
 
+# ── BaseJsonStore (JSON 저장소 베이스) ────────────────────
+from .base_store import BaseJsonStore
+
 
 # ── 전역 인스턴스 ─────────────────────────────────────────
 # 모듈 로드 시 Redis 초기화 시도
@@ -65,4 +68,6 @@ __all__ = [
     # Handler (기본 CRUD)
     "RedisHandler",
     "redis_handler",
+    # BaseJsonStore (JSON 저장소 베이스)
+    "BaseJsonStore",
 ]

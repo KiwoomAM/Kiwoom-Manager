@@ -1,0 +1,211 @@
+# -*- coding: utf-8 -*-
+"""
+redis_handler/base_store.py
+
+Redis JSON 저장소 베이스 클래스
+
+Redis 위에 JSON 직렬화/역직렬화, 키 프리픽스, TTL 관리 등
+공통 패턴을 제공하는 베이스 클래스입니다.
+
+각 도메인 Store는 이 클래스를 상속하여 도메인 로직만 구현합니다.
+
+사용법:
+    from redis_handler import BaseJsonStore
+
+    class MyStore(BaseJsonStore):
+        def __init__(self):
+            super().__init__(prefix="my:store", default_ttl=3600)
+
+        def save(self, item_id: str, data: dict) -> bool:
+            return self._set_json(self._make_key(item_id), data)
+
+        def load(self, item_id: str) -> dict | None:
+            return self._get_json(self._make_key(item_id))
+"""
+
+import json
+import logging
+from typing import Any, Optional
+
+from .handler import RedisHandler
+
+logger = logging.getLogger(__name__)
+
+
+class BaseJsonStore:
+    """
+    Redis JSON 저장소 베이스 클래스
+
+    공통 기능:
+        - 키 프리픽스 자동 생성 (_make_key)
+        - JSON 직렬화/역직렬화 (_set_json / _get_json)
+        - TTL 기본값 관리
+        - 에러 핸들링 (JSONDecodeError 캐치 + 로깅)
+
+    상속 예시:
+        class ChatStore(BaseJsonStore):
+            def __init__(self):
+                super().__init__(prefix="chat:history", default_ttl=604800)
+    """
+
+    def __init__(
+        self,
+        prefix: str,
+        default_ttl: Optional[int] = None,
+        handler: Optional[RedisHandler] = None,
+    ):
+        """
+        Args:
+            prefix: Redis 키 프리픽스 (예: "chat:history", "preview:batch")
+            default_ttl: 기본 TTL (초), None이면 영구 저장
+            handler: RedisHandler 인스턴스 (None이면 싱글톤 사용)
+        """
+        self._handler = handler or RedisHandler()
+        self._prefix = prefix
+        self._default_ttl = default_ttl
+
+    # ── 키 생성 ───────────────────────────────────────────────
+
+    def _make_key(self, *parts: str) -> str:
+        """
+        프리픽스 기반 Redis 키 생성
+
+        Args:
+            *parts: 키 구성 요소들
+
+        Returns:
+            "prefix:part1:part2" 형식의 키 문자열
+
+        Examples:
+            # prefix="chat:history"
+            _make_key("session-1")       → "chat:history:session-1"
+            _make_key("user", "session") → "chat:history:user:session"
+        """
+        return ":".join([self._prefix, *parts])
+
+    # ── JSON CRUD ─────────────────────────────────────────────
+
+    def _get_json(self, key: str) -> Optional[Any]:
+        """
+        Redis에서 값을 조회하고 JSON 역직렬화
+
+        Args:
+            key: Redis 키
+
+        Returns:
+            역직렬화된 Python 객체, 없거나 파싱 실패 시 None
+        """
+        data = self._handler.get(key)
+        if data is None:
+            return None
+
+        try:
+            return json.loads(data)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"JSON 역직렬화 실패 ({key}): {e}")
+            return None
+
+    def _set_json(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None,
+    ) -> bool:
+        """
+        Python 객체를 JSON 직렬화하여 Redis에 저장
+
+        Args:
+            key: Redis 키
+            value: 저장할 Python 객체 (json.dumps 가능한 타입)
+            ttl: TTL (초), None이면 default_ttl 사용
+
+        Returns:
+            저장 성공 여부
+        """
+        effective_ttl = ttl if ttl is not None else self._default_ttl
+        return self._handler.set(
+            key,
+            json.dumps(value, ensure_ascii=False),
+            ttl=effective_ttl,
+        )
+
+    # ── 키 조작 ───────────────────────────────────────────────
+
+    def _delete(self, key: str) -> int:
+        """
+        키 삭제
+
+        Args:
+            key: Redis 키
+
+        Returns:
+            삭제된 키 수 (0 또는 1)
+        """
+        return self._handler.delete(key)
+
+    def _exists(self, key: str) -> bool:
+        """
+        키 존재 여부 확인
+
+        Args:
+            key: Redis 키
+
+        Returns:
+            존재 여부
+        """
+        return self._handler.exists(key)
+
+    def _ttl(self, key: str) -> int:
+        """
+        키의 남은 TTL 조회
+
+        Args:
+            key: Redis 키
+
+        Returns:
+            남은 초수, -1 = TTL 없음(영구), -2 = 키 없음
+        """
+        return self._handler.ttl(key)
+
+    def _expire(self, key: str, seconds: int) -> bool:
+        """
+        키에 TTL 설정
+
+        Args:
+            key: Redis 키
+            seconds: TTL (초)
+
+        Returns:
+            성공 여부
+        """
+        return self._handler.expire(key, seconds)
+
+    # ── Set 연산 위임 ─────────────────────────────────────────
+
+    def _sadd(self, key: str, *members: str) -> int:
+        """Set에 멤버 추가"""
+        return self._handler.sadd(key, *members)
+
+    def _smembers(self, key: str) -> set:
+        """Set의 모든 멤버 조회"""
+        return self._handler.smembers(key)
+
+    def _srem(self, key: str, *members: str) -> int:
+        """Set에서 멤버 제거"""
+        return self._handler.srem(key, *members)
+
+    # ── 유틸리티 ──────────────────────────────────────────────
+
+    @property
+    def storage_mode(self) -> str:
+        """현재 저장소 모드 ("redis" 또는 "memory")"""
+        return self._handler.storage_mode
+
+    def cleanup_memory(self) -> int:
+        """메모리 백엔드의 만료 키 정리"""
+        return self._handler.cleanup_memory()
+
+
+__all__ = [
+    "BaseJsonStore",
+]
