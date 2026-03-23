@@ -19,10 +19,16 @@ class BlocksCollection:
     내부적으로 MDB Handler Service의 REST API를 호출합니다.
     """
 
-    def __init__(self, client: SyncClient, collection_name: str = "kw_gp"):
+    def __init__(
+        self,
+        client: SyncClient,
+        collection_name: str = "agent_data",
+        database: str = "kw_ai",
+    ):
         self._client = client
         self.collection_name = collection_name
-        self._prefix = f"/v1/collections/{collection_name}"
+        self.database = database
+        self._prefix = f"/v1/{database}/{collection_name}"
 
     # =========================================================================
     # Create

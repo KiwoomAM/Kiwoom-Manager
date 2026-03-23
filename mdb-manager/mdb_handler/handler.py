@@ -3,7 +3,7 @@
 MongoDBHandler - HTTP 클라이언트 래퍼 (Singleton)
 
 기존 pymongo 기반 MongoDBHandler와 동일한 인터페이스를 제공합니다.
-내부적으로 MDB Handler Service (localhost:8300)에 HTTP 요청을 보냅니다.
+내부적으로 MDB Handler Service에 HTTP 요청을 보냅니다.
 
 사용 예시:
     from mdb_handler import MongoDBHandler
@@ -14,8 +14,13 @@ MongoDBHandler - HTTP 클라이언트 래퍼 (Singleton)
     mdb.insert_one({"block_id": "p1_b1", ...})
     mdb.find({"_metadata.type": "table"})
 
+    # 같은 database, 다른 collection
     reports = mdb.get_collection("overseas_reports")
     reports.get_all()
+
+    # 다른 database
+    rag = mdb.get_database("kw_rag", "kw_gp")
+    rag.get_all()
 
     mdb.health_check()
     mdb.close()
@@ -36,7 +41,7 @@ class MongoDBHandler:
     MongoDB 통합 핸들러 (Singleton) -- HTTP 클라이언트 래퍼.
 
     MDB Handler Service를 통해 MongoDB에 접근합니다.
-    기존과 동일한 메서드 시그니처를 유지합니다.
+    database와 collection을 자유롭게 선택할 수 있습니다.
     """
 
     _instance: Optional["MongoDBHandler"] = None
@@ -62,22 +67,19 @@ class MongoDBHandler:
                 DeprecationWarning,
                 stacklevel=2,
             )
-        if database is not None:
-            warnings.warn(
-                "database 파라미터는 무시됩니다. Service 측 설정을 사용합니다.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
 
-        self.collection_name = collection or "kw_gp"
+        self.database = database or "kw_ai"
+        self.collection_name = collection or "agent_data"
         self._client = SyncClient()
         self._default_collection = BlocksCollection(
-            self._client, self.collection_name
+            self._client, self.collection_name, self.database
         )
 
         self._initialized = True
         logger.info(
-            "MongoDBHandler 초기화 완료 (collection=%s)", self.collection_name
+            "MongoDBHandler 초기화 완료 (database=%s, collection=%s)",
+            self.database,
+            self.collection_name,
         )
 
     # =====================================================================
@@ -208,30 +210,24 @@ class MongoDBHandler:
             logger.info("MongoDBHandler Singleton 리셋 완료")
 
     # =====================================================================
-    # Collection 접근
+    # Database / Collection 접근
     # =====================================================================
 
-    def get_collection(
-        self,
-        collection_name: str,
-        database: str = None,
+    def get_collection(self, collection_name: str) -> BlocksCollection:
+        """같은 database 내에서 collection만 변경."""
+        return BlocksCollection(self._client, collection_name, self.database)
+
+    def get_database(
+        self, database: str, collection: str = None
     ) -> BlocksCollection:
-        if database is not None:
-            warnings.warn(
-                "database 파라미터는 무시됩니다. Service 측 설정을 사용합니다.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        return BlocksCollection(self._client, collection_name)
+        """다른 database로 전환. collection 미지정 시 기본값 agent_data."""
+        col = collection or "agent_data"
+        return BlocksCollection(self._client, col, database)
 
     def list_collections(self, database: str = None) -> List[str]:
-        if database is not None:
-            warnings.warn(
-                "database 파라미터는 무시됩니다. Service 측 설정을 사용합니다.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        resp = self._client.get("/v1/admin/collections")
+        """데이터베이스의 컬렉션 목록. database 미지정 시 현재 database 사용."""
+        db = database or self.database
+        resp = self._client.get("/v1/admin/collections", params={"database": db})
         return resp["collections"]
 
     # =====================================================================
@@ -241,6 +237,6 @@ class MongoDBHandler:
     def __repr__(self) -> str:
         status = "initialized" if self._initialized else "not initialized"
         return (
-            f"<MongoDBHandler collection={self.collection_name} "
-            f"status={status}>"
+            f"<MongoDBHandler database={self.database} "
+            f"collection={self.collection_name} status={status}>"
         )
