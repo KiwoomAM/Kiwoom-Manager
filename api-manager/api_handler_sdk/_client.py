@@ -10,7 +10,7 @@ import httpx
 
 from api_handler_sdk.exceptions import APIHandlerConnectionError, APIHandlerSDKError
 
-BASE_URL = os.environ.get("API_HANDLER_URL", "http://localhost:8400")
+BASE_URL = os.environ.get("API_HANDLER_URL", "http://192.7.9.45:8400")
 
 
 class SyncClient:
