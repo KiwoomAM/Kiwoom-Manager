@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-EmbedderHandler - 통합 진입점 (Singleton)
+VDBHandler - 통합 진입점 (Singleton)
 
 사용 예시:
-    from embedder_handler import EmbedderHandler
+    from vdb_handler import VDBHandler
 
-    handler = EmbedderHandler()
+    handler = VDBHandler()
 
     # Dense 임베딩
     vector = handler.embed_text("키움증권 리포트")
@@ -30,19 +30,19 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from embedder_handler._client import SyncClient
-from embedder_handler.dense import DenseEmbedClient
-from embedder_handler.sparse import SparseEmbedClient
-from embedder_handler.reranker import RerankerClient
-from embedder_handler.search import SearchClient
+from vdb_handler._client import SyncClient
+from vdb_handler.dense import DenseEmbedClient
+from vdb_handler.sparse import SparseEmbedClient
+from vdb_handler.reranker import RerankerClient
+from vdb_handler.search import SearchClient
 
 logger = logging.getLogger(__name__)
 
 
-class EmbedderHandler:
-    """Embedder Handler 통합 인터페이스 (Singleton)"""
+class VDBHandler:
+    """VDB Handler 통합 인터페이스 (Singleton)"""
 
-    _instance: Optional["EmbedderHandler"] = None
+    _instance: Optional["VDBHandler"] = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -61,7 +61,7 @@ class EmbedderHandler:
         self.search = SearchClient(self._client)
 
         self._initialized = True
-        logger.info("EmbedderHandler 초기화 완료")
+        logger.info("VDBHandler 초기화 완료")
 
     # ------------------------------------------------------------------
     # Dense 임베딩 (바로가기)
@@ -147,9 +147,9 @@ class EmbedderHandler:
         if self._client is not None:
             try:
                 self._client.close()
-                logger.info("EmbedderHandler 연결 종료")
+                logger.info("VDBHandler 연결 종료")
             except Exception as e:
-                logger.warning("EmbedderHandler 연결 종료 중 오류: %s", e)
+                logger.warning("VDBHandler 연결 종료 중 오류: %s", e)
 
     @classmethod
     def reset(cls) -> None:
@@ -157,8 +157,8 @@ class EmbedderHandler:
         if cls._instance is not None:
             cls._instance.close()
             cls._instance = None
-            logger.info("EmbedderHandler Singleton 리셋 완료")
+            logger.info("VDBHandler Singleton 리셋 완료")
 
     def __repr__(self) -> str:
         status = "initialized" if self._initialized else "not initialized"
-        return f"<EmbedderHandler status={status}>"
+        return f"<VDBHandler status={status}>"

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from embedder_handler._client import SyncClient
+from vdb_handler._client import SyncClient
 
 
 class SparseEmbedClient:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import List
 
-from embedder_handler._client import SyncClient
+from vdb_handler._client import SyncClient
 
 
 class DenseEmbedClient:

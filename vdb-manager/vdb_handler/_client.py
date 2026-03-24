@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""httpx 기반 SyncClient -- Embedder Handler Service와 통신"""
+"""httpx 기반 SyncClient -- VDB Handler Service와 통신"""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Any
 
 import httpx
 
-from embedder_handler.exceptions import EmbedderConnectionError, EmbedderHandlerError
+from vdb_handler.exceptions import VDBConnectionError, VDBHandlerError
 
-BASE_URL = os.environ.get("EMBEDDER_HANDLER_URL", "http://192.7.9.45:8500")
+BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")
 
 
 class SyncClient:
-    """Embedder Handler Service와 통신하는 동기 HTTP 클라이언트"""
+    """VDB Handler Service와 통신하는 동기 HTTP 클라이언트"""
 
     def __init__(self, timeout: float = 120.0) -> None:
         self._http = httpx.Client(base_url=BASE_URL, timeout=timeout)
@@ -28,8 +28,8 @@ class SyncClient:
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:
-            raise EmbedderConnectionError(
-                f"Embedder Handler Service 연결 실패: {e}"
+            raise VDBConnectionError(
+                f"VDB Handler Service 연결 실패: {e}"
             ) from e
 
         if response.status_code >= 400:
@@ -38,7 +38,7 @@ class SyncClient:
                 error_msg = body.get("error", response.text)
             except Exception:
                 error_msg = response.text
-            raise EmbedderHandlerError(error_msg, status_code=response.status_code)
+            raise VDBHandlerError(error_msg, status_code=response.status_code)
 
         return response
 

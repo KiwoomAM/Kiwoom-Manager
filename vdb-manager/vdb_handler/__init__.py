@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-embedder_handler - Embedder Handler SDK
+vdb_handler - VDB Handler SDK
 
 사용법:
-    from embedder_handler import EmbedderHandler
+    from vdb_handler import VDBHandler
 
-    handler = EmbedderHandler()
+    handler = VDBHandler()
 
     # Dense 임베딩
     vector = handler.embed_text("키움증권 리포트")
@@ -24,23 +24,23 @@ embedder_handler - Embedder Handler SDK
     handler.close()
 
 환경변수:
-    EMBEDDER_HANDLER_URL: Embedder Handler Service URL (기본: http://192.7.9.45:8500)
+    VDB_HANDLER_URL: VDB Handler Service URL (기본: http://192.7.9.45:8500)
 """
 
-from .handler import EmbedderHandler
+from .handler import VDBHandler
 from .dense import DenseEmbedClient
 from .sparse import SparseEmbedClient
 from .reranker import RerankerClient
 from .search import SearchClient
-from .exceptions import EmbedderError, EmbedderConnectionError, EmbedderHandlerError
+from .exceptions import VDBError, VDBConnectionError, VDBHandlerError
 
 __all__ = [
-    "EmbedderHandler",
+    "VDBHandler",
     "DenseEmbedClient",
     "SparseEmbedClient",
     "RerankerClient",
     "SearchClient",
-    "EmbedderError",
-    "EmbedderConnectionError",
-    "EmbedderHandlerError",
+    "VDBError",
+    "VDBConnectionError",
+    "VDBHandlerError",
 ]

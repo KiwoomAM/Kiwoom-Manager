@@ -1,25 +1,25 @@
-# Kiwoom Embedder Handler SDK
+# Kiwoom VDB Handler SDK
 
-Embedder Handler Service와 통신하는 경량 HTTP 클라이언트입니다.
+VDB Handler Service와 통신하는 경량 HTTP 클라이언트입니다.
 
 ## 설치
 
 ```bash
-pip install -e ./packages/embedder-handler/sdk
+pip install -e ./packages/vdb-handler/sdk
 ```
 
 ## 환경변수
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
-| `EMBEDDER_HANDLER_URL` | Embedder Handler Service URL | `http://192.7.9.45:8500` |
+| `VDB_HANDLER_URL` | VDB Handler Service URL | `http://192.7.9.45:8500` |
 
 ## 사용법
 
 ```python
-from embedder_handler import EmbedderHandler
+from vdb_handler import VDBHandler
 
-handler = EmbedderHandler()
+handler = VDBHandler()
 
 # Dense 임베딩
 vector = handler.embed_text("키움증권 리포트")
@@ -44,9 +44,9 @@ handler.close()
 ## 서브 클라이언트 직접 사용
 
 ```python
-from embedder_handler import EmbedderHandler
+from vdb_handler import VDBHandler
 
-handler = EmbedderHandler()
+handler = VDBHandler()
 
 # Dense 전용
 handler.dense.embed_text("텍스트")
