@@ -1,0 +1,9 @@
+# Monorepo 로컬 개발용
+# 실행 위치: packages/llm-request/
+#   pip install -r requirements.txt
+#
+# 순서: 의존 패키지 → kiwoom-llm-request
+
+-e packages/llm-handler/sdk
+-e packages/mdb-handler/sdk
+-e packages/llm-request

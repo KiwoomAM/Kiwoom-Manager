@@ -29,8 +29,10 @@ _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "service_name",
     "seed",
     "output",
+    "schema",
     "thinking",
     "tools",
+    "media_resolution",
 )
 # 살릴 소수점 자리수
 DEFAULT_FLOAT_NDIGITS: int = 4
