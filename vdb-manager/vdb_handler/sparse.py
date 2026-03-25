@@ -17,7 +17,7 @@ class SparseClient:
     def embed(self, text: str) -> Tuple[List[int], List[float]]:
         """단일 텍스트 sparse 임베딩 (SPLADE)"""
         resp = self._client.post(
-            "/v1/sparse/encode",
+            "/v1/embed/sparse",
             json={"text": text},
         )
         return resp["indices"], resp["values"]
@@ -32,7 +32,7 @@ class SparseClient:
     ) -> List[Tuple[List[int], List[float]]]:
         """배치 sparse 임베딩 (SPLADE)"""
         resp = self._client.post(
-            "/v1/sparse/encode/batch",
+            "/v1/embed/sparse/batch",
             json={"texts": texts, "batch_size": batch_size},
         )
         return [

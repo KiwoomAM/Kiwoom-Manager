@@ -23,7 +23,7 @@ class RerankerClient:
     ) -> List[Dict[str, Any]]:
         """ColBERT v2 기반 문서 리랭킹"""
         resp = self._client.post(
-            "/v1/rerank",
+            "/v1/search/rerank",
             json={
                 "query": query,
                 "documents": documents,
