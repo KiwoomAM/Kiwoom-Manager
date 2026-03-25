@@ -75,7 +75,7 @@ def save_result(
     """
     result_dict = llm_result.model_dump() if hasattr(llm_result, "model_dump") else llm_result
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     doc: dict[str, Any] = {
         "cache_key": cache_key,
         "canonical_json": canonical_json,

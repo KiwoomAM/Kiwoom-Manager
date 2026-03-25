@@ -16,5 +16,4 @@ def build_meta(state: dict) -> dict:
     return {
         "service_name": llm_input.get("service_name"),
         "model": llm_input.get("model"),
-        "provider": llm_input.get("provider"),
     }
