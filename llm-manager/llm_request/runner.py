@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from llm_handler import call as sync_call, stream as sync_stream
@@ -32,16 +32,18 @@ class _Prepared:
 
 # ── prepare / finalize ─────────────────────────────────────────
 
-def _prepare(state: dict, *, database: str | None = None) -> _Prepared:
+def _prepare(
+    llm_input: dict,
+    *,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
+) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직."""
-    cache_mode: bool = state.get("cache_mode", True)
-    save_mode: bool = state.get("save_mode", True)
-    ttl_seconds: int | None = state.get("ttl_seconds")
-    debug: bool = state.get("debug", False)
-
-    llm_input: dict = state.get("llm_input", {})
-    meta = build_meta(state)
-    requested_at = datetime.now(UTC)
+    meta = build_meta(llm_input)
+    requested_at = datetime.now(timezone.utc)
 
     # ── ① cache_mode=F, save_mode=F → 캐시/키 불필요 ────────
     if not cache_mode and not save_mode:
@@ -56,7 +58,7 @@ def _prepare(state: dict, *, database: str | None = None) -> _Prepared:
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
     if not cache_mode:
-        dc = done_check(state, lookup_cache=False, database=database)
+        dc = done_check(llm_input, lookup_cache=False, database=database)
         return _Prepared(
             llm_input=llm_input, meta=meta,
             cache_mode=False, save_mode=True,
@@ -67,7 +69,7 @@ def _prepare(state: dict, *, database: str | None = None) -> _Prepared:
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
-    dc = done_check(state, lookup_cache=True, database=database)
+    dc = done_check(llm_input, lookup_cache=True, database=database)
 
     if dc.cached is not None:
         cached_raw = dc.cached.get("result", {})
@@ -144,10 +146,16 @@ def _finalize_stream(
     if not prep.save_mode or prep.dc is None:
         return
 
-    full_text = "".join(c.text for c in chunks)
+    full_text = "".join((c.text or "") for c in chunks)
     last = chunks[-1] if chunks else None
 
-    assembled = {
+    # function_calls: 비-None인 청크 중 마지막 값을 채택
+    function_calls = None
+    for c in chunks:
+        if c.function_calls is not None:
+            function_calls = c.function_calls
+
+    assembled: dict = {
         "text": full_text,
         "model": prep.llm_input.get("model", "unknown"),
         "usage": last.usage.model_dump() if (last and last.usage) else None,
@@ -155,6 +163,8 @@ def _finalize_stream(
         "request_id": "",
         "source": "stream",
     }
+    if function_calls is not None:
+        assembled["function_calls"] = [fc.model_dump() for fc in function_calls]
 
     save_result(
         prep.dc.cache_key, prep.dc.canonical_json,
@@ -168,18 +178,29 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
     """LLMResponse를 StreamChunk 1개로 변환한다 (캐시 히트 시 사용)."""
     return StreamChunk(
         text=response.text,
-        finish_reason=getattr(response, "finish_reason", None),
-        usage=getattr(response, "usage", None),
+        finish_reason=response.finish_reason,
+        usage=response.usage,
+        function_calls=response.function_calls,
     )
 
 
 # ── Public API ─────────────────────────────────────────────────
 
 def llm_request(
-    state: dict, *, database: str | None = None,
+    llm_input: dict,
+    *,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (sync). (LLMResponse, meta) 튜플 반환."""
-    prep = _prepare(state, database=database)
+    prep = _prepare(
+        llm_input,
+        cache_mode=cache_mode, save_mode=save_mode,
+        ttl_seconds=ttl_seconds, debug=debug, database=database,
+    )
     if prep.cached_output:
         return prep.cached_output
     res = sync_call(**prep.llm_input)
@@ -187,10 +208,20 @@ def llm_request(
 
 
 async def llm_request_async(
-    state: dict, *, database: str | None = None,
+    llm_input: dict,
+    *,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환."""
-    prep = _prepare(state, database=database)
+    prep = _prepare(
+        llm_input,
+        cache_mode=cache_mode, save_mode=save_mode,
+        ttl_seconds=ttl_seconds, debug=debug, database=database,
+    )
     if prep.cached_output:
         return prep.cached_output
     res = await aio_call(**prep.llm_input)
@@ -198,10 +229,20 @@ async def llm_request_async(
 
 
 def llm_request_stream(
-    state: dict, *, database: str | None = None,
+    llm_input: dict,
+    *,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
 ) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
     """스트리밍 LLM 요청 (sync). 항상 (Iterator[StreamChunk], meta) 튜플 반환."""
-    prep = _prepare(state, database=database)
+    prep = _prepare(
+        llm_input,
+        cache_mode=cache_mode, save_mode=save_mode,
+        ttl_seconds=ttl_seconds, debug=debug, database=database,
+    )
     if prep.cached_output:
         response, meta = prep.cached_output
 
@@ -221,10 +262,20 @@ def llm_request_stream(
 
 
 async def llm_request_stream_async(
-    state: dict, *, database: str | None = None,
+    llm_input: dict,
+    *,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
 ) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
     """스트리밍 LLM 요청 (async). 항상 (AsyncIterator[StreamChunk], meta) 튜플 반환."""
-    prep = _prepare(state, database=database)
+    prep = _prepare(
+        llm_input,
+        cache_mode=cache_mode, save_mode=save_mode,
+        ttl_seconds=ttl_seconds, debug=debug, database=database,
+    )
     if prep.cached_output:
         response, meta = prep.cached_output
 

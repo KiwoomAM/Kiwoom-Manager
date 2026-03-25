@@ -35,7 +35,14 @@ async def run_many(
 
     async def _worker(idx: int, state: dict) -> tuple[LLMResponse, dict[str, Any]]:
         async with sem:
-            response, meta = await llm_request_async(state, database=database)
+            response, meta = await llm_request_async(
+                state.get("llm_input", {}),
+                cache_mode=state.get("cache_mode", True),
+                save_mode=state.get("save_mode", True),
+                ttl_seconds=state.get("ttl_seconds"),
+                debug=state.get("debug", False),
+                database=database,
+            )
             meta["_index"] = idx
             meta["_state"] = state
             return response, meta
@@ -78,7 +85,14 @@ async def run_many_stream(
         meta: dict[str, Any] = {"_index": idx, "_state": state}
         async with sem:
             try:
-                stream_iter, meta = await llm_request_stream_async(state, database=database)
+                stream_iter, meta = await llm_request_stream_async(
+                    state.get("llm_input", {}),
+                    cache_mode=state.get("cache_mode", True),
+                    save_mode=state.get("save_mode", True),
+                    ttl_seconds=state.get("ttl_seconds"),
+                    debug=state.get("debug", False),
+                    database=database,
+                )
                 meta["_index"] = idx
                 meta["_state"] = state
 

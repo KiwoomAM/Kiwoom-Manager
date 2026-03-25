@@ -21,12 +21,12 @@ class DoneCheckResult:
 
 
 def done_check(
-    state: dict,
+    llm_input: dict,
     *,
     lookup_cache: bool = True,
     database: str | None = None,
 ) -> DoneCheckResult:
-    canonical_json = canonicalize_input(state)
+    canonical_json = canonicalize_input(llm_input)
     cache_key = make_cache_key(canonical_json)
 
     collection = DEFAULT_COLLECTION
