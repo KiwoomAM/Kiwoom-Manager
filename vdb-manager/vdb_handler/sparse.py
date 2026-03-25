@@ -1,33 +1,36 @@
 # -*- coding: utf-8 -*-
-"""Sparse 임베딩 SDK 클라이언트"""
+"""Sparse 임베딩 / 검색 SDK 클라이언트"""
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_handler._client import SyncClient
 
 
-class SparseEmbedClient:
-    """Service의 /v1/sparse 엔드포인트를 호출하는 클라이언트"""
+class SparseClient:
+    """Sparse 모델 관련 동작 (임베딩 + 검색)"""
 
     def __init__(self, client: SyncClient) -> None:
         self._client = client
 
-    def encode(self, text: str) -> Tuple[List[int], List[float]]:
-        """단일 텍스트 sparse 인코딩"""
+    def embed(self, text: str) -> Tuple[List[int], List[float]]:
+        """단일 텍스트 sparse 임베딩 (SPLADE)"""
         resp = self._client.post(
             "/v1/sparse/encode",
             json={"text": text},
         )
         return resp["indices"], resp["values"]
 
-    def encode_batch(
+    # 하위호환
+    encode = embed
+
+    def embed_batch(
         self,
         texts: List[str],
         batch_size: int = 8,
     ) -> List[Tuple[List[int], List[float]]]:
-        """배치 sparse 인코딩"""
+        """배치 sparse 임베딩 (SPLADE)"""
         resp = self._client.post(
             "/v1/sparse/encode/batch",
             json={"texts": texts, "batch_size": batch_size},
@@ -37,6 +40,30 @@ class SparseEmbedClient:
             for item in resp["results"]
         ]
 
+    # 하위호환
+    encode_batch = embed_batch
+
+    def search(
+        self,
+        query: str,
+        collection_name: str,
+        top_k: int = 20,
+        score_threshold: Optional[float] = None,
+        block_type_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Sparse 벡터 단독 검색 (SPLADE)"""
+        resp = self._client.post(
+            "/v1/search/sparse",
+            json={
+                "query": query,
+                "collection_name": collection_name,
+                "top_k": top_k,
+                "score_threshold": score_threshold,
+                "block_type_filter": block_type_filter,
+            },
+        )
+        return resp["results"]
+
     @property
     def is_ready(self) -> bool:
         """SPLADE 모델 준비 상태 확인"""
@@ -45,3 +72,7 @@ class SparseEmbedClient:
             return resp["sparse"].get("status") == "ready"
         except Exception:
             return False
+
+
+# 하위호환
+SparseEmbedClient = SparseClient

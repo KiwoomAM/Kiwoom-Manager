@@ -1,6 +1,6 @@
 # VDB Handler SDK
 
-> Kiwoom VDB Handler SDK v2.0 — HTTP 클라이언트 기반 벡터 검색 라이브러리
+> Kiwoom VDB Handler SDK v3.0 — HTTP 클라이언트 기반 벡터 검색 라이브러리
 
 VDB Handler Service(REST API)를 통해 벡터 임베딩, 하이브리드 검색, 리랭킹, 컬렉션 관리를 수행하는 Python SDK입니다.
 내부적으로 httpx를 사용하여 서비스와 HTTP 통신합니다.
@@ -30,9 +30,10 @@ vdb_handler/
 ├── __init__.py        # 공개 API
 ├── _client.py         # httpx 기반 SyncClient (내부용)
 ├── handler.py         # VDBHandler (Singleton 진입점)
-├── dense.py           # DenseEmbedClient (Dense 임베딩)
-├── sparse.py          # SparseEmbedClient (Sparse 인코딩)
-├── search.py          # SearchClient (하이브리드 검색 + 컬렉션 관리)
+├── dense.py           # DenseClient (Dense 임베딩 + 검색)
+├── sparse.py          # SparseClient (Sparse 임베딩 + 검색)
+├── hybrid.py          # HybridClient (Hybrid 임베딩 + 검색)
+├── collection.py      # CollectionClient (컬렉션 관리 + 포인트 CRUD)
 ├── reranker.py        # RerankerClient (ColBERT 리랭킹)
 └── exceptions.py      # VDBError, VDBConnectionError, VDBHandlerError
 ```
@@ -44,106 +45,110 @@ from vdb_handler import VDBHandler
 
 handler = VDBHandler()
 
-# Dense 임베딩
-vector = handler.embed_text("키움증권 리포트")
-vectors = handler.embed_batch(["텍스트1", "텍스트2"])
+# Dense 임베딩 + 검색
+vector = handler.dense.embed("키움증권 리포트")
+results = handler.dense.search("질문", collection_name="kw_gp")
 
-# Sparse 임베딩 (SPLADE)
-indices, values = handler.sparse_encode("텍스트")
+# Sparse 임베딩 + 검색
+indices, values = handler.sparse.embed("텍스트")
+results = handler.sparse.search("질문", collection_name="kw_gp")
 
-# 하이브리드 검색 (Dense + Sparse + RRF + Rerank)
-results = handler.hybrid_search("질문", collection_name="kw_gp")
+# Hybrid 임베딩 + 검색
+embeddings = handler.hybrid.embed("텍스트")
+results = handler.hybrid.search("질문", collection_name="kw_gp")
+
+# 컬렉션 관리 + CRUD
+handler.collection.create("my_col")
+handler.collection.get_points("my_col", ids=[1, 2])
 
 # ColBERT 리랭킹
-reranked = handler.rerank("질문", documents=results, top_k=5)
+reranked = handler.reranker.rerank("질문", documents=results, top_k=5)
 
 # 서비스 상태 확인
 status = handler.health_check()
-
-# 종료
 handler.close()
 ```
 
 ## API Reference
 
-### VDBHandler
+### 서브 클라이언트
 
-Singleton 패턴의 메인 진입점입니다.
+VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다:
+
+| 클라이언트 | 접근 | 역할 |
+|-----------|------|------|
+| `DenseClient` | `handler.dense` | Dense 모델 (임베딩 + 검색) |
+| `SparseClient` | `handler.sparse` | Sparse 모델 (임베딩 + 검색) |
+| `HybridClient` | `handler.hybrid` | Hybrid (Dense + Sparse 통합 임베딩 + 검색) |
+| `CollectionClient` | `handler.collection` | Qdrant 컬렉션 관리 + 포인트 CRUD |
+| `RerankerClient` | `handler.reranker` | ColBERT v2 리랭킹 |
+
+#### handler.dense — DenseClient
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `embed(text, task_type)` | `List[float]` | 단일 텍스트 Dense 임베딩 (1536차원) |
+| `embed_batch(texts, batch_size, task_type)` | `List[List[float]]` | 배치 Dense 임베딩 |
+| `search(query, collection_name, top_k, score_threshold, block_type_filter)` | `List[Dict]` | Dense 벡터 단독 검색 |
+| `get_dimension()` | `int` | 임베딩 차원 조회 |
+| `is_ready` (property) | `bool` | 모델 준비 상태 |
+
+#### handler.sparse — SparseClient
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `embed(text)` | `Tuple[List[int], List[float]]` | 단일 SPLADE 임베딩 → (indices, values) |
+| `embed_batch(texts, batch_size)` | `List[Tuple]` | 배치 SPLADE 임베딩 |
+| `search(query, collection_name, top_k, score_threshold, block_type_filter)` | `List[Dict]` | Sparse 벡터 단독 검색 |
+| `is_ready` (property) | `bool` | 모델 준비 상태 |
+
+#### handler.hybrid — HybridClient
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `embed(text, task_type)` | `Dict` | 단일 하이브리드 임베딩 `{"dense": [...], "sparse": (indices, values)}` |
+| `embed_batch(texts, dense_batch_size, sparse_batch_size, task_type)` | `Dict` | 배치 하이브리드 임베딩 `{"dense": [[...]], "sparse": [...]}` |
+| `search(query, collection_name, top_k, use_rerank, rerank_top_k, block_type_filter)` | `List[Dict]` | Dense + Sparse + RRF 하이브리드 검색 |
+| `is_ready` (property) | `bool` | Dense + Sparse 모두 준비 상태 |
+
+#### handler.collection — CollectionClient
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `create(name, dense_dim, distance, recreate)` | `Dict` | 하이브리드 컬렉션 생성 |
+| `info(name)` | `Dict` | 컬렉션 정보 조회 |
+| `delete(name)` | `Dict` | 컬렉션 삭제 |
+| `upsert(collection_name, texts, dense_vectors, sparse_vectors, metadatas, start_id, batch_size)` | `Dict` | 하이브리드 데이터 업로드 |
+| `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
+| `delete_points(collection_name, ids)` | `Dict` | ID로 포인트 삭제 |
+| `scroll_points(collection_name, limit, offset, with_vectors)` | `Dict` | 포인트 페이지네이션 조회 |
+| `is_ready` (property) | `bool` | Qdrant 연결 상태 |
+
+#### handler.reranker — RerankerClient
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `rerank(query, documents, top_k, text_key)` | `List[Dict]` | ColBERT v2 리랭킹 |
+| `is_ready` (property) | `bool` | 모델 준비 상태 |
+
+#### 바로가기 메서드
+
+VDBHandler에서 직접 호출할 수 있는 단축 메서드:
 
 ```python
-VDBHandler(timeout=120.0)
+# 이 두 호출은 동일합니다
+handler.hybrid_search("질문", collection_name="kw_gp")
+handler.hybrid.search("질문", collection_name="kw_gp")
 ```
 
-#### Dense Embedding
-
-| 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| `embed_text(text, task_type="RETRIEVAL_DOCUMENT")` | `List[float]` | 단일 텍스트 Dense 임베딩 (1536차원) |
-| `embed_batch(texts, batch_size=100, task_type="RETRIEVAL_DOCUMENT")` | `List[List[float]]` | 배치 Dense 임베딩 |
-
-`task_type`: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"`
-
-#### Sparse Embedding
-
-| 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| `sparse_encode(text)` | `Tuple[List[int], List[float]]` | 단일 SPLADE 인코딩 → (indices, values) |
-| `sparse_encode_batch(texts, batch_size=8)` | `List[Tuple[List[int], List[float]]]` | 배치 SPLADE 인코딩 |
-
-#### Hybrid Search
-
-| 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| `hybrid_search(query, collection_name, top_k=20, use_rerank=True, rerank_top_k=50, block_type_filter=None)` | `List[Dict]` | Dense + Sparse + RRF 하이브리드 검색 |
-
-반환 문서 필드: `id`, `score`, `text`, `file_name`, `category`, `page`, `file_path`, `block_type`
-
-#### Reranking
-
-| 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| `rerank(query, documents, top_k=10, text_key="text")` | `List[Dict]` | ColBERT v2 리랭킹 (`rerank_score` 필드 추가) |
-
-#### 생명주기
-
-| 메서드 | 설명 |
-|--------|------|
-| `health_check()` | 서비스 상태 확인 (Dense/Sparse/ColBERT/Qdrant) |
-| `close()` | HTTP 클라이언트 종료 |
-| `reset()` (classmethod) | Singleton 인스턴스 초기화 |
-
-### 서브 클라이언트 직접 사용
-
-```python
-handler = VDBHandler()
-
-# Dense 전용
-handler.dense.embed_text("텍스트")
-handler.dense.embed_batch(["텍스트1", "텍스트2"])
-handler.dense.get_dimension()        # 임베딩 차원 조회
-
-# Sparse 전용
-handler.sparse.encode("텍스트")
-handler.sparse.encode_batch(["텍스트1", "텍스트2"])
-handler.sparse.is_ready              # 모델 준비 상태 (bool)
-
-# 리랭커 전용
-handler.reranker.rerank("질문", documents=[...])
-handler.reranker.is_ready             # 모델 준비 상태 (bool)
-
-# 검색 + 컬렉션 관리
-handler.search.hybrid_search("질문", collection_name="kw_gp")
-handler.search.create_collection("my_col", dense_dim=1536, distance="Cosine", recreate=False)
-handler.search.get_collection_info("my_col")
-handler.search.delete_collection("my_col")
-handler.search.upsert_hybrid(
-    collection_name="my_col",
-    texts=["텍스트1"],
-    dense_vectors=[[0.1, 0.2, ...]],
-    sparse_vectors=[([1, 2], [0.5, 0.3])],
-    metadatas=[{"file_name": "a.pdf", "page": 1}],
-)
-```
+| 바로가기 | 위임 대상 |
+|---------|----------|
+| `embed()`, `embed_batch()` | `handler.dense` |
+| `sparse_embed()`, `sparse_embed_batch()` | `handler.sparse` |
+| `hybrid_search()`, `dense_search()`, `sparse_search()` | `handler.hybrid` / `handler.dense` / `handler.sparse` |
+| `create_collection()`, `get_collection_info()`, `delete_collection()`, `upsert()` | `handler.collection` |
+| `get_points()`, `delete_points()`, `scroll_points()` | `handler.collection` |
+| `rerank()` | `handler.reranker` |
 
 ### 예외
 
@@ -157,7 +162,7 @@ VDBError                    # 기본 에러
 from vdb_handler import VDBConnectionError, VDBHandlerError
 
 try:
-    results = handler.hybrid_search("쿼리", collection_name="kw_gp")
+    results = handler.hybrid.search("쿼리", collection_name="kw_gp")
 except VDBConnectionError:
     print("서비스 연결 실패")
 except VDBHandlerError as e:
@@ -177,15 +182,18 @@ metadatas = [
     {"file_name": "report.pdf", "category": "earnings", "page": 2},
 ]
 
-# 컬렉션 생성 → 임베딩 → 저장
-handler.search.create_collection("my_reports")
-dense_vectors = handler.embed_batch(texts)
-sparse_vectors = handler.sparse_encode_batch(texts)
-handler.search.upsert_hybrid(
+# 컬렉션 생성
+handler.collection.create("my_reports")
+
+# 하이브리드 임베딩 (dense + sparse 한번에)
+embeddings = handler.hybrid.embed_batch(texts)
+
+# 저장
+handler.collection.upsert(
     collection_name="my_reports",
     texts=texts,
-    dense_vectors=dense_vectors,
-    sparse_vectors=sparse_vectors,
+    dense_vectors=embeddings["dense"],
+    sparse_vectors=embeddings["sparse"],
     metadatas=metadatas,
 )
 ```
@@ -193,7 +201,7 @@ handler.search.upsert_hybrid(
 ### 검색 파이프라인
 
 ```python
-results = handler.hybrid_search(
+results = handler.hybrid.search(
     "2024년 실적 전망",
     collection_name="kw_gp",
     top_k=10,
@@ -209,6 +217,7 @@ for r in results:
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
 - **upsert 정합성**: `texts`, `dense_vectors`, `sparse_vectors`, `metadatas`는 동일 길이 필수
-- **delete_collection()**: 비가역적. 모든 데이터가 영구 삭제됨
+- **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장
+- **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection`, `upsert_hybrid` 등)은 alias로 유지됨

@@ -7,17 +7,24 @@ vdb_handler - VDB Handler SDK
 
     handler = VDBHandler()
 
-    # Dense 임베딩
-    vector = handler.embed_text("키움증권 리포트")
+    # Dense
+    vector = handler.dense.embed("키움증권 리포트")
+    results = handler.dense.search("질문", collection_name="kw_gp")
 
-    # Sparse 임베딩
-    indices, values = handler.sparse_encode("텍스트")
+    # Sparse
+    indices, values = handler.sparse.embed("텍스트")
+    results = handler.sparse.search("질문", collection_name="kw_gp")
 
-    # 하이브리드 검색
-    results = handler.hybrid_search("질문", collection_name="kw_gp")
+    # Hybrid
+    embeddings = handler.hybrid.embed("텍스트")
+    results = handler.hybrid.search("질문", collection_name="kw_gp")
 
-    # 리랭킹
-    reranked = handler.rerank("질문", documents=[...])
+    # Collection / CRUD
+    handler.collection.create("my_col")
+    handler.collection.upsert("my_col", texts=[...], ...)
+
+    # Reranker
+    reranked = handler.reranker.rerank("질문", documents=[...])
 
     # 상태 확인 / 종료
     handler.health_check()
@@ -28,18 +35,22 @@ vdb_handler - VDB Handler SDK
 """
 
 from .handler import VDBHandler
-from .dense import DenseEmbedClient
-from .sparse import SparseEmbedClient
+from .dense import DenseClient, DenseEmbedClient
+from .sparse import SparseClient, SparseEmbedClient
+from .hybrid import HybridClient
+from .collection import CollectionClient
 from .reranker import RerankerClient
-from .search import SearchClient
 from .exceptions import VDBError, VDBConnectionError, VDBHandlerError
 
 __all__ = [
     "VDBHandler",
+    "DenseClient",
     "DenseEmbedClient",
+    "SparseClient",
     "SparseEmbedClient",
+    "HybridClient",
+    "CollectionClient",
     "RerankerClient",
-    "SearchClient",
     "VDBError",
     "VDBConnectionError",
     "VDBHandlerError",
