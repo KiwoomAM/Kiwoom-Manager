@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """다중 LLM 요청 병렬 실행."""
 
 from __future__ import annotations
@@ -96,19 +95,31 @@ async def run_many_stream(
                             finish_reason=first_chunk.finish_reason,
                             request_id="",
                         )
-                        await queue.put({
-                            "_index": idx, "_type": "cache_hit",
-                            "data": (response, meta), "meta": meta,
-                        })
+                        await queue.put(
+                            {
+                                "_index": idx,
+                                "_type": "cache_hit",
+                                "data": (response, meta),
+                                "meta": meta,
+                            }
+                        )
                 else:
                     async for chunk in stream_iter:
-                        await queue.put({
-                            "_index": idx, "_type": "chunk",
-                            "chunk": chunk, "meta": meta,
-                        })
-                    await queue.put({
-                        "_index": idx, "_type": "done", "meta": meta,
-                    })
+                        await queue.put(
+                            {
+                                "_index": idx,
+                                "_type": "chunk",
+                                "chunk": chunk,
+                                "meta": meta,
+                            }
+                        )
+                    await queue.put(
+                        {
+                            "_index": idx,
+                            "_type": "done",
+                            "meta": meta,
+                        }
+                    )
             except Exception as exc:
                 await queue.put({
                     "_index": idx, "_type": "error",

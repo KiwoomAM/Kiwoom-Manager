@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """done_check: canonicalize → hash → (optional) cache lookup"""
 
 from __future__ import annotations

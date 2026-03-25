@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """캐시 키 생성: canonicalize → hash.
 
 LLM 입력(llm_input subset)을 결정적(deterministic) JSON 문자열로 변환하고,
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # llm_handler.aio.call() 인자와 동일 (캐시 키용 subset)
 _LLM_INPUT_FIELDS: tuple[str, ...] = (
-    "input",
+    "contents",
     "system",
     "history",
     "model",
@@ -38,18 +37,20 @@ DEFAULT_FLOAT_NDIGITS: int = 4
 # 리스트 순서 유지 여부 False일 때 정렬하여 순서 무시
 DEFAULT_PRESERVE_LIST_ORDER: bool = True
 # 무시할 키 집합 (time정보가 포함되어 매번 없는 cache로 조회되는 것 방지)
-DEFAULT_VOLATILE_KEYS: frozenset[str] = frozenset({
-    "timestamp",
-    "ts",
-    "created_at",
-    "updated_at",
-    "request_id",
-    "trace_id",
-})
-
+DEFAULT_VOLATILE_KEYS: frozenset[str] = frozenset(
+    {
+        "timestamp",
+        "ts",
+        "created_at",
+        "updated_at",
+        "request_id",
+        "trace_id",
+    }
+)
 
 
 # ── A. subset 생성 헬퍼 ──────────────────────────────────────
+
 
 def build_llm_input_subset(
     llm_input: dict,
@@ -72,6 +73,7 @@ def build_llm_input_subset(
 
 
 # ── B. canonicalize ──────────────────────────────────────────
+
 
 def canonicalize_llm_input(
     llm_input: dict,
@@ -113,7 +115,10 @@ def canonicalize_llm_input(
             if not preserve_list_order:
                 items.sort(
                     key=lambda e: json.dumps(
-                        e, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                        e,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
                     ),
                 )
             return items
@@ -161,6 +166,7 @@ def canonicalize_llm_input(
 
 # ── C. wrapper ───────────────────────────────────────────────
 
+
 def canonicalize_input(state: dict, **kwargs: Any) -> str:
     """state['llm_input']에서 subset을 만들고 canonical JSON 문자열을 반환한다.
 
@@ -200,6 +206,3 @@ def make_cache_key(canonical_json: str, *, debug: bool = False) -> str:
         logger.warning("캐시 키 생성: 값이 비어있거나 유효하지 않습니다. len=%d", len(canonical_json))
 
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
-
-
-

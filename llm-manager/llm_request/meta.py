@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """메타정보 생성."""
 
 from __future__ import annotations
