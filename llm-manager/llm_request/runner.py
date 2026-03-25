@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from llm_handler import call as sync_call, stream as sync_stream
@@ -41,7 +41,7 @@ def _prepare(state: dict, *, database: str | None = None) -> _Prepared:
 
     llm_input: dict = state.get("llm_input", {})
     meta = build_meta(state)
-    requested_at = datetime.now(timezone.utc)
+    requested_at = datetime.now(UTC)
 
     # ── ① cache_mode=F, save_mode=F → 캐시/키 불필요 ────────
     if not cache_mode and not save_mode:
