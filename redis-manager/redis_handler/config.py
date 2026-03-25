@@ -35,7 +35,7 @@ class RedisConfig:
     """
 
     # ── 접속 정보 ──────────────────────────────────────────────
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
 
     # ── 소켓 설정 ──────────────────────────────────────────────
     SOCKET_TIMEOUT: int = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
@@ -84,7 +84,7 @@ class RedisConfig:
     @classmethod
     def reload_from_env(cls) -> None:
         """환경변수에서 재로드"""
-        cls.REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        cls.REDIS_URL = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
         cls.SOCKET_TIMEOUT = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
         cls.SOCKET_CONNECT_TIMEOUT = int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5"))
 
