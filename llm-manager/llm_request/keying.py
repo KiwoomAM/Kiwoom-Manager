@@ -158,12 +158,21 @@ def canonicalize_llm_input(
             ensure_ascii=False,
         )
     except Exception:
+        logger.warning(
+            "캐시 키 정규화 실패: llm_input type=%s — str() fallback 시도",
+            type(llm_input).__name__,
+            exc_info=True,
+        )
         try:
             return json.dumps(
                 str(llm_input),
                 ensure_ascii=False,
             )
         except Exception:
+            logger.error(
+                "캐시 키 정규화 완전 실패: 빈 '{}' 반환 — 캐시 키 충돌 위험",
+                exc_info=True,
+            )
             return "{}"
 
 

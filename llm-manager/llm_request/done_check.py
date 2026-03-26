@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from .keying import canonicalize_input, make_cache_key
 from .store import cache_get
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_COLLECTION = "agent_llm"
 
@@ -37,6 +40,11 @@ def done_check(
         try:
             cached = cache_get(cache_key, collection, database=database)
         except Exception:
+            logger.exception(
+                "캐시 조회 실패: cache_key=%s, collection=%s — LLM 직접 호출로 대체",
+                cache_key[:16] + "...",
+                collection,
+            )
             cached = None
             cache_error = True
 

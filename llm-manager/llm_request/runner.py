@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from llm_handler import call as sync_call, stream as sync_stream
-from llm_handler.aio import call as aio_call, stream as aio_stream
+from llm_handler import call as sync_call
+from llm_handler import stream as sync_stream
+from llm_handler.aio import call as aio_call
+from llm_handler.aio import stream as aio_stream
 from llm_handler.models import LLMResponse, StreamChunk
 
-from .store import save_result
-from .meta import build_meta
 from .done_check import DoneCheckResult, done_check
+from .meta import build_meta
+from .store import save_result
 
- 
+logger = logging.getLogger(__name__)
+
 # ── 내부 데이터 ────────────────────────────────────────────────
 
 @dataclass
@@ -43,7 +47,7 @@ def _prepare(
 ) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직."""
     meta = build_meta(llm_input)
-    requested_at = datetime.now(timezone.utc)
+    requested_at = datetime.now(UTC)
 
     # ── ① cache_mode=F, save_mode=F → 캐시/키 불필요 ────────
     if not cache_mode and not save_mode:
@@ -76,7 +80,19 @@ def _prepare(
         try:
             cached_result = LLMResponse.model_validate(cached_raw)
         except Exception:
-            cached_result = cached_raw
+            logger.warning(
+                "캐시 결과 역직렬화 실패: cache_key=%s — 캐시 무시하고 LLM 재호출",
+                dc.cache_key[:16] + "...",
+                exc_info=True,
+            )
+            return _Prepared(
+                llm_input=llm_input, meta=meta,
+                cache_mode=True, save_mode=save_mode,
+                ttl_seconds=ttl_seconds, debug=debug,
+                requested_at=requested_at,
+                dc=dc, cached_output=None,
+                route_reason="cache_deserialize_error" if debug else None,
+            )
 
         cached_meta: dict[str, Any] = {
             "source": "cache",
@@ -128,12 +144,18 @@ def _finalize(
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """LLM 응답 저장 + (LLMResponse, meta) 튜플 반환."""
     if prep.save_mode and prep.dc is not None:
-        save_result(
-            prep.dc.cache_key, prep.dc.canonical_json,
-            llm_result, prep.meta, prep.dc.collection,
-            database=database, ttl_seconds=prep.ttl_seconds,
-            requested_at=prep.requested_at,
-        )
+        try:
+            save_result(
+                prep.dc.cache_key, prep.dc.canonical_json,
+                llm_result, prep.meta, prep.dc.collection,
+                database=database, ttl_seconds=prep.ttl_seconds,
+                requested_at=prep.requested_at,
+            )
+        except Exception:
+            logger.exception(
+                "LLM 결과 저장 실패: cache_key=%s — 결과는 정상 반환하되 캐시 미저장",
+                prep.dc.cache_key[:16] + "...",
+            )
     return llm_result, _build_live_meta(prep)
 
 
@@ -145,9 +167,15 @@ def _finalize_stream(
     """Stream 완료 후 누적 청크를 조립하여 MDB에 저장."""
     if not prep.save_mode or prep.dc is None:
         return
+    if not chunks:
+        logger.warning(
+            "스트림 완료 시 청크가 0개: cache_key=%s — 빈 결과는 저장하지 않음",
+            prep.dc.cache_key[:16] + "...",
+        )
+        return
 
     full_text = "".join((c.text or "") for c in chunks)
-    last = chunks[-1] if chunks else None
+    last = chunks[-1]
 
     # function_calls: 비-None인 청크 중 마지막 값을 채택
     function_calls = None
@@ -158,20 +186,26 @@ def _finalize_stream(
     assembled: dict = {
         "text": full_text,
         "model": prep.llm_input.get("model", "unknown"),
-        "usage": last.usage.model_dump() if (last and last.usage) else None,
-        "finish_reason": last.finish_reason if last else None,
+        "usage": last.usage.model_dump() if last.usage else None,
+        "finish_reason": last.finish_reason,
         "request_id": "",
         "source": "stream",
     }
     if function_calls is not None:
         assembled["function_calls"] = [fc.model_dump() for fc in function_calls]
 
-    save_result(
-        prep.dc.cache_key, prep.dc.canonical_json,
-        assembled, prep.meta, prep.dc.collection,
-        database=database, ttl_seconds=prep.ttl_seconds,
-        requested_at=prep.requested_at,
-    )
+    try:
+        save_result(
+            prep.dc.cache_key, prep.dc.canonical_json,
+            assembled, prep.meta, prep.dc.collection,
+            database=database, ttl_seconds=prep.ttl_seconds,
+            requested_at=prep.requested_at,
+        )
+    except Exception:
+        logger.exception(
+            "스트림 결과 저장 실패: cache_key=%s — 캐시 미저장",
+            prep.dc.cache_key[:16] + "...",
+        )
 
 
 def _to_stream_chunk(response: LLMResponse) -> StreamChunk:

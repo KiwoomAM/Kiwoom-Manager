@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mdb_handler import MongoDBHandler
@@ -75,7 +75,7 @@ def save_result(
     """
     result_dict = llm_result.model_dump() if hasattr(llm_result, "model_dump") else llm_result
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     doc: dict[str, Any] = {
         "cache_key": cache_key,
         "canonical_json": canonical_json,
