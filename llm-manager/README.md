@@ -29,7 +29,7 @@ packages/llm-request/llm_request/
 ├── done_check.py                 # 캐시 키 생성·조회 (DoneCheckResult)
 ├── store.py                      # MongoDB 캐시 get/set (mdb_handler 연동)
 ├── keying.py                     # llm_input canonicalize → SHA-256 캐시 키
-├── meta.py                       # state → 저장용 meta dict (build_meta)
+├── meta.py                       # llm_input → 저장용 meta dict (build_meta)
 └── DESIGN.md                     # 설계 문서
 ```
 
@@ -80,11 +80,11 @@ llm_handler.aio.configure()
 > 
 > ```python
 > # 저장 없이 LLM만 호출
-> response, meta = llm_request({
->     "llm_input": {"contents": "테스트 질문", "model": "gemini-3-flash-preview"},
->     "cache_mode": False,
->     "save_mode": False,
-> })
+> response, meta = llm_request(
+>     {"contents": "테스트 질문", "model": "gemini-3-flash-preview"},
+>     cache_mode=False,
+>     save_mode=False,
+> )
 > ```
 > 
 
@@ -95,16 +95,14 @@ llm_handler.aio.configure()
 ```python
 from llm_request import llm_request_async
 
-state = {
-    "llm_input": {
+response, meta = await llm_request_async(
+    {
         "contents": "대한민국의 수도는?",
         "model": "gemini-3-flash-preview",
         "temperature": 0,
         "max_tokens": 200,
     },
-}
-
-response, meta = await llm_request_async(state)
+)
 print(response.text)
 print(f"source:{meta['source']}")  # 'live' 또는 'cache'
 ```
@@ -115,40 +113,42 @@ print(f"source:{meta['source']}")  # 'live' 또는 'cache'
 
 | 함수 | 파라미터 | 반환 타입 | **설명** |
 | --- | --- | --- | --- |
-| `llm_request` | `state: dict` — `llm_input`(필수), `cache_mode`, `save_mode`,… | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
-| `llm_request_async` | `state: dict` — `llm_input`(필수), `cache_mode`, `save_mode`,… | `tuple[LLMResponse, dict]` | **비동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.aio.call`, 히트면 캐시 결과 반환. |
-| `llm_request_stream` | `state: dict` — `llm_input`(필수), `cache_mode`, `save_mode`,… | `tuple[Iterator[StreamChunk], dict]` | **동기 스트리밍 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.stream`, 히트면 캐시 결과 반환. |
-| `llm_request_stream_async` | `state: dict` — `llm_input`(필수), `cache_mode`, `save_mode`,… | `tuple[AsyncIterator[StreamChunk], dict]` | **비동기 스트리밍 LLM 호출.** 캐시 조회 후 미스면 `llm_handler.aio.stream`, 히트면 캐시 결과 반환. |
+| `llm_request` | `llm_input: dict`, `*`, `cache_mode=True`, `save_mode=True`, `ttl_seconds=None`, `debug=False`, `database=None` | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
+| `llm_request_async` | 위와 동일 | `tuple[LLMResponse, dict]` | **비동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.aio.call`, 히트면 캐시 결과 반환. |
+| `llm_request_stream` | 위와 동일 | `tuple[Iterator[StreamChunk], dict]` | **동기 스트리밍 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.stream`, 히트면 캐시 결과 반환. |
+| `llm_request_stream_async` | 위와 동일 | `tuple[AsyncIterator[StreamChunk], dict]` | **비동기 스트리밍 LLM 호출.** 캐시 조회 후 미스면 `llm_handler.aio.stream`, 히트면 캐시 결과 반환. |
 
 ## Input 구조
 
 ```python
-state = {
-    "llm_input": {              # llm_handler.call()에 전달할 인자
+response, meta = await llm_request_async(
+    {                           # llm_input: llm_handler.call()에 전달할 인자 (키 생략 시 대부분 미전송)
         "contents": "질문",     # 필수. str 또는 [str | Part | FileRef] 혼합 리스트
         "model": "gemini-3-flash-preview",
         "system": "시스템 프롬프트",      # 선택
         "temperature": 0,               # 선택
         "max_tokens": 200,              # 선택
         "service_name": "my_service",   # 선택 (메타에 기록)
+        "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
     },
-    "cache_mode": True,         # 캐시 조회 여부 (기본 True)
-    "save_mode": True,          # DB 저장 여부 (기본 True)
-    "ttl_seconds": 3600,        # 캐시 만료 시간 (선택)
-    "debug": False,             # route_reason 포함 (선택)
-}
+    cache_mode=True,            # 기본 True
+    save_mode=True,             # 기본 True
+    ttl_seconds=3600,           # 기본 None (예시로 3600 지정)
+    debug=False,                # 기본 False
+    # database=None             # 기본 None → env MONGODB_DATABASE 또는 kw_ai
+)
 ```
 
 ### a. llm_input
 
 ### `call(contents, ...) → LLMResponse`
 
-단일 LLM 호출. `contents`만 필수, 나머지는 전부 keyword-only optional.
+단일 LLM 호출. `contents`만 필수, 나머지는 SDK 기본 `None`(요청 JSON에서 생략). `model` 생략 시 Handler 기본 `gemini-3-flash-preview`.
 
 ```python
 def call(
-    contents: ContentsType,  # 사용자 메시지 (필수). str | list[str | FileRef | Part]
+    contents: ContentsType,  # 필수. str | list[str | FileRef | Part]
     *,
     system: str | None = None,          # 시스템 프롬프트
     model: str | None = None,           # 모델명 (기본: gemini-3-flash-preview)
@@ -159,6 +159,7 @@ def call(
     schema: type | dict | None = None,  # Pydantic / Enum / dict (output 자동 추론)
     thinking: str | None = None,        # "minimal" | "low" | "medium" | "high"
     tools: list[dict] | None = None,    # Function calling / Built-in 도구 정의
+    tool_config: str | None = None,     # "auto" | "any" | "none"
     history: list[dict] | None = None,  # 이전 대화 이력
     cached_content: str | None = None,  # Context Cache 이름
     service_name: str | None = None,    # 서비스 식별자 (로깅용)
@@ -212,7 +213,9 @@ True 설정 시 응답이 구조의 어떤 루트로 출력된 건지 기록되�
 **cache_hit, miss 상관 없이 출력 양식 동일**
 
 ```python
-response, meta = llm_request(state)
+response, meta = llm_request(
+    {"contents": "질문", "model": "gemini-3-flash-preview"},
+)
 
 # response: LLMResponse — .text, .model, .usage 등
 # meta dict 구조:
@@ -232,10 +235,11 @@ response, meta = llm_request(state)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `text` | `str` | 모델 응답 텍스트 |
+| `text` | `str | None` | 모델 응답 텍스트 (Tool calling 시 비어 있을 수 있음) |
 | `model` | `str` | 사용된 모델명 |
 | `usage` | `TokenUsage | None` | 토큰 사용량 |
 | `finish_reason` | `str | None` | 종료 사유 (`"STOP"`, `"MAX_TOKENS"`, `"SAFETY"` 등) |
+| `function_calls` | `list[FunctionCall] | None` | 모델이 요청한 함수 호출 |
 | `request_id` | `str` | 요청 식별자 |
 
 ### b. `StreamChunk`
@@ -244,9 +248,10 @@ response, meta = llm_request(state)
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `text` | `str` | 청크 텍스트 |
+| `text` | `str | None` | 청크 텍스트 |
 | `finish_reason` | `str | None` | 마지막 청크에만 포함 |
 | `usage` | `TokenUsage | None` | 마지막 청크에만 포함 |
+| `function_calls` | `list[FunctionCall] | None` | 해당 청크에 포함된 함수 호출 |
 
 ## done_check function 상세 설명
 
@@ -255,22 +260,18 @@ response, meta = llm_request(state)
 > Hashing, 캐시 조회
 > 
 
-`done_check(state, *, lookup_cache=True, database=None) -> DoneCheckResult`
+`done_check(llm_input, *, lookup_cache=True, database=None) -> DoneCheckResult`
 
 ```python
 from llm_request import done_check
 
-state = {
-    "llm_input": {
-        "contents": "대한민국의 수도는?",
-        "model": "gemini-3-flash-preview",
-        "temperature": 0,
-    },
-    "cache_mode": True,
-    "save_mode": True,
+llm_input = {
+    "contents": "대한민국의 수도는?",
+    "model": "gemini-3-flash-preview",
+    "temperature": 0,
 }
 
-dc = done_check(state, lookup_cache=True)
+dc = done_check(llm_input, lookup_cache=True)
 
 print("collection:", dc.collection)       # 기본 "agent_llm"
 print("cache_key:", dc.cache_key)         # 64자 hex
@@ -291,11 +292,11 @@ else:
 
 ### 1. `llm_input`에서 일부 필드만 뽑음
 
-캐시 키는 `state` 전체가 아니라 **`state["llm_input"]`의 일부 필드만** 사용함.
+캐시 키는 **`llm_input` dict의 일부 필드만** 사용함.
 
 `_LLM_INPUT_FIELDS`:
 
-- `contents`, `system`, `history`, `model`, `max_tokens`, `temperature`, `cached_content`, `service_name`, `seed`, `output`, `schema`, `thinking`, `tools`, `media_resolution`
+- `contents`, `system`, `history`, `model`, `max_tokens`, `temperature`, `cached_content`, `service_name`, `seed`, `output`, `schema`, `thinking`, `tools`, `tool_config`, `media_resolution`
 
 이 목록에 **없는 값은 캐시 키에 반영되지 않음**.
 
@@ -376,8 +377,6 @@ llm_input = {
     # service_name 등 메타 전용 필드는 해시에 포함됨 (의도적 — 서비스별 캐시 분리)
 }
 
-state = {"llm_input": llm_input}
-
 # ① subset: 지정 필드만 + None → ""
 subset = build_llm_input_subset(llm_input)
 print("subset:", subset)
@@ -386,8 +385,8 @@ print("subset:", subset)
 # ② canonical JSON 문자열 (SHA 직전)
 canon = canonicalize_llm_input(subset)
 
-# ③ state 한 번에 (done_check 내부와 동일 경로)
-canon2 = canonicalize_input(state)
+# ③ llm_input 한 번에 (done_check 내부와 동일 경로)
+canon2 = canonicalize_input(llm_input)
 assert canon2 == canon
 
 # ④ 캐시 키(64자리 cache_key생성)
@@ -408,7 +407,7 @@ cache_key = make_cache_key(canon)
 | `_id` = `cache_key` | 조회·저장 키 |
 | `canonical_json` | 캐시 키 계산에 쓰인 정규화 JSON 문자열 |
 | `result` | LLM 결과 **dict** (`LLMResponse.model_dump()` 또는 Stream 병합 dict) |
-| `meta` | `build_meta(state)` — `service_name`, `model` |
+| `meta` | `build_meta(llm_input)` — `service_name`, `model` |
 | `created_at` | 저장 시각(UTC ISO) |
 | `requested_at`, `elapsed_ms` | LLM 요청 시간, LLM 소요시간 |
 | `expires_at` | `ttl_seconds`가 있을 때만 |
@@ -417,7 +416,7 @@ cache_key = make_cache_key(canon)
 
 - **비스트림**: 성공 시 **`LLMResponse`를 `model_dump()` 한 것**이 `result`에 들어갑니다. (필드명은 모델 스키마 따름 — 순수 문자열 하나만이 아니라 구조화된 dict.)
 - **스트림** (`runner._finalize_stream`): 스트림이 **끝난 뒤** 청크 텍스트를 이어 붙여 **`result`에 dict로 저장**.
-대략 `text`, `model`, `usage`(마지막 청크), `finish_reason`, `request_id`, `source: "stream"` 형태.
+대략 `text`, `model`, `usage`(마지막 청크), `finish_reason`, `request_id`, `source: "stream"` 형태. Tool calling 스트림이면 마지막 비-None 청크의 `function_calls`를 `result`에 포함할 수 있음.
 → **마지막 청크가 온 뒤, 이터레이터가 끝나야** 저장이 호출. 중간 청크마다 MDB에 저장하지 않음.
 
 ### **오류 시 저장**
@@ -432,57 +431,57 @@ cache_key = make_cache_key(canon)
 
 ![image.png](attachment:5fad32ac-7f32-4d05-a2c5-c306141cc389:image.png)
 
-## `llm_request(state, *, database=None) -> tuple[LLMResponse, dict]`
+## `llm_request(llm_input, *, cache_mode=True, save_mode=True, …) -> tuple[LLMResponse, dict]`
 
 ```python
 from llm_request import llm_request
 
-response, meta = llm_request({
-    "llm_input": {
+response, meta = llm_request(
+    {
         "contents": "대한민국의 수도는?",
         "model": "gemini-3-flash-preview",
     },
-})
+)
 print(response.text)        # "서울"
 print(meta["source"])       # "live" 또는 "cache"
 print(meta["cache_hit"])    # True / False
 ```
 
-## `llm_request_async(state, *, database=None) -> tuple[LLMResponse, dict]`
+## `llm_request_async(llm_input, *, …) -> tuple[LLMResponse, dict]`
 
 ```python
 from llm_request import llm_request_async
 
-response, meta = await llm_request_async({
-    "llm_input": {"contents": "질문", "model": "gemini-3-flash-preview"},
-})
+response, meta = await llm_request_async(
+    {"contents": "질문", "model": "gemini-3-flash-preview"},
+)
 ```
 
-## `llm_request_stream(state, *, database=None) -> tuple[Iterator[StreamChunk], dict]`
+## `llm_request_stream(llm_input, *, …) -> tuple[Iterator[StreamChunk], dict]`
 
 ```python
 from llm_request import llm_request_stream
 
-stream, meta = llm_request_stream({
-    "llm_input": {"contents": "질문", "model": "gemini-2.5-flash"},
-})
+stream, meta = llm_request_stream(
+    {"contents": "질문", "model": "gemini-2.5-flash"},
+)
 
 for chunk in stream:
-    print(chunk.text, end="", flush=True)
+    print(chunk.text or "", end="", flush=True)
 print(meta["source"])  # "live" 또는 "cache"
 ```
 
-## `llm_request_stream_async(state, *, database=None) -> tuple[AsyncIterator[StreamChunk], dict]`
+## `llm_request_stream_async(llm_input, *, …) -> tuple[AsyncIterator[StreamChunk], dict]`
 
 ```python
 from llm_request import llm_request_stream_async
 
-stream, meta = await llm_request_stream_async({
-    "llm_input": {"contents": "질문", "model": "gemini-2.5-flash"},
-})
+stream, meta = await llm_request_stream_async(
+    {"contents": "질문", "model": "gemini-2.5-flash"},
+)
 
 async for chunk in stream:
-    print(chunk.text, end="", flush=True)
+    print(chunk.text or "", end="", flush=True)
 print(meta["source"])  # "live" 또는 "cache"
 ```
 
@@ -495,9 +494,9 @@ print(meta["source"])  # "live" 또는 "cache"
 ```python
 from llm_request import llm_request_async
 
-response, meta = await llm_request_async({
-    "llm_input": {"contents": "질문", "model": "gemini-3-flash-preview"},
-})
+response, meta = await llm_request_async(
+    {"contents": "질문", "model": "gemini-3-flash-preview"},
+)
 print(response.text)
 print(f"source:{meta['source']}")
 ```
@@ -518,15 +517,15 @@ items = [
 
 async def process_item(item: dict, wall0: float) -> dict:
     t0 = time.perf_counter()
-    response, meta = await llm_request_async({
-        "llm_input": {
+    response, meta = await llm_request_async(
+        {
             "contents": item["prompt"],
             "model": "gemini-3-flash-preview",
             "max_tokens": 350,
         },
-        "cache_mode": True,
-        "save_mode": True,
-    })
+        cache_mode=True,
+        save_mode=True,
+    )
     llm_sec = time.perf_counter() - t0
     rel = time.perf_counter() - wall0
     print(f"[{rel:5.2f}s]{item['id']} 완료 (LLM{llm_sec:.2f}s, source={meta['source']})")
@@ -547,7 +546,7 @@ results = [await c for c in asyncio.as_completed(tasks)]
 중간에 `break`하거나 이터레이터를 버리면 저장 호출이 실행되지 않습니다.
 
 ```python
-stream, meta = llm_request_stream(state)
+stream, meta = llm_request_stream({"contents": "질문", "model": "gemini-2.5-flash"})
 for chunk in stream:
     if some_condition:
         break  # ⚠️ 여기서 break하면 저장 안 됨

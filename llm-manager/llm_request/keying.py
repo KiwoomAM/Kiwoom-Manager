@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # ── 상수 / 설정 ──────────────────────────────────────────────
 
-# llm_handler.aio.call() 인자와 동일 (캐시 키용 subset)
+# llm_handler.call() / aio.call() 인자와 동일 (캐시 키용 subset)
 _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "contents",
     "system",
@@ -32,6 +32,7 @@ _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "schema",
     "thinking",
     "tools",
+    "tool_config",
     "media_resolution",
 )
 # 살릴 소수점 자리수
@@ -157,31 +158,37 @@ def canonicalize_llm_input(
             ensure_ascii=False,
         )
     except Exception:
+        logger.warning(
+            "캐시 키 정규화 실패: llm_input type=%s — str() fallback 시도",
+            type(llm_input).__name__,
+            exc_info=True,
+        )
         try:
             return json.dumps(
                 str(llm_input),
                 ensure_ascii=False,
             )
         except Exception:
+            logger.error(
+                "캐시 키 정규화 완전 실패: 빈 '{}' 반환 — 캐시 키 충돌 위험",
+                exc_info=True,
+            )
             return "{}"
 
 
 # ── C. wrapper ───────────────────────────────────────────────
 
 
-def canonicalize_input(state: dict, **kwargs: Any) -> str:
-    """state['llm_input']에서 subset을 만들고 canonical JSON 문자열을 반환한다.
-
-    state 전체가 아니라 llm_input subset만 canonicalize한다.
+def canonicalize_input(llm_input: dict, **kwargs: Any) -> str:
+    """llm_input에서 subset을 만들고 canonical JSON 문자열을 반환한다.
 
     Args:
-        state: llm_input 키를 포함하는 상위 state dict.
+        llm_input: llm_handler.call()에 전달할 인자 dict.
         **kwargs: canonicalize_llm_input에 전달할 추가 옵션.
 
     Returns:
         canonical JSON 문자열.
     """
-    llm_input: dict = state.get("llm_input", {})
     subset = build_llm_input_subset(llm_input)
     return canonicalize_llm_input(subset, **kwargs)
 

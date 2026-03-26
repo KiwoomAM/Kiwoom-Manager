@@ -34,8 +34,21 @@ async def run_many(
     state_list = list(states)
 
     async def _worker(idx: int, state: dict) -> tuple[LLMResponse, dict[str, Any]]:
+        llm_input = state.get("llm_input")
+        if llm_input is None:
+            raise ValueError(
+                f"run_many: state[{idx}]에 'llm_input' 키가 없습니다. "
+                f"state keys: {list(state.keys())}"
+            )
         async with sem:
-            response, meta = await llm_request_async(state, database=database)
+            response, meta = await llm_request_async(
+                llm_input,
+                cache_mode=state.get("cache_mode", True),
+                save_mode=state.get("save_mode", True),
+                ttl_seconds=state.get("ttl_seconds"),
+                debug=state.get("debug", False),
+                database=database,
+            )
             meta["_index"] = idx
             meta["_state"] = state
             return response, meta
@@ -76,9 +89,22 @@ async def run_many_stream(
 
     async def _worker(idx: int, state: dict) -> None:
         meta: dict[str, Any] = {"_index": idx, "_state": state}
+        llm_input = state.get("llm_input")
+        if llm_input is None:
+            raise ValueError(
+                f"run_many_stream: state[{idx}]에 'llm_input' 키가 없습니다. "
+                f"state keys: {list(state.keys())}"
+            )
         async with sem:
             try:
-                stream_iter, meta = await llm_request_stream_async(state, database=database)
+                stream_iter, meta = await llm_request_stream_async(
+                    llm_input,
+                    cache_mode=state.get("cache_mode", True),
+                    save_mode=state.get("save_mode", True),
+                    ttl_seconds=state.get("ttl_seconds"),
+                    debug=state.get("debug", False),
+                    database=database,
+                )
                 meta["_index"] = idx
                 meta["_state"] = state
 
@@ -94,6 +120,7 @@ async def run_many_stream(
                             usage=first_chunk.usage,
                             finish_reason=first_chunk.finish_reason,
                             request_id="",
+                            function_calls=first_chunk.function_calls,
                         )
                         await queue.put(
                             {
