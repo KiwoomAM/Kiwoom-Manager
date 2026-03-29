@@ -578,3 +578,69 @@ for chunk in stream:
 `llm_handler`에서 예외가 발생하거나 오류 응답이 반환되면 `runner`는 `save_result`를 호출하지 않습니다.
 
 즉, 실패한 호출은 캐시 문서로 남지 않으며, 다음 요청 시 다시 LLM을 호출합니다.
+
+# 9. llm_handler API re-export
+
+---
+
+`llm_request` 패키지만 설치하면 `llm_handler`의 모든 public API를 별도 import 없이 사용할 수 있습니다.
+
+## 방법 1: flat import
+
+`llm_handler`의 함수·모델·예외를 `llm_request`에서 직접 import합니다.
+
+```python
+from llm_request import call, stream, Part, LLMResponse
+
+# 동기 호출
+response = call("안녕하세요")
+print(response.text)
+
+# 스트리밍
+for chunk in stream("질문", model="gemini-2.5-flash"):
+    print(chunk.text or "", end="", flush=True)
+```
+
+### re-export 목록
+
+| 분류 | 이름 |
+| --- | --- |
+| 함수 | `call`, `stream`, `session`, `upload_file`, `create_cache`, `delete_cache`, `list_caches`, `configure` |
+| 클래스 | `Session` |
+| 모델 | `Part`, `LLMResponse`, `StreamChunk`, `FunctionCall`, `CacheRef`, `FileRef`, `TokenUsage`, `ContentsType` |
+| 예외 | `SDKError`, `HandlerConnectionError`, `HandlerError` |
+
+## 방법 2: 모듈 접근
+
+`llm_handler` 모듈 자체를 import하여 네임스페이스를 유지할 수 있습니다.
+
+```python
+from llm_request import llm_handler
+
+# 동기
+response = llm_handler.call("안녕하세요")
+
+# 비동기 (llm_handler.aio 접근 가능)
+response = await llm_handler.aio.call("안녕하세요")
+
+# 설정
+llm_handler.configure(base_url="http://192.7.9.45:8100")
+llm_handler.aio.configure(base_url="http://192.7.9.45:8100")
+```
+
+## 두 방법 혼합
+
+```python
+from llm_request import llm_request_async, call, Part, llm_handler
+
+# 캐시 있는 호출
+response, meta = await llm_request_async(
+    {"contents": "질문", "model": "gemini-3-flash-preview"},
+)
+
+# 캐시 없이 직접 호출
+response = call("질문", model="gemini-3-flash-preview")
+
+# 비동기 직접 호출
+response = await llm_handler.aio.call("질문", model="gemini-3-flash-preview")
+```
