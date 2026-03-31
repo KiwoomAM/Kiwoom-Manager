@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -43,17 +42,15 @@ def cache_set(
     """doc을 지정된 컬렉션에 upsert 저장한다.
 
     Args:
-        doc: cache_key, canonical_json, result, meta, created_at 등을 포함하는 문서.
+        doc: _id, canonical_json, result, meta, created_at 등을 포함하는 문서.
         collection: 저장 대상 컬렉션명.
         database: DB명 (None이면 env → 기본값 kw_ai)
     """
-    cache_key = doc.get("_id") or doc.get("cache_key")
-    if not cache_key:
-        raise ValueError("cache_set: doc에 cache_key/_id가 없습니다.")
-    doc["_id"] = cache_key
+    if "_id" not in doc:
+        raise ValueError("cache_set: doc에 _id가 없습니다.")
 
     col = _get_collection(collection, database=database)
-    col.replace_one({"_id": cache_key}, doc, upsert=True)
+    col.replace_one({"_id": doc["_id"]}, doc, upsert=True)
 
 
 def save_result(
@@ -75,7 +72,7 @@ def save_result(
 
     now = datetime.now(UTC)
     doc: dict[str, Any] = {
-        "cache_key": cache_key,
+        "_id": cache_key,
         "canonical_json": canonical_json,
         "result": result_dict,
         "meta": meta,
