@@ -9,11 +9,9 @@ from typing import Any
 from mdb_handler import MongoDBHandler
 
 DEFAULT_HISTORY_DB = "kw_ai"
-ENV_HISTORY_DB_KEY = "MONGODB_DATABASE"
-
 
 def _get_collection(collection: str, database: str | None = None):
-    db_name = database or os.getenv(ENV_HISTORY_DB_KEY, DEFAULT_HISTORY_DB)
+    db_name = database or DEFAULT_HISTORY_DB
     mdb = MongoDBHandler()
     return mdb.get_database(db_name, collection)
 
