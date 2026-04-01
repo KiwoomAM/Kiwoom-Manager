@@ -14,7 +14,7 @@ from llm_handler.models import LLMResponse, StreamChunk
 
 from .done_check import DoneCheckResult, done_check
 from .meta import build_meta
-from .store import save_result
+from .store import save_error, save_result
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,25 @@ def _finalize_stream(
         )
 
 
+def _save_error_if_needed(
+    prep: _Prepared, exc: Exception, *, database: str | None = None,
+) -> None:
+    """save_mode가 켜져 있고 dc가 있으면 에러를 MongoDB에 저장한다."""
+    if not prep.save_mode or prep.dc is None:
+        return
+    try:
+        save_error(
+            prep.dc.cache_key, prep.dc.canonical_json,
+            exc, prep.meta, prep.dc.collection,
+            database=database, requested_at=prep.requested_at,
+        )
+    except Exception:
+        logger.exception(
+            "에러 결과 저장 실패: cache_key=%s",
+            prep.dc.cache_key[:16] + "...",
+        )
+
+
 def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
     """LLMResponse를 StreamChunk 1개로 변환한다 (캐시 히트 시 사용)."""
     return StreamChunk(
@@ -237,7 +256,11 @@ def llm_request(
     )
     if prep.cached_output:
         return prep.cached_output
-    res = sync_call(**prep.llm_input)
+    try:
+        res = sync_call(**prep.llm_input)
+    except Exception as exc:
+        _save_error_if_needed(prep, exc, database=database)
+        raise
     return _finalize(prep, res, database=database)
 
 
@@ -258,7 +281,11 @@ async def llm_request_async(
     )
     if prep.cached_output:
         return prep.cached_output
-    res = await aio_call(**prep.llm_input)
+    try:
+        res = await aio_call(**prep.llm_input)
+    except Exception as exc:
+        _save_error_if_needed(prep, exc, database=database)
+        raise
     return _finalize(prep, res, database=database)
 
 
@@ -287,9 +314,13 @@ def llm_request_stream(
 
     def _stream() -> Iterator[StreamChunk]:
         accumulated: list[StreamChunk] = []
-        for chunk in sync_stream(**prep.llm_input):
-            accumulated.append(chunk)
-            yield chunk
+        try:
+            for chunk in sync_stream(**prep.llm_input):
+                accumulated.append(chunk)
+                yield chunk
+        except Exception as exc:
+            _save_error_if_needed(prep, exc, database=database)
+            raise
         _finalize_stream(prep, accumulated, database=database)
 
     return _stream(), _build_live_meta(prep)
@@ -320,9 +351,13 @@ async def llm_request_stream_async(
 
     async def _stream() -> AsyncIterator[StreamChunk]:
         accumulated: list[StreamChunk] = []
-        async for chunk in aio_stream(**prep.llm_input):
-            accumulated.append(chunk)
-            yield chunk
+        try:
+            async for chunk in aio_stream(**prep.llm_input):
+                accumulated.append(chunk)
+                yield chunk
+        except Exception as exc:
+            _save_error_if_needed(prep, exc, database=database)
+            raise
         _finalize_stream(prep, accumulated, database=database)
 
     return _stream(), _build_live_meta(prep)

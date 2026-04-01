@@ -31,7 +31,7 @@ def cache_get(
         저장된 문서 dict, 없으면 None.
     """
     col = _get_collection(collection, database=database)
-    return col.find_one({"_id": cache_key})
+    return col.find_one({"_id": cache_key, "status": {"$ne": "error"}})
 
 
 def cache_set(
@@ -73,6 +73,7 @@ def save_result(
     now = datetime.now(UTC)
     doc: dict[str, Any] = {
         "_id": cache_key,
+        "status": "success",
         "canonical_json": canonical_json,
         "result": result_dict,
         "metadata": meta,
@@ -83,4 +84,41 @@ def save_result(
         doc["elapsed_ms"] = round((now - requested_at).total_seconds() * 1000)
     if ttl_seconds is not None:
         doc["expires_at"] = (now + timedelta(seconds=ttl_seconds)).isoformat()
+    cache_set(doc, collection, database=database)
+
+
+def save_error(
+    cache_key: str,
+    canonical_json: str,
+    error: Exception,
+    meta: dict,
+    collection: str,
+    *,
+    database: str | None = None,
+    requested_at: datetime | None = None,
+) -> None:
+    """LLM 호출 실패 정보를 캐시 문서로 저장한다."""
+    now = datetime.now(UTC)
+
+    error_detail: dict[str, Any] = {
+        "type": type(error).__name__,
+        "message": str(error),
+    }
+    if hasattr(error, "status_code"):
+        error_detail["status_code"] = error.status_code
+    if hasattr(error, "error_type"):
+        error_detail["error_type"] = error.error_type
+
+    doc: dict[str, Any] = {
+        "_id": cache_key,
+        "status": "error",
+        "canonical_json": canonical_json,
+        "error": error_detail,
+        "metadata": meta,
+        "created_at": now.isoformat(),
+    }
+    if requested_at is not None:
+        doc["requested_at"] = requested_at.isoformat()
+        doc["elapsed_ms"] = round((now - requested_at).total_seconds() * 1000)
+
     cache_set(doc, collection, database=database)
