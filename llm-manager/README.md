@@ -128,7 +128,7 @@ response, meta = await llm_request_async(
         "system": "시스템 프롬프트",      # 선택
         "temperature": 0,               # 선택
         "max_tokens": 200,              # 선택
-        "service_name": "my_service",   # 선택 (메타에 기록). 레포 이름과 동일하게 지정 권장
+        "service_name": "my_service",   # 선택 (메타에 기록). 레포 이름과 동일하게 지정 권장 ex. "kiwoom-rm", "kiwoom-esg"
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
     },
@@ -162,7 +162,7 @@ def call(
     tool_config: str | None = None,     # "auto" | "any" | "none"
     history: list[dict] | None = None,  # 이전 대화 이력
     cached_content: str | None = None,  # Context Cache 이름
-    service_name: str | None = None,    # 서비스 식별자 (로깅용). 레포 이름과 동일하게 지정 권장
+    service_name: str | None = None,    # 서비스 식별자 (로깅용). 레포 이름과 동일하게 지정 권장 ex. "kiwoom-rm", "kiwoom-esg"
     media_resolution: str | None = None, # "low" | "medium" | "high" | "ultra_high"
 ) -> LLMResponse
 ```
