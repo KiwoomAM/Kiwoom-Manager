@@ -32,7 +32,7 @@ class AsyncClient:
         try:
             response = await self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
         except httpx.ConnectError as e:
-            raise HandlerConnectionError(f"Handler 연결 실패: {e}") from e
+            raise HandlerConnectionError(f"[위너스 핸들러] 연결 실패: {e}") from e
 
         if response.status_code >= 400:
             try:
@@ -42,7 +42,7 @@ class AsyncClient:
             except Exception:
                 error_msg = response.text
                 detail = None
-            raise HandlerError(error_msg, status_code=response.status_code, detail=detail)
+            raise HandlerError(f"[위너스 핸들러] {error_msg}", status_code=response.status_code, detail=detail)
 
         return response
 
