@@ -98,7 +98,7 @@ def _prepare(
             "source": "cache",
             "cache_hit": True,
             "cache_key": dc.cache_key,
-            "meta": dc.cached.get("meta", {}),
+            "metadata": dc.cached.get("metadata", {}),
             "collection": dc.collection,
         }
         if debug:

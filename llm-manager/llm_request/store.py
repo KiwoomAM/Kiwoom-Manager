@@ -75,7 +75,7 @@ def save_result(
         "_id": cache_key,
         "canonical_json": canonical_json,
         "result": result_dict,
-        "meta": meta,
+        "metadata": meta,
         "created_at": now.isoformat(),
     }
     if requested_at is not None:
