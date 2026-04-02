@@ -36,10 +36,10 @@ class TestBuildLlmInputSubset:
         subset = build_llm_input_subset(llm_input)
         assert subset["system"] == ""
 
-    def test_missing_fields_excluded(self):
+    def test_missing_fields_included_as_empty_string(self):
         llm_input = {"contents": "hello"}
         subset = build_llm_input_subset(llm_input)
-        assert "model" not in subset
+        assert subset["model"] == ""
 
     def test_custom_fields(self):
         llm_input = {"a": 1, "b": 2, "c": 3}
