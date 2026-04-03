@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from llm_handler.models import FileRef, Part
 from llm_request.keying import (
     build_llm_input_subset,
     canonicalize_input,
@@ -162,3 +163,130 @@ class TestMakeCacheKey:
     def test_non_string_input_converted(self):
         key = make_cache_key(12345)
         assert len(key) == 64
+
+
+# ── file_checksums 관련 ──────────────────────────────────────
+
+
+class TestFileChecksumsInSubset:
+
+    def test_file_checksums_included_in_subset(self):
+        llm_input = {"contents": "hello", "file_checksums": ["sha256:abc"]}
+        subset = build_llm_input_subset(llm_input)
+        assert subset["file_checksums"] == ["sha256:abc"]
+
+    def test_file_checksums_absent_becomes_empty(self):
+        llm_input = {"contents": "hello"}
+        subset = build_llm_input_subset(llm_input)
+        assert subset["file_checksums"] == ""
+
+    def test_cached_content_removed_when_file_checksums_present(self):
+        llm_input = {
+            "contents": "hello",
+            "cached_content": "cachedContents/xyz",
+            "file_checksums": ["sha256:abc"],
+        }
+        subset = build_llm_input_subset(llm_input)
+        assert subset["cached_content"] == ""
+
+    def test_cached_content_kept_when_no_file_checksums(self):
+        llm_input = {
+            "contents": "hello",
+            "cached_content": "cachedContents/xyz",
+        }
+        subset = build_llm_input_subset(llm_input)
+        assert subset["cached_content"] == "cachedContents/xyz"
+
+
+class TestFileRefPartNormalization:
+
+    def _make_file_ref(self, uri="files/abc"):
+        return FileRef(name=uri, uri=f"gs://{uri}", mime_type="application/pdf", state="ACTIVE")
+
+    def _make_inline_part(self):
+        return Part(type="inline", data="base64data", mime_type="application/pdf")
+
+    def _make_file_part(self):
+        return Part(type="file", file_uri="files/abc", mime_type="image/png")
+
+    def test_file_ref_sanitized_with_checksums(self):
+        """file_checksums 있으면 FileRef의 URI가 캐시 키에서 제거됨."""
+        inp = {
+            "contents": ["hello", self._make_file_ref("files/abc")],
+            "file_checksums": ["sha256:abc"],
+        }
+        result = canonicalize_llm_input(inp)
+        assert "files/abc" not in result
+        assert "file_ref" in result
+        assert "application/pdf" in result
+
+    def test_inline_part_sanitized_with_checksums(self):
+        """file_checksums 있으면 Part inline의 base64가 캐시 키에서 제거됨."""
+        inp = {
+            "contents": ["hello", self._make_inline_part()],
+            "file_checksums": ["sha256:abc"],
+        }
+        result = canonicalize_llm_input(inp)
+        assert "base64data" not in result
+        assert "inline_part" in result
+
+    def test_file_part_sanitized_with_checksums(self):
+        """file_checksums 있으면 Part file의 file_uri가 캐시 키에서 제거됨."""
+        inp = {
+            "contents": ["hello", self._make_file_part()],
+            "file_checksums": ["sha256:abc"],
+        }
+        result = canonicalize_llm_input(inp)
+        assert "file_part" in result
+        assert "image/png" in result
+
+    def test_same_checksum_different_uri_same_key(self):
+        """같은 checksum + 다른 URI → 동일 캐시 키."""
+        inp_a = {
+            "contents": ["hello", self._make_file_ref("files/aaa")],
+            "file_checksums": ["sha256:same"],
+        }
+        inp_b = {
+            "contents": ["hello", self._make_file_ref("files/bbb")],
+            "file_checksums": ["sha256:same"],
+        }
+        key_a = make_cache_key(canonicalize_llm_input(inp_a))
+        key_b = make_cache_key(canonicalize_llm_input(inp_b))
+        assert key_a == key_b
+
+    def test_different_checksum_different_key(self):
+        """다른 checksum → 다른 캐시 키."""
+        inp_a = {
+            "contents": ["hello", self._make_file_ref()],
+            "file_checksums": ["sha256:aaa"],
+        }
+        inp_b = {
+            "contents": ["hello", self._make_file_ref()],
+            "file_checksums": ["sha256:bbb"],
+        }
+        key_a = make_cache_key(canonicalize_llm_input(inp_a))
+        key_b = make_cache_key(canonicalize_llm_input(inp_b))
+        assert key_a != key_b
+
+    def test_same_checksum_different_cached_content_same_key(self):
+        """같은 checksum + 다른 cached_content → 동일 캐시 키 (B1 패턴)."""
+        inp_a = {
+            "contents": "hello",
+            "cached_content": "cachedContents/aaa",
+            "file_checksums": ["sha256:same"],
+        }
+        inp_b = {
+            "contents": "hello",
+            "cached_content": "cachedContents/bbb",
+            "file_checksums": ["sha256:same"],
+        }
+        key_a = make_cache_key(canonicalize_llm_input(build_llm_input_subset(inp_a)))
+        key_b = make_cache_key(canonicalize_llm_input(build_llm_input_subset(inp_b)))
+        assert key_a == key_b
+
+    def test_no_file_checksums_uses_str_fallback(self):
+        """file_checksums 없으면 기존 동작 유지 (str fallback)."""
+        inp = {"contents": ["hello", self._make_file_ref("files/abc")]}
+        result = canonicalize_llm_input(inp)
+        # str(FileRef) 폴백이므로 URI가 포함됨
+        assert "files/abc" in result

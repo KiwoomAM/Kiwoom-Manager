@@ -10,8 +10,9 @@ from llm_handler import call as sync_call
 from llm_handler import stream as sync_stream
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
-from llm_handler.models import LLMResponse, StreamChunk
+from llm_handler.models import FileRef, LLMResponse, Part, StreamChunk
 
+from .checksum import file_checksum as _compute_checksum
 from .done_check import DoneCheckResult, done_check
 from .meta import build_meta
 from .store import save_result
@@ -32,6 +33,34 @@ class _Prepared:
     dc: DoneCheckResult | None
     cached_output: tuple[LLMResponse, dict[str, Any]] | None
     route_reason: str | None
+    file_meta: list[dict] | None
+
+
+# ── file_paths 처리 ───────────────────────────────────────────
+
+def _needs_file_paths(llm_input: dict) -> bool:
+    """contents에 FileRef/Part가 있거나 cached_content가 있으면 True."""
+    contents = llm_input.get("contents")
+    if isinstance(contents, list):
+        if any(isinstance(c, (FileRef, Part)) for c in contents):
+            return True
+    return bool(llm_input.get("cached_content"))
+
+
+def _resolve_file_meta(
+    llm_input: dict, file_paths: list[str] | None,
+) -> list[dict] | None:
+    """file_paths → file_meta 변환 + 검증."""
+    if not _needs_file_paths(llm_input):
+        return None
+
+    if not file_paths:
+        raise ValueError(
+            "contents에 FileRef/Part가 포함되었거나 cached_content가 사용된 경우 "
+            "file_paths를 반드시 제공해야 합니다."
+        )
+
+    return [_compute_checksum(p) for p in file_paths]
 
 
 # ── prepare / finalize ─────────────────────────────────────────
@@ -39,6 +68,7 @@ class _Prepared:
 def _prepare(
     llm_input: dict,
     *,
+    file_paths: list[str] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -49,6 +79,24 @@ def _prepare(
     meta = build_meta(llm_input)
     requested_at = datetime.now(UTC)
 
+    # ── file_paths → file_meta 변환 + 검증 ──────────────────
+    if cache_mode or save_mode:
+        file_meta = _resolve_file_meta(llm_input, file_paths)
+    else:
+        # 캐시/저장 둘 다 꺼져있으면 checksum 불필요, warning만
+        file_meta = None
+        if _needs_file_paths(llm_input) and not file_paths:
+            logger.warning(
+                "파일이 포함된 요청이지만 file_paths가 없습니다. "
+                "cache_mode 또는 save_mode 활성화 시 file_paths가 필요합니다."
+            )
+
+    # keying용 입력: file_meta가 있으면 checksum만 주입
+    if file_meta:
+        keying_input = {**llm_input, "file_checksums": [m["checksum"] for m in file_meta]}
+    else:
+        keying_input = llm_input
+
     # ── ① cache_mode=F, save_mode=F → 캐시/키 불필요 ────────
     if not cache_mode and not save_mode:
         return _Prepared(
@@ -58,11 +106,12 @@ def _prepare(
             requested_at=requested_at,
             dc=None, cached_output=None,
             route_reason="cache_off_save_off" if debug else None,
+            file_meta=None,
         )
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
     if not cache_mode:
-        dc = done_check(llm_input, lookup_cache=False, database=database)
+        dc = done_check(keying_input, lookup_cache=False, database=database)
         return _Prepared(
             llm_input=llm_input, meta=meta,
             cache_mode=False, save_mode=True,
@@ -70,10 +119,11 @@ def _prepare(
             requested_at=requested_at,
             dc=dc, cached_output=None,
             route_reason="cache_off_save_on" if debug else None,
+            file_meta=file_meta,
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
-    dc = done_check(llm_input, lookup_cache=True, database=database)
+    dc = done_check(keying_input, lookup_cache=True, database=database)
 
     if dc.cached is not None:
         cached_raw = dc.cached.get("result", {})
@@ -92,6 +142,7 @@ def _prepare(
                 requested_at=requested_at,
                 dc=dc, cached_output=None,
                 route_reason="cache_deserialize_error" if debug else None,
+                file_meta=file_meta,
             )
 
         cached_meta: dict[str, Any] = {
@@ -111,6 +162,7 @@ def _prepare(
             requested_at=requested_at,
             dc=dc, cached_output=(cached_result, cached_meta),
             route_reason="cache_hit" if debug else None,
+            file_meta=file_meta,
         )
 
     # cache miss (또는 cache error)
@@ -122,6 +174,7 @@ def _prepare(
         requested_at=requested_at,
         dc=dc, cached_output=None,
         route_reason=route_reason if debug else None,
+        file_meta=file_meta,
     )
 
 
@@ -150,6 +203,7 @@ def _finalize(
                 llm_result, prep.meta, prep.dc.collection,
                 database=database, ttl_seconds=prep.ttl_seconds,
                 requested_at=prep.requested_at,
+                file_meta=prep.file_meta,
             )
         except Exception:
             logger.exception(
@@ -200,6 +254,7 @@ def _finalize_stream(
             assembled, prep.meta, prep.dc.collection,
             database=database, ttl_seconds=prep.ttl_seconds,
             requested_at=prep.requested_at,
+            file_meta=prep.file_meta,
         )
     except Exception:
         logger.exception(
@@ -223,6 +278,7 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
 def llm_request(
     llm_input: dict,
     *,
+    file_paths: list[str] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -232,6 +288,7 @@ def llm_request(
     """단일 LLM 요청 실행 (sync). (LLMResponse, meta) 튜플 반환."""
     prep = _prepare(
         llm_input,
+        file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
     )
@@ -244,6 +301,7 @@ def llm_request(
 async def llm_request_async(
     llm_input: dict,
     *,
+    file_paths: list[str] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -253,6 +311,7 @@ async def llm_request_async(
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환."""
     prep = _prepare(
         llm_input,
+        file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
     )
@@ -265,6 +324,7 @@ async def llm_request_async(
 def llm_request_stream(
     llm_input: dict,
     *,
+    file_paths: list[str] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -274,6 +334,7 @@ def llm_request_stream(
     """스트리밍 LLM 요청 (sync). 항상 (Iterator[StreamChunk], meta) 튜플 반환."""
     prep = _prepare(
         llm_input,
+        file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
     )
@@ -298,6 +359,7 @@ def llm_request_stream(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
+    file_paths: list[str] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -307,6 +369,7 @@ async def llm_request_stream_async(
     """스트리밍 LLM 요청 (async). 항상 (AsyncIterator[StreamChunk], meta) 튜플 반환."""
     prep = _prepare(
         llm_input,
+        file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
     )

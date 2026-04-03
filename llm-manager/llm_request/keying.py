@@ -13,6 +13,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from llm_handler.models import FileRef, Part
+
 logger = logging.getLogger(__name__)
 
 # ── 상수 / 설정 ──────────────────────────────────────────────
@@ -34,6 +36,7 @@ _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "tools",
     "tool_config",
     "media_resolution",
+    "file_checksums",
 )
 # 살릴 소수점 자리수
 DEFAULT_FLOAT_NDIGITS: int = 4
@@ -72,6 +75,9 @@ def build_llm_input_subset(
     """
     subset = {k: llm_input.get(k) for k in fields}
     subset = {k: ("" if v is None else v) for k, v in subset.items()}
+    # file_checksums가 있으면 cached_content는 volatile → 캐시 키에서 제외
+    if subset.get("file_checksums"):
+        subset["cached_content"] = ""
     return subset
 
 
@@ -99,6 +105,8 @@ def canonicalize_llm_input(
     Returns:
         canonical JSON 문자열. 예외 시에도 항상 문자열을 반환한다.
     """
+
+    has_file_checksums = bool(llm_input.get("file_checksums"))
 
     def _normalize(obj: Any) -> Any:  # noqa: C901
         if isinstance(obj, dict):
@@ -143,6 +151,13 @@ def canonicalize_llm_input(
 
         if isinstance(obj, (str, int, bool)) or obj is None:
             return obj
+
+        # FileRef/Part 정규화: file_checksums가 있으면 volatile 데이터 제거
+        if has_file_checksums:
+            if isinstance(obj, FileRef):
+                return {"_type": "file_ref", "mime_type": obj.mime_type}
+            if isinstance(obj, Part):
+                return {"_type": f"{obj.type}_part", "mime_type": obj.mime_type}
 
         try:
             return str(obj)

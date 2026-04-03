@@ -37,6 +37,20 @@ class TestSaveResult:
         assert "requested_at" in doc
 
 
+    def test_saved_doc_with_file_meta(self, mock_collection):
+        file_meta = [{"checksum": "sha256:abc", "filename": "report.pdf", "size": 12345, "mime_type": "application/pdf"}]
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION, file_meta=file_meta)
+
+        doc = mock_collection[CACHE_KEY]
+        assert doc["file_meta"] == file_meta
+
+    def test_saved_doc_without_file_meta(self, mock_collection):
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION)
+
+        doc = mock_collection[CACHE_KEY]
+        assert "file_meta" not in doc
+
+
 class TestCacheGet:
     """cache_get: 문서 조회 확인."""
 

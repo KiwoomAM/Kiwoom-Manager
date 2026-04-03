@@ -68,6 +68,7 @@ def save_result(
     database: str | None = None,
     ttl_seconds: int | None = None,
     requested_at: datetime | None = None,
+    file_meta: list[dict] | None = None,
 ) -> None:
     """LLM 결과를 캐시 문서로 구성하여 저장한다.
 
@@ -83,6 +84,8 @@ def save_result(
         "metadata": meta,
         "created_at": now.isoformat(),
     }
+    if file_meta:
+        doc["file_meta"] = file_meta
     if requested_at is not None:
         doc["requested_at"] = requested_at.isoformat()
         doc["elapsed_ms"] = round((now - requested_at).total_seconds() * 1000)

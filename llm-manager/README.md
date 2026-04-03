@@ -29,6 +29,7 @@ packages/llm-request/llm_request/
 ├── done_check.py                 # 캐시 키 생성·조회 (DoneCheckResult)
 ├── store.py                      # MongoDB 캐시 get/set (mdb_handler 연동)
 ├── keying.py                     # llm_input canonicalize → SHA-256 캐시 키
+├── checksum.py                   # 파일 checksum + 메타정보 추출 (내부 유틸리티)
 ├── meta.py                       # llm_input → 저장용 meta dict (build_meta)
 └── DESIGN.md                     # 설계 문서
 ```
@@ -113,7 +114,7 @@ print(f"source:{meta['source']}")  # 'live' 또는 'cache'
 
 | 함수 | 파라미터 | 반환 타입 | **설명** |
 | --- | --- | --- | --- |
-| `llm_request` | `llm_input: dict`, `*`, `cache_mode=True`, `save_mode=True`, `ttl_seconds=None`, `debug=False`, `database=None` | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
+| `llm_request` | `llm_input: dict`, `*`, `file_paths=None`, `cache_mode=True`, `save_mode=True`, `ttl_seconds=None`, `debug=False`, `database=None` | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
 | `llm_request_async` | 위와 동일 | `tuple[LLMResponse, dict]` | **비동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.aio.call`, 히트면 캐시 결과 반환. |
 | `llm_request_stream` | 위와 동일 | `tuple[Iterator[StreamChunk], dict]` | **동기 스트리밍 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.stream`, 히트면 캐시 결과 반환. |
 | `llm_request_stream_async` | 위와 동일 | `tuple[AsyncIterator[StreamChunk], dict]` | **비동기 스트리밍 LLM 호출.** 캐시 조회 후 미스면 `llm_handler.aio.stream`, 히트면 캐시 결과 반환. |
@@ -132,6 +133,7 @@ response, meta = await llm_request_async(
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
     },
+    file_paths=["report.pdf"],  # 파일 사용 시 경로 리스트. 텍스트만이면 생략 가능
     cache_mode=True,            # 기본 True
     save_mode=True,             # 기본 True
     ttl_seconds=3600,           # 기본 None (예시로 3600 지정)
@@ -345,6 +347,7 @@ for chunk in stream_iter:
 | `tools` | 도구 정의 |
 | `tool_config` | 도구 설정 |
 | `media_resolution` | 미디어 해상도 |
+| `file_checksums` | 파일 checksum 리스트 (file_paths에서 자동 생성) |
 
 이 목록에 **없는 필드는 캐시 키에 반영되지 않음**.
 
@@ -512,6 +515,7 @@ cache_key = make_cache_key(canon)
 | `canonical_json` | 캐시 키 계산에 쓰인 정규화 JSON 문자열 |
 | `result` | LLM 결과 **dict** (`LLMResponse.model_dump()` 또는 Stream 병합 dict) |
 | `meta` | `build_meta(llm_input)` — `service_name`, `model` |
+| `file_meta` | 파일 checksum + 메타정보 리스트 (`file_paths` 전달 시에만) |
 | `created_at` | 저장 시각(UTC ISO) |
 | `requested_at`, `elapsed_ms` | LLM 요청 시간, LLM 소요시간 |
 | `expires_at` | `ttl_seconds`가 있을 때만 |
@@ -535,7 +539,7 @@ cache_key = make_cache_key(canon)
 
 ![image.png](attachment:5fad32ac-7f32-4d05-a2c5-c306141cc389:image.png)
 
-## `llm_request(llm_input, *, cache_mode=True, save_mode=True, …) -> tuple[LLMResponse, dict]`
+## `llm_request(llm_input, *, file_paths=None, cache_mode=True, save_mode=True, …) -> tuple[LLMResponse, dict]`
 
 ```python
 from llm_request import llm_request
@@ -665,15 +669,39 @@ for chunk in stream:
 
 ---
 
-### 파일 포함 시 캐시 키 주의
+### 파일 포함 시 `file_paths` 필수
 
-`contents`에 `FileRef`를 넣으면 **파일 URI**가 캐시 키에 포함됩니다.
+파일을 LLM에 전달하는 경우(`FileRef`, `Part`, `cached_content` 등) `file_paths` 파라미터로 원본 파일 경로를 전달해야 합니다.
 
-동일한 파일을 `upload_file()`로 **재업로드**하면 URI가 달라져 캐시 미스가 발생합니다.
+```python
+# FileRef 방식
+file_ref = upload_file("report.pdf")
+response, meta = await llm_request_async(
+    {"contents": ["분석해줘", file_ref]},
+    file_paths=["report.pdf"],
+)
 
-- 동일 파일을 여러 번 사용하려면 `FileRef`를 재사용하거나 URI를 `Part.from_uri()`로 고정하세요.
-- `Part.from_bytes()` / `Part.from_file()`의 경우 base64 hex가 캐시 키에 포함되므로 파일 내용이 같으면 동일 키가 생성됩니다.
-- > 해당 부분은 다음 업데이트 시 pdf가 동일한 경우 동일한 cache_key가 될 수 있도록 개선할 예정입니다.
+# Context Cache 방식 (ESG 패턴)
+cache_name = create_cache([file_ref], system_prompt)
+response, meta = await llm_request_async(
+    {"contents": "분석해줘", "cached_content": cache_name},
+    file_paths=["report.pdf"],
+)
+```
+
+- `file_paths`가 있으면 파일 내용의 **SHA-256 checksum**으로 캐시 키를 생성합니다.
+- 같은 파일 내용 → 같은 checksum → **캐시 히트** (재업로드, 다른 URI여도 무관)
+- 파일 내용 변경 → 다른 checksum → **캐시 미스** (자동 재평가)
+- **파일명은 캐시 키에 영향 없음** — 이름이 바뀌어도 내용이 같으면 캐시 히트
+- 파일명, 크기, MIME 타입은 MongoDB에 `file_meta`로 저장되어 추적/조회 가능
+- `file_paths` 없이 `FileRef`/`Part`/`cached_content`를 사용하면 `ValueError` 발생
+- 텍스트만 사용 시 `file_paths` 생략 가능
+
+> **주의: file_paths와 contents 파일 일치 책임**
+>
+> `file_paths`에 전달한 파일과 `contents`에 포함된 `FileRef`/`Part`가 실제로 같은 파일인지는
+> llm_request에서 검증할 수 없습니다. 잘못된 경로를 전달하면 캐시 키가 잘못 생성됩니다.
+> **반드시 동일한 파일 경로를 사용하세요.**
 
 ---
 
