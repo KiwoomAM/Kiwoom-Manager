@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from llm_handler.models import LLMResponse, StreamChunk
 from mdb_handler import MongoDBHandler
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HISTORY_DB = "kw_ai"
 
@@ -84,3 +89,65 @@ def save_result(
     if ttl_seconds is not None:
         doc["expires_at"] = (now + timedelta(seconds=ttl_seconds)).isoformat()
     cache_set(doc, collection, database=database)
+
+
+def fetch_by_cache_key(
+    cache_key: str,
+    *,
+    database: str | None = None,
+    as_stream: bool = False,
+) -> tuple[LLMResponse, dict[str, Any]] | tuple[Iterator[StreamChunk], dict[str, Any]]:
+    """cache_key로 MongoDB에서 캐시된 LLM 결과를 조회하여 반환한다.
+
+    Args:
+        cache_key: done_check에서 받은 SHA-256 캐시 키.
+        database: DB명 (None이면 kw_ai).
+        as_stream: True면 StreamChunk Iterator로 반환.
+
+    Returns:
+        (LLMResponse, meta) 또는 (Iterator[StreamChunk], meta).
+
+    Raises:
+        KeyError: cache_key에 해당하는 문서가 없을 때.
+        ValueError: result 역직렬화 실패 시.
+    """
+    from .done_check import DEFAULT_COLLECTION
+
+    doc = cache_get(cache_key, DEFAULT_COLLECTION, database=database)
+
+    if doc is None:
+        logger.error(
+            "캐시 조회 실패: cache_key=%s 에 해당하는 문서 없음",
+            cache_key[:16] + "...",
+        )
+        raise KeyError(f"cache_key '{cache_key[:16]}...' 에 해당하는 캐시 문서가 없습니다.")
+
+    try:
+        response = LLMResponse.model_validate(doc.get("result", {}))
+    except Exception as e:
+        logger.error(
+            "캐시 결과 역직렬화 실패: cache_key=%s",
+            cache_key[:16] + "...",
+            exc_info=True,
+        )
+        raise ValueError(f"cache_key '{cache_key[:16]}...' 결과 역직렬화 실패") from e
+
+    meta: dict[str, Any] = {
+        "source": "cache",
+        "cache_hit": True,
+        "cache_key": cache_key,
+        "metadata": doc.get("metadata", {}),
+        "collection": DEFAULT_COLLECTION,
+    }
+
+    if as_stream:
+        def _iter() -> Iterator[StreamChunk]:
+            yield StreamChunk(
+                text=response.text,
+                finish_reason=response.finish_reason,
+                usage=response.usage,
+                function_calls=response.function_calls,
+            )
+        return _iter(), meta
+
+    return response, meta

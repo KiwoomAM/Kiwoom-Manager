@@ -1,8 +1,10 @@
-"""store.py 테스트 — save_result, cache_get."""
+"""store.py 테스트 — save_result, cache_get, fetch_by_cache_key."""
 
 from __future__ import annotations
 
-from llm_request.store import cache_get, save_result
+import pytest
+from llm_handler.models import LLMResponse, StreamChunk
+from llm_request.store import cache_get, fetch_by_cache_key, save_result
 
 from conftest import SAMPLE_LLM_INPUT, SAMPLE_RESPONSE
 
@@ -44,3 +46,39 @@ class TestCacheGet:
 
     def test_returns_none_when_missing(self, mock_collection):
         assert cache_get("nonexistent-key", COLLECTION) is None
+
+
+class TestFetchByCacheKey:
+    """fetch_by_cache_key: cache_key로 직접 조회 + LLMResponse/StreamChunk 변환."""
+
+    def test_returns_llm_response(self, mock_collection):
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        response, meta = fetch_by_cache_key(CACHE_KEY)
+
+        assert isinstance(response, LLMResponse)
+        assert response.text == "응답입니다"
+        assert meta["source"] == "cache"
+        assert meta["cache_hit"] is True
+        assert meta["cache_key"] == CACHE_KEY
+        assert meta["collection"] == "agent_llm"
+
+    def test_returns_stream_chunk(self, mock_collection):
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        stream_iter, meta = fetch_by_cache_key(CACHE_KEY, as_stream=True)
+
+        chunks = list(stream_iter)
+        assert len(chunks) == 1
+        assert isinstance(chunks[0], StreamChunk)
+        assert chunks[0].text == "응답입니다"
+        assert meta["source"] == "cache"
+
+    def test_raises_key_error_when_missing(self, mock_collection):
+        with pytest.raises(KeyError):
+            fetch_by_cache_key("nonexistent-key")
+
+    def test_meta_contains_metadata(self, mock_collection):
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        _, meta = fetch_by_cache_key(CACHE_KEY)
+
+        assert "metadata" in meta
+        assert meta["metadata"]["model"] == "flash"

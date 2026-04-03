@@ -223,7 +223,7 @@ response, meta = llm_request(
     "source":     "live" | "cache",
     "cache_hit":  bool,
     "cache_key":  str | None,    # SHA-256 (64자)
-    "meta":       dict,          # {service_name, model}
+    "metadata":   dict,          # {service_name, model}
     "collection": str | None,    # MongoDB 컬렉션명 (agent_llm)
     "route_reason": str,         # debug = True 시 추가됨
 }
@@ -284,6 +284,40 @@ if dc.cached is not None:
     print("text 앞부분:", (text or "")[:80])
 else:
     print("캐시 미스 또는 조회 실패") # dc.cache가 None인 경우 조회 실패 혹은 cache 존재하지 않음
+```
+
+## fetch_by_cache_key function 상세 설명
+
+---
+
+> 이미 `done_check`으로 받은 `cache_key`를 가지고 있을 때, `llm_input` 재구성 없이 **cache_key만으로** 캐시 결과를 조회하여 `llm_request`와 동일한 형식으로 반환
+
+`fetch_by_cache_key(cache_key, *, database=None, as_stream=False)`
+
+- `database`: DB명 (기본 `kw_ai`)
+- `as_stream=False`: `(LLMResponse, meta)` 반환 — `llm_request`와 동일
+- `as_stream=True`: `(Iterator[StreamChunk], meta)` 반환 — `llm_request_stream`과 동일
+- 캐시 키에 해당하는 문서가 없으면 `KeyError` 발생
+
+```python
+from llm_request import done_check, fetch_by_cache_key
+
+# ① done_check으로 캐시 키 확보
+dc = done_check(
+    {"contents": "대한민국의 수도는?", "model": "gemini-3-flash-preview"},
+    lookup_cache=False,
+)
+cache_key = dc.cache_key  # 이 키를 클라이언트가 보관
+
+# ② 나중에 cache_key만으로 결과 조회 (일반)
+response, meta = fetch_by_cache_key(cache_key)
+print(response.text)
+print(meta["source"])  # "cache"
+
+# ③ 스트리밍 형식으로 조회
+stream_iter, meta = fetch_by_cache_key(cache_key, as_stream=True)
+for chunk in stream_iter:
+    print(chunk.text)
 ```
 
 ### Hashing(내부 함수로 외부에서 사용할 수 없음)
