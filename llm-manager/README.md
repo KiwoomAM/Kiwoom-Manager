@@ -223,7 +223,7 @@ response, meta = llm_request(
     "source":     "live" | "cache",
     "cache_hit":  bool,
     "cache_key":  str | None,    # SHA-256 (64자)
-    "meta":       dict,          # {service_name, model}
+    "metadata":   dict,          # {service_name, model}
     "collection": str | None,    # MongoDB 컬렉션명 (agent_llm)
     "route_reason": str,         # debug = True 시 추가됨
 }
@@ -286,66 +286,161 @@ else:
     print("캐시 미스 또는 조회 실패") # dc.cache가 None인 경우 조회 실패 혹은 cache 존재하지 않음
 ```
 
+## fetch_by_cache_key function 상세 설명
+
+---
+
+> 이미 `done_check`으로 받은 `cache_key`를 가지고 있을 때, `llm_input` 재구성 없이 **cache_key만으로** 캐시 결과를 조회하여 `llm_request`와 동일한 형식으로 반환
+
+`fetch_by_cache_key(cache_key, *, database=None, as_stream=False)`
+
+- `database`: DB명 (기본 `kw_ai`)
+- `as_stream=False`: `(LLMResponse, meta)` 반환 — `llm_request`와 동일
+- `as_stream=True`: `(Iterator[StreamChunk], meta)` 반환 — `llm_request_stream`과 동일
+- 캐시 키에 해당하는 문서가 없으면 `KeyError` 발생
+
+```python
+from llm_request import done_check, fetch_by_cache_key
+
+# ① done_check으로 캐시 키 확보
+dc = done_check(
+    {"contents": "대한민국의 수도는?", "model": "gemini-3-flash-preview"},
+    lookup_cache=False,
+)
+cache_key = dc.cache_key  # 이 키를 클라이언트가 보관
+
+# ② 나중에 cache_key만으로 결과 조회 (일반)
+response, meta = fetch_by_cache_key(cache_key)
+print(response.text)
+print(meta["source"])  # "cache"
+
+# ③ 스트리밍 형식으로 조회
+stream_iter, meta = fetch_by_cache_key(cache_key, as_stream=True)
+for chunk in stream_iter:
+    print(chunk.text)
+```
+
 ### Hashing(내부 함수로 외부에서 사용할 수 없음)
 
 ---
 
 ### 1. `llm_input`에서 일부 필드만 뽑음
 
-캐시 키는 **`llm_input` dict의 일부 필드만** 사용함.
+캐시 키는 **`llm_input` dict의 아래 필드만** 사용함.
 
-`_LLM_INPUT_FIELDS`:
+| 필드 | 설명 |
+|------|------|
+| `contents` | 필수. 질문/프롬프트 |
+| `system` | 시스템 프롬프트 |
+| `history` | 이전 대화 이력 |
+| `model` | 모델명 |
+| `max_tokens` | 최대 출력 토큰 수 |
+| `temperature` | 온도 |
+| `cached_content` | Context Cache 이름 |
+| `service_name` | 서비스 식별자 |
+| `seed` | 재현성 시드값 |
+| `output` | 출력 형식 |
+| `schema` | 출력 스키마 |
+| `thinking` | 사고 수준 |
+| `tools` | 도구 정의 |
+| `tool_config` | 도구 설정 |
+| `media_resolution` | 미디어 해상도 |
 
-- `contents`, `system`, `history`, `model`, `max_tokens`, `temperature`, `cached_content`, `service_name`, `seed`, `output`, `schema`, `thinking`, `tools`, `tool_config`, `media_resolution`
-
-이 목록에 **없는 값은 캐시 키에 반영되지 않음**.
+이 목록에 **없는 필드는 캐시 키에 반영되지 않음**.
 
 ---
 
-### 2. subset 만들 때 1차 전처리
+### 2. subset 전처리 — `llm_input`의 최상위 필드 대상
 
-`build_llm_input_subset()`에서:
+`build_llm_input_subset()`에서 위 필드를 추출하고, 값이 `None`이거나 키가 없으면 `""`로 치환.
 
-- 1번 필드만 추출
-- 값이 `None`이면 `""`로 치환
-- 키가 아예 없으면 포함하지 않음
+```python
+llm_input = {"contents": "안녕", "temperature": None}
+
+# 결과 subset:
+{
+    "contents": "안녕",       # 값 있음 → 그대로
+    "temperature": "",        # None → "" 치환
+    "model": "",              # 키 없음 → "" 치환
+    "seed": "",               # 키 없음 → "" 치환
+    ...                       # 나머지 필드도 모두 "" 포함
+}
+```
 
 ---
 
-### 3. canonicalize에서 2차 정규화
+### 3. 정규화 (canonicalize) — 각 필드 값의 내부 데이터 대상
 
-`canonicalize_llm_input()`에서 캐시 키용 문자열로 만들기 전에 정규화함.
+`canonicalize_llm_input()`에서 각 필드 값 내부의 dict, list, float 등을 재귀적으로 정규화함.
 
-전처리 종류:
+```python
+# tools 필드 값 내부의 데이터가 정규화 대상
+"tools": [
+    {
+        "name": "search",
+        "timestamp": "2026-04-02",   # ← volatile 키 → 제거
+        "config": {
+            "timeout": None,          # ← None → ""
+            "rate": 0.30000001,       # ← float → 0.3
+        }
+    }
+]
+```
 
-- **dict**
-    - 키를 문자열로 변환
-    - 아래 volatile 키는 제거
-        - `timestamp`
-        - `ts`
-        - `created_at`
-        - `updated_at`
-        - `request_id`
-        - `trace_id`
-    - 값 정규화 후 `None`이면 `""`로 치환
-- **list / tuple**
-    - 각 원소 재귀 정규화
-    - 기본값은 **순서 유지**
-    - 옵션으로 순서 무시 정렬 가능
-- **float**
-    - 소수점 **4자리 반올림**
-- **Decimal**
-    - 정규화 후 문자열 변환
-- **datetime / date**
-    - `isoformat()` 문자열 변환
-- **bytes / bytearray**
-    - hex 문자열 변환
-- **str / int / bool / None**
-    - 그대로 사용
-    - 단, dict 내부에서는 결과적으로 `None -> ""` 처리될 수 있음
-- **기타 타입**
-    - 가능하면 `str(obj)`
-    - 실패하면 `""`
+#### dict
+
+- 키를 문자열로 변환
+- 값 정규화 후 `None`이면 `""`로 치환
+- 아래 volatile 키는 제거 — **요청마다 달라지는 메타데이터**이므로, 포함하면 같은 내용의 요청도 다른 해시가 됨
+
+| 키 | 성격 |
+|----|------|
+| `timestamp`, `ts`, `created_at`, `updated_at` | 시간 정보 |
+| `request_id`, `trace_id` | 요청 추적용 고유 ID |
+
+#### list / tuple
+
+- 각 원소에 정규화를 재귀 적용
+- **기본값은 순서 유지** — `["A", "B"]` ≠ `["B", "A"]` (다른 해시)
+- 옵션(`preserve_list_order=False`)으로 순서 무시 가능
+
+> `contents`나 `history`는 메시지 순서가 중요하므로 기본값(순서 유지)이 적합.
+> 태그 목록 같이 순서가 무의미한 경우에만 정렬 옵션 사용.
+
+#### float
+
+- 소수점 **4자리 반올림** — 부동소수점 미세 오차로 다른 해시가 되는 것 방지
+
+```python
+0.30000001 → 0.3    # 같은 해시
+0.3        → 0.3    # 같은 해시
+```
+
+#### Decimal
+
+- `Decimal.normalize()` 호출 후 문자열 변환 — 같은 값의 표현 차이를 통일
+
+```python
+Decimal("1.200") → "1.2"
+Decimal("1.2")   → "1.2"   # 같은 해시
+```
+
+#### datetime / date
+
+- `isoformat()` 문자열 변환 — JSON 직렬화 불가 타입이므로 고정 형식 문자열로 변환
+
+#### bytes / bytearray
+
+- hex 문자열 변환 — JSON 직렬화 불가 타입이므로 변환 (`b'\xff\x00'` → `"ff00"`)
+
+#### str / int / bool / None
+
+- 그대로 사용 (JSON 표준 타입)
+- 단, dict 내부에서는 `None` → `""` 치환됨
+
+#### 기타 타입
+
+- `str(obj)` 시도, 실패하면 `""` — 예상 못 한 타입이 들어와도 해시 생성이 실패하지 않도록 하는 fallback
 
 ---
 
@@ -353,9 +448,18 @@ else:
 
 정규화된 값을 `json.dumps()`로 직렬화.
 
-- **키 정렬**
-- **공백 없는 한 줄 JSON**
-- **같은 입력이면 항상 같은 문자열**
+- **dict 키의 알파벳 정렬** — 삽입 순서가 달라도 같은 결과 (리스트 원소 순서와는 무관)
+- **JSON 구분자(`:`, `,`) 뒤의 포맷용 공백 제거** — 값 안의 공백은 그대로 유지
+
+```python
+{"contents":"안녕 하세요","model":"gpt-4"}
+#                ↑ 값 내 공백은 유지
+# ↑ 구분자 공백 없음
+
+# 따라서 값 안의 공백 차이는 다른 해시:
+"안녕하세요"  → 해시 A
+"안녕하세요 " → 해시 B  (뒤에 공백 하나)
+```
 
 ---
 
@@ -377,10 +481,10 @@ llm_input = {
     # service_name 등 메타 전용 필드는 해시에 포함됨 (의도적 — 서비스별 캐시 분리)
 }
 
-# ① subset: 지정 필드만 + None → ""
+# ① subset: 15개 필드 전부 포함 + None/미입력 → ""
 subset = build_llm_input_subset(llm_input)
 print("subset:", subset)
-# 예: {'contents': '수도는?', 'model': '...', 'system': '', 'temperature': 0.30000001, ...}
+# 예: {'contents': '수도는?', 'model': '...', 'system': '', 'temperature': 0.30000001, 'seed': '', ...}
 
 # ② canonical JSON 문자열 (SHA 직전)
 canon = canonicalize_llm_input(subset)

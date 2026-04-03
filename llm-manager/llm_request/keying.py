@@ -70,7 +70,7 @@ def build_llm_input_subset(
     Returns:
         필요한 필드만 포함된 dict.
     """
-    subset = {k: llm_input[k] for k in fields if k in llm_input}
+    subset = {k: llm_input.get(k) for k in fields}
     subset = {k: ("" if v is None else v) for k, v in subset.items()}
     return subset
 
