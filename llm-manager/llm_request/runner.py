@@ -98,7 +98,7 @@ def _prepare(
             "source": "cache",
             "cache_hit": True,
             "cache_key": dc.cache_key,
-            "meta": dc.cached.get("meta", {}),
+            "metadata": dc.cached.get("metadata", {}),
             "collection": dc.collection,
         }
         if debug:
@@ -131,7 +131,7 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
         "source": "live",
         "cache_hit": False,
         "cache_key": prep.dc.cache_key if prep.dc else None,
-        "meta": prep.meta,
+        "metadata": prep.meta,
         "collection": prep.dc.collection if prep.dc else None,
     }
     if prep.route_reason:
