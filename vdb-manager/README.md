@@ -58,7 +58,8 @@ embeddings = handler.hybrid.embed("텍스트")
 results = handler.hybrid.search("질문", collection_name="kw_gp")
 
 # 컬렉션 관리 + CRUD
-handler.collection.create("my_col")
+handler.collection.create("my_col")                    # hybrid (기본)
+handler.collection.create("my_col", mode="dense")      # dense-only
 handler.collection.get_points("my_col", ids=[1, 2])
 
 # ColBERT 리랭킹
@@ -115,10 +116,10 @@ VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `create(name, dense_dim, distance, recreate)` | `Dict` | 하이브리드 컬렉션 생성 |
+| `create(name, dense_dim, distance, recreate, mode)` | `Dict` | 컬렉션 생성 (mode: `"dense"` \| `"hybrid"`, 기본 `"hybrid"`) |
 | `info(name)` | `Dict` | 컬렉션 정보 조회 |
 | `delete(name)` | `Dict` | 컬렉션 삭제 |
-| `upsert(collection_name, texts, dense_vectors, sparse_vectors, metadatas, start_id, batch_size)` | `Dict` | 하이브리드 데이터 업로드 |
+| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | 데이터 업로드 (sparse_vectors 생략 시 dense-only) |
 | `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
 | `delete_points(collection_name, ids)` | `Dict` | ID로 포인트 삭제 |
 | `scroll_points(collection_name, limit, offset, with_vectors)` | `Dict` | 포인트 페이지네이션 조회 |
@@ -171,7 +172,7 @@ except VDBHandlerError as e:
 
 ## 사용 패턴
 
-### 문서 임베딩 → 컬렉션 저장
+### 문서 임베딩 → 컬렉션 저장 (Hybrid)
 
 ```python
 handler = VDBHandler()
@@ -182,8 +183,8 @@ metadatas = [
     {"file_name": "report.pdf", "category": "earnings", "page": 2},
 ]
 
-# 컬렉션 생성
-handler.collection.create("my_reports")
+# 하이브리드 컬렉션 생성
+handler.collection.create("my_reports", mode="hybrid")
 
 # 하이브리드 임베딩 (dense + sparse 한번에)
 embeddings = handler.hybrid.embed_batch(texts)
@@ -193,7 +194,33 @@ handler.collection.upsert(
     collection_name="my_reports",
     texts=texts,
     dense_vectors=embeddings["dense"],
+    metadatas=metadatas,
     sparse_vectors=embeddings["sparse"],
+)
+```
+
+### 문서 임베딩 → 컬렉션 저장 (Dense-only)
+
+```python
+handler = VDBHandler()
+
+texts = ["텍스트1", "텍스트2"]
+metadatas = [
+    {"file_name": "report.pdf", "category": "earnings", "page": 1},
+    {"file_name": "report.pdf", "category": "earnings", "page": 2},
+]
+
+# dense-only 컬렉션 생성
+handler.collection.create("my_reports", mode="dense")
+
+# Dense 임베딩만 생성
+dense_vectors = handler.dense.embed_batch(texts)
+
+# 저장 (sparse_vectors 생략)
+handler.collection.upsert(
+    collection_name="my_reports",
+    texts=texts,
+    dense_vectors=dense_vectors,
     metadatas=metadatas,
 )
 ```
@@ -216,8 +243,9 @@ for r in results:
 - **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `VDBHandler.reset()` 후 재생성
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
-- **upsert 정합성**: `texts`, `dense_vectors`, `sparse_vectors`, `metadatas`는 동일 길이 필수
+- **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors` 전달 시 동일 길이 필수
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장
-- **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection`, `upsert_hybrid` 등)은 alias로 유지됨
+- **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection`, `create_hybrid_collection`, `upsert_hybrid` 등)은 alias로 유지됨
+- **mode**: 컬렉션 생성 시 `"dense"` 또는 `"hybrid"` 선택 가능 (기본: `"hybrid"`)
