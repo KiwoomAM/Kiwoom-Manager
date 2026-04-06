@@ -41,7 +41,7 @@ fund_data = query_to_dataframe("SELECT ...")
 prompt = build_prompt(fund_data)
 
 # 3. LLM 호출 (async, 여기가 병목 -- await로 이벤트 루프에 양보)
-result = await run_request_async({"llm_input": {"input": prompt, ...}})
+result = await llm_request_async({"llm_input": {"input": prompt, ...}})
 ```
 
 sync DB 호출이 이벤트 루프를 수 ms 블로킹하지만, LLM의 수 초 대비 무시할 수 있는 수준이다.
@@ -80,10 +80,10 @@ flowchart LR
         Finalize["_finalize()"]
     end
     subgraph wrappers [Public API - 얇은 래퍼]
-        RS["run_request"]
-        RA["run_request_async"]
-        RSS["run_request_stream"]
-        RSA["run_request_stream_async"]
+        RS["llm_request"]
+        RA["llm_request_async"]
+        RSS["llm_request_stream"]
+        RSA["llm_request_stream_async"]
     end
     Prepare --> RS & RA & RSS & RSA
     RS & RA & RSS & RSA --> Finalize
@@ -111,10 +111,10 @@ class _Prepared:
 
 LLM 응답 저장 + `(LLMResponse, meta)` 튜플 반환. `save_mode=True`면 `save_result` 호출.
 
-### Public 함수 (예: run_request_async)
+### Public 함수 (예: llm_request_async)
 
 ```python
-async def run_request_async(state, *, database=None) -> tuple[LLMResponse, dict]:
+async def llm_request_async(state, *, database=None) -> tuple[LLMResponse, dict]:
     prep = _prepare(state, database=database)
     if prep.cached_output:
         return prep.cached_output
@@ -130,22 +130,22 @@ async def run_request_async(state, *, database=None) -> tuple[LLMResponse, dict]
 
 ### 1-1. runner.py 리팩토링
 
-- 기존 `run_request` -> `run_request_async`로 rename
+- 기존 `run_request` -> `llm_request_async`로 rename
 - `_prepare()`, `_finalize()` 추출
-- sync 버전 `run_request` 추가 (llm_handler.call 사용)
+- sync 버전 `llm_request` 추가 (llm_handler.call 사용)
 
 **파일 변경**: [runner.py](runner.py), [\_\_init\_\_.py](__init__.py)
 
 **네이밍 컨벤션**:
 
-- `run_request` -- sync call (기본, 가장 단순)
-- `run_request_async` -- async call
-- `run_request_stream` -- sync stream (2차)
-- `run_request_stream_async` -- async stream (2차)
+- `llm_request` -- sync call (기본, 가장 단순)
+- `llm_request_async` -- async call
+- `llm_request_stream` -- sync stream (2차)
+- `llm_request_stream_async` -- async stream (2차)
 
 ### 1-2. orchestrator.py 신규 생성
 
-다중 handler. 내부적으로 `run_request_async`를 활용.
+다중 handler. 내부적으로 `llm_request_async`를 활용.
 
 **핵심 메커니즘**: `asyncio.as_completed` + `asyncio.Semaphore`
 
@@ -157,9 +157,9 @@ flowchart TB
     subgraph orch [orchestrator 내부]
         Sem["Semaphore(concurrency)"]
         AsComp["asyncio.as_completed"]
-        Worker1["run_request_async(state_1)"]
-        Worker2["run_request_async(state_2)"]
-        WorkerN["run_request_async(state_n)"]
+        Worker1["llm_request_async(state_1)"]
+        Worker2["llm_request_async(state_2)"]
+        WorkerN["llm_request_async(state_n)"]
     end
     user --> Sem
     Sem --> AsComp
@@ -169,7 +169,7 @@ flowchart TB
     WorkerN -->|완료순| AsyncFor
 ```
 
-#### run_many -- 병렬 실행, 완료순 반환, _index로 순서 관리
+#### run_many — 병렬 실행, 완료순 반환, _index로 순서 관리
 
 ```python
 async def run_many(
@@ -192,7 +192,7 @@ async def run_many(states, *, concurrency=5, database=None):
 
     async def _worker(idx: int, state: dict) -> tuple[LLMResponse, dict]:
         async with sem:
-            response, meta = await run_request_async(state, database=database)
+            response, meta = await llm_request_async(state, database=database)
             meta["_index"] = idx
             meta["_state"] = state
             return response, meta
@@ -252,7 +252,7 @@ async for response, meta in run_many(states, concurrency=10):
 - **ESG 평가**: DP당 LLM 1번 호출. 프롬프트가 이미 준비된 상태.
   현재 `ThreadPoolExecutor`를 `run_many`로 대체 가능. (단, genai → llm_handler 전환 필요)
 
-### 패턴 B: 복합 파이프라인 -- `run_request_async` 직접 사용
+### 패턴 B: 복합 파이프라인 -- `llm_request_async` 직접 사용
 
 **적합**: 펀드당 LLM 호출 N번, 이전 LLM 결과에 다음 호출이 의존하는 경우
 
@@ -262,13 +262,13 @@ async def evaluate_fund(fund_code: str) -> dict:
     data = query_to_dataframe("SELECT ... WHERE code = :1", [fund_code])
 
     # 2. LLM #1: 분류 (await로 이벤트 루프에 양보)
-    r1, m1 = await run_request_async({"llm_input": {"input": classify_prompt(data), ...}})
+    r1, m1 = await llm_request_async({"llm_input": {"input": classify_prompt(data), ...}})
 
     # 3. 중간 처리 (sync, 수 ms)
     next_prompt = build_eval_prompt(r1.text, data)
 
     # 4. LLM #2: 평가 (await로 또 양보)
-    r2, m2 = await run_request_async({"llm_input": {"input": next_prompt, ...}})
+    r2, m2 = await llm_request_async({"llm_input": {"input": next_prompt, ...}})
 
     # 5. 등급 산출 (sync)
     return calculate_grade(r2)
@@ -289,13 +289,13 @@ for coro in asyncio.as_completed(tasks):
 **해당 에이전트**:
 
 - **RM 위험등급 산정**: 펀드당 LLM 여러 번 순차 호출 (분류 → 정성 → 검증).
-  각 LLM 호출을 `await run_request_async()`로 교체하면 구조 변경 최소화.
+  각 LLM 호출을 `await llm_request_async()`로 교체하면 구조 변경 최소화.
   여러 펀드 동시 실행은 에이전트가 `Semaphore` + `as_completed`로 직접 구성.
   `ThreadPoolExecutor` + `queue.Queue` 제거 가능.
 
 ### 패턴 비교
 
-| | 패턴 A: run_many | 패턴 B: run_request_async 직접 |
+| | 패턴 A: run_many | 패턴 B: llm_request_async 직접 |
 |---|---|---|
 | 펀드당 LLM 호출 | 1번 | N번 (순차) |
 | state 준비 | 미리 전부 생성 가능 | 이전 LLM 결과에 의존 |
@@ -321,7 +321,7 @@ for coro in asyncio.as_completed(tasks):
 
 | 항목 | 선택지 | 결정 | 이유 |
 |------|--------|------|------|
-| 메타 반환 방식 | **A: 튜플** / B: NamedTuple/dataclass / C: LLMResponse 확장 | **A** | 단순. `response, meta = run_request(state)` |
+| 메타 반환 방식 | **A: 튜플** / B: NamedTuple/dataclass / C: LLMResponse 확장 | **A** | 단순. `response, meta = llm_request(state)` |
 | stream 캐시 히트 | **A: Iterator 통일** — 캐시 텍스트를 StreamChunk 1개로 감싸기 / B: 분기 유지 | **A** | `isinstance` 분기 제거. stream 함수는 항상 동일한 타입 반환 |
 | run_many | **A: 튜플** — yield `(LLMResponse, meta)`, meta에 `_index`, `_state` 포함 / B: dict 유지 | **A** | 단일 함수와 동일한 패턴 |
 | run_many_stream | 이벤트 dict 유지하되, `cache_hit` 이벤트의 `data`를 `(LLMResponse, meta)` 튜플로 변경 | — | 이벤트 프로토콜은 유지하면서 내부 데이터만 튜플화 |
@@ -330,10 +330,10 @@ for coro in asyncio.as_completed(tasks):
 
 | 함수 | 반환 타입 |
 |------|----------|
-| `run_request` | `tuple[LLMResponse, dict]` |
-| `run_request_async` | `tuple[LLMResponse, dict]` |
-| `run_request_stream` | `tuple[Iterator[StreamChunk], dict]` |
-| `run_request_stream_async` | `tuple[AsyncIterator[StreamChunk], dict]` |
+| `llm_request` | `tuple[LLMResponse, dict]` |
+| `llm_request_async` | `tuple[LLMResponse, dict]` |
+| `llm_request_stream` | `tuple[Iterator[StreamChunk], dict]` |
+| `llm_request_stream_async` | `tuple[AsyncIterator[StreamChunk], dict]` |
 | `run_many` | `AsyncIterator[tuple[LLMResponse, dict]]` |
 | `run_many_stream` | `AsyncIterator[dict]` (이벤트 프로토콜 유지) |
 
@@ -358,12 +358,12 @@ for coro in asyncio.as_completed(tasks):
 
 ```python
 # call
-response, meta = run_request(state)
+response, meta = llm_request(state)
 response.text                    # LLMResponse 직접 접근
 meta["cache_hit"]                # 메타
 
 # stream (캐시 히트든 미스든 동일)
-stream, meta = run_request_stream(state)
+stream, meta = llm_request_stream(state)
 for chunk in stream:
     print(chunk.text, end="")
 
@@ -395,14 +395,14 @@ async for response, meta in run_many(states, concurrency=10):
 
 ### 2-1. stream 단일 handler
 
-- `run_request_stream(state) -> tuple[Iterator[StreamChunk], dict]`
-- `run_request_stream_async(state) -> tuple[AsyncIterator[StreamChunk], dict]`
+- `llm_request_stream(state) -> tuple[Iterator[StreamChunk], dict]`
+- `llm_request_stream_async(state) -> tuple[AsyncIterator[StreamChunk], dict]`
 
 **캐시 히트/미스 관계없이 항상 동일한 타입**을 반환한다.
 캐시 히트 시에는 캐시된 텍스트를 StreamChunk 1개로 감싸서 Iterator로 반환한다.
 
 ```python
-stream, meta = run_request_stream(state)
+stream, meta = llm_request_stream(state)
 for chunk in stream:            # 캐시 히트든 미스든 동일한 코드
     print(chunk.text, end="")
 print(f"\ncache_hit: {meta['cache_hit']}")
@@ -412,7 +412,7 @@ print(f"\ncache_hit: {meta['cache_hit']}")
 내부 accumulator가 전체 텍스트를 누적하고, stream 완료 후 `_finalize_stream`으로 1회 저장한다.
 
 ```python
-async def run_request_stream_async(state, *, database=None):
+async def llm_request_stream_async(state, *, database=None):
     prep = _prepare(state, database=database)
     if prep.cached_output:
         response, meta = prep.cached_output
@@ -454,7 +454,7 @@ async def run_request_stream_async(state, *, database=None):
 
 - `asyncio.Queue`를 채널로 사용하여 N개 worker의 chunk를 병합
 - `asyncio.Semaphore`로 동시 실행 제한 (기존 `run_many`와 동일 패턴)
-- 각 worker는 `run_request_stream_async` 호출 후 `meta["cache_hit"]`로 캐시 히트 분기
+- 각 worker는 `llm_request_stream_async` 호출 후 `meta["cache_hit"]`로 캐시 히트 분기
 - 모든 worker 완료 후 sentinel을 넣어 메인 루프 종료
 
 ```python
@@ -482,14 +482,15 @@ async for event in run_many_stream(states):
 ## 파일 구조 (최종)
 
 ```
-llm_worker/
+llm_request/
   __init__.py          # public exports
-  runner.py            # _prepare, _finalize, _finalize_stream, run_request, run_request_async, run_request_stream, run_request_stream_async
+  runner.py            # _prepare, _finalize, _finalize_stream, llm_request, llm_request_async, llm_request_stream, llm_request_stream_async
   orchestrator.py      # run_many, run_many_stream
   done_check.py        # 변경 없음
   keying.py            # 변경 없음
   store.py             # 변경 없음
   meta.py              # 변경 없음
+  checksum.py          # 파일 체크섬 + 메타데이터 추출
   DESIGN.md            # 이 설계 문서
 ```
 

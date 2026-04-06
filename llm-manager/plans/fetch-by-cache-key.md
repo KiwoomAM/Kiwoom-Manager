@@ -1,4 +1,4 @@
-# Plan: cache_key로 직접 캐시 결과 조회 함수 추가
+# Plan: cache_key로 직접 캐시 결과 조회 함수 추가 ✅ 구현 완료
 
 ## Context
 client가 이미 `done_check`으로 받은 `cache_key`를 가지고 있을 때, 다시 `llm_input` → canonicalize → hash 과정 없이 **cache_key만으로** MongoDB에서 결과를 조회하고, 원래 LLM 호출 결과와 동일한 형식(`LLMResponse` 또는 `StreamChunk`)으로 반환하는 함수가 필요.
