@@ -167,3 +167,70 @@ call("분석해줘", cached_content=cache_name)  # contents는 텍스트만
 | 수명 | TTL 기반 (예: 30분) | 영구 (TTL 설정 가능) |
 | 참조 방법 | `cached_content="cachedContents/xyz"` | cache_key (SHA-256) 자동 |
 | 값 특성 | 매번 생성 시 달라짐 (volatile) | 입력 기반 결정적 (deterministic) |
+
+---
+
+## Claude Prompt Caching vs Gemini Context Caching
+
+"파일을 캐시에 올려놓고 여러 질문을 반복"하는 패턴. Claude와 Gemini는 방식이 다르다.
+
+### Claude API (Anthropic) — 자동 prefix 캐싱
+
+`cache_control` 마커만 붙이면, **별도 캐시 생성 없이** prefix가 동일할 때 자동으로 캐시 히트.
+
+```python
+# system이 동일하면 → 두 번째 호출부터 자동 캐시 히트
+system = [{
+    "type": "text",
+    "text": big_file_content,
+    "cache_control": {"type": "ephemeral"}  # 이 마커만 붙이면 됨
+}]
+
+# 질문 1 — 캐시 생성 (1.25x 비용)
+r1 = client.messages.create(model="claude-opus-4-6", system=system,
+    messages=[{"role": "user", "content": "요약해줘"}])
+
+# 질문 2 — 캐시 히트! (0.1x 비용) 다른 함수에서 호출해도 OK
+r2 = client.messages.create(model="claude-opus-4-6", system=system,
+    messages=[{"role": "user", "content": "버그 있어?"}])
+```
+
+**캐시 히트 조건** (이것만 동일하면 자동):
+- 같은 **API key**
+- 같은 **model**
+- **prefix 바이트** 동일 (렌더링 순서: `tools` → `system` → `messages`)
+
+다른 함수, 다른 파일, 심지어 다른 프로세스에서 호출해도 위 조건만 맞으면 히트.
+
+**주의 — 캐시 무효화 원인**:
+- system에 `datetime.now()`, UUID 같은 변하는 값 → 매번 바이트가 달라져 무효화
+- `json.dumps()` 시 `sort_keys=True` 안 쓰면 key 순서 변동
+- tools 목록 순서 변경 (tools가 system보다 먼저 렌더됨)
+
+**TTL**: 기본 5분, `"ttl": "1h"`로 1시간까지. 비용은 write 1.25x, read 0.1x.
+
+### Gemini API (Google) — 명시적 캐시 생성
+
+캐시를 **직접 생성**하고, 반환된 이름으로 **명시적 참조**해야 함.
+
+```python
+# 1. 캐시 명시적 생성
+file_ref = upload_file("report.pdf")
+cache_name = create_cache([file_ref], system_prompt, ttl=1800)
+
+# 2. 캐시 이름으로 참조
+r1 = call("요약해줘", cached_content=cache_name)
+r2 = call("버그 있어?", cached_content=cache_name)  # 같은 이름 → 히트
+```
+
+ESG 평가기가 이 패턴 사용 중.
+
+### 비교
+
+| | Claude Prompt Caching | Gemini Context Caching |
+|--|----------------------|----------------------|
+| 방식 | prefix match (자동) | 명시적 생성 + 이름 참조 |
+| 설정 | `cache_control` 마커 | `create_cache()` 호출 |
+| 캐시 히트 조건 | model + prefix 바이트 동일 | 같은 `cached_content` 이름 사용 |
+| 관리 | TTL 자동 만료 | TTL + 수동 삭제 |
+| 함수/프로세스 간 공유 | 자동 (조건만 맞으면) | 캐시 이름 공유 필요 |
