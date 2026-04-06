@@ -24,14 +24,16 @@ class CollectionClient:
         dense_dim: int = 1536,
         distance: str = "Cosine",
         recreate: bool = False,
+        mode: str = "hybrid",
     ) -> Dict[str, str]:
-        """하이브리드 컬렉션 생성"""
+        """컬렉션 생성 (mode: 'dense' | 'hybrid')"""
         return self._client.post(
             f"/v1/collections/{name}",
             json={
                 "dense_dim": dense_dim,
                 "distance": distance,
                 "recreate": recreate,
+                "mode": mode,
             },
         )
 
@@ -57,23 +59,24 @@ class CollectionClient:
         collection_name: str,
         texts: List[str],
         dense_vectors: List[List[float]],
-        sparse_vectors: List[Tuple[List[int], List[float]]],
         metadatas: List[Dict[str, Any]],
+        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
         start_id: int = 0,
         batch_size: int = 100,
     ) -> Dict[str, Any]:
-        """하이브리드 데이터 업로드 (dense + sparse 필수)"""
-        sv_serialized = [list(sv) for sv in sparse_vectors]
+        """데이터 업로드 (sparse_vectors 생략 시 dense-only)"""
+        payload: Dict[str, Any] = {
+            "texts": texts,
+            "dense_vectors": dense_vectors,
+            "metadatas": metadatas,
+            "start_id": start_id,
+            "batch_size": batch_size,
+        }
+        if sparse_vectors is not None:
+            payload["sparse_vectors"] = [list(sv) for sv in sparse_vectors]
         return self._client.post(
             f"/v1/collections/{collection_name}/upsert",
-            json={
-                "texts": texts,
-                "dense_vectors": dense_vectors,
-                "sparse_vectors": sv_serialized,
-                "metadatas": metadatas,
-                "start_id": start_id,
-                "batch_size": batch_size,
-            },
+            json=payload,
         )
 
     # 하위호환
