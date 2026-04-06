@@ -197,10 +197,11 @@ class VDBHandler:
         dense_dim: int = 1536,
         distance: str = "Cosine",
         recreate: bool = False,
+        mode: str = "hybrid",
     ) -> Dict[str, str]:
-        """하이브리드 컬렉션 생성"""
+        """컬렉션 생성 (mode: 'dense' | 'hybrid')"""
         return self.collection.create(
-            name=name, dense_dim=dense_dim, distance=distance, recreate=recreate
+            name=name, dense_dim=dense_dim, distance=distance, recreate=recreate, mode=mode
         )
 
     def get_collection_info(self, name: str) -> Dict[str, Any]:
@@ -216,18 +217,18 @@ class VDBHandler:
         collection_name: str,
         texts: List[str],
         dense_vectors: List[List[float]],
-        sparse_vectors: List[Tuple[List[int], List[float]]],
         metadatas: List[Dict[str, Any]],
+        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
         start_id: int = 0,
         batch_size: int = 100,
     ) -> Dict[str, Any]:
-        """하이브리드 데이터 업로드"""
+        """데이터 업로드 (sparse_vectors 생략 시 dense-only)"""
         return self.collection.upsert(
             collection_name=collection_name,
             texts=texts,
             dense_vectors=dense_vectors,
-            sparse_vectors=sparse_vectors,
             metadatas=metadatas,
+            sparse_vectors=sparse_vectors,
             start_id=start_id,
             batch_size=batch_size,
         )
