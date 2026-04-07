@@ -116,3 +116,13 @@ class TestSplitPdf:
 
         result = split_pdf(pdf_path, target_mb=50)
         assert result == [pdf_path]
+
+    def test_max_depth_prevents_infinite_recursion(self, tmp_path):
+        """_MAX_DEPTH 초과 시 재분할을 중단하고 현재 크기로 반환."""
+        pdf_path = str(tmp_path / "depth.pdf")
+        _create_pdf(pdf_path, num_pages=10)
+
+        # _depth를 MAX 이상으로 설정 → 즉시 반환
+        result = split_pdf(pdf_path, target_mb=0.0001, _depth=3)
+
+        assert result == [pdf_path]

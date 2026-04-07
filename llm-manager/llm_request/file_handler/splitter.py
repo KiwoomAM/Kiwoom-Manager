@@ -1,13 +1,15 @@
 """PDF 분할 유틸리티.
 
 50MB를 초과하는 PDF를 Gemini Files API 제한(PDF 50MB) 이하의
-파트로 균등 분할한다.
+파트로 분할한다.
+
+페이지별 바이트 기여도를 추정하여 누적 크기 기반으로 그룹핑.
+(Kiwoom-ESG file_manager.split_by_size 로직 기반)
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import os
 import tempfile
 
@@ -15,12 +17,45 @@ import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
+_SAFETY_MARGIN = 0.95  # 5% 안전 마진
+_MAX_DEPTH = 3  # 재분할 최대 깊이
 
-def split_pdf(path: str, target_mb: int = 50) -> list[str]:
-    """PDF를 target_mb 이하 파트로 균등 분할한다.
 
-    페이지가 균일한 크기라고 가정하고 ceil(파일크기/target_mb)등분.
-    분할 후 실제 크기가 초과하는 파트는 재균등 분할한다.
+def _estimate_page_sizes(doc: fitz.Document, file_size: int) -> list[float]:
+    """페이지별 바이트 기여도를 추정한다.
+
+    각 페이지의 이미지 xref 스트림 크기 + 텍스트/벡터 콘텐츠 크기를
+    합산하고, 실제 파일 크기에 비례하도록 스케일링한다.
+    """
+    page_sizes: list[float] = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        size = 0
+        for img in page.get_images(full=True):
+            xref = img[0]
+            try:
+                size += len(doc.xref_stream_raw(xref))
+            except Exception:
+                try:
+                    size += len(doc.xref_stream(xref))
+                except Exception:
+                    pass
+        # 텍스트/벡터 콘텐츠 추정
+        size += len(page.read_contents())
+        page_sizes.append(max(size, 1))
+
+    # 추정값 → 실제 파일 크기에 비례하도록 스케일링
+    estimated_total = sum(page_sizes)
+    scale = file_size / estimated_total if estimated_total > 0 else 1
+    return [s * scale for s in page_sizes]
+
+
+def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
+    """PDF를 target_mb 이하 파트로 분할한다.
+
+    페이지별 바이트 기여도를 추정하여 누적 크기가 target_mb를
+    초과하지 않도록 그룹핑한 후 분할한다.
+    초과하는 파트는 재귀적으로 재분할 (최대 _MAX_DEPTH회).
 
     Args:
         path: PDF 파일 경로.
@@ -31,25 +66,54 @@ def split_pdf(path: str, target_mb: int = 50) -> list[str]:
         분할된 임시 파일은 호출자(uploader)가 삭제 책임.
     """
     file_size = os.path.getsize(path)
-    target_bytes = target_mb * 1024 * 1024
+    target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
 
     if file_size <= target_bytes:
         return [path]
 
+    if _depth >= _MAX_DEPTH:
+        logger.warning(
+            "재분할 한도(%d) 초과: %s (%.1fMB) — 현재 크기로 진행",
+            _MAX_DEPTH,
+            os.path.basename(path),
+            file_size / (1024 * 1024),
+        )
+        return [path]
+
     doc = fitz.open(path)
     total_pages = len(doc)
+
+    # 페이지별 바이트 추정
+    page_sizes = _estimate_page_sizes(doc, file_size)
     doc.close()
 
-    # 균등 분할: ceil(파일크기 / target) 등분
-    num_parts = math.ceil(file_size / target_bytes)
-    pages_per_part = math.ceil(total_pages / num_parts)
-
-    # 페이지 그룹 생성
+    # 누적 크기 기반 그룹핑
     groups: list[list[int]] = []
-    for i in range(0, total_pages, pages_per_part):
-        groups.append(list(range(i, min(i + pages_per_part, total_pages))))
+    current_group: list[int] = []
+    current_size = 0.0
+
+    for i, size in enumerate(page_sizes):
+        if current_size + size > target_bytes and current_group:
+            groups.append(current_group)
+            current_group = [i]
+            current_size = size
+        else:
+            current_group.append(i)
+            current_size += size
+
+        if size > target_bytes:
+            logger.warning(
+                "페이지 %d의 추정 크기(%.1fMB)가 목표(%dMB)를 초과합니다",
+                i + 1,
+                size / (1024 * 1024),
+                target_mb,
+            )
+
+    if current_group:
+        groups.append(current_group)
 
     # 그룹별 PDF 저장 + 초과 시 재분할
+    limit_bytes = target_mb * 1024 * 1024
     result: list[str] = []
     for idx, group in enumerate(groups):
         part_doc = fitz.open(path)
@@ -69,9 +133,9 @@ def split_pdf(path: str, target_mb: int = 50) -> list[str]:
             part_mb,
         )
 
-        if part_size > target_bytes:
+        if part_size > limit_bytes:
             logger.warning("파트 %d이 %.1fMB로 초과 → 재분할", idx + 1, part_mb)
-            sub_paths = split_pdf(tmp.name, target_mb)
+            sub_paths = split_pdf(tmp.name, target_mb, _depth=_depth + 1)
             os.unlink(tmp.name)
             result.extend(sub_paths)
         else:
