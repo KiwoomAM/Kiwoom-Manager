@@ -24,6 +24,7 @@ from llm_handler import (
 )
 
 from .done_check import done_check
+from .file_handler import ResolvedFiles, resolve_files
 from .orchestrator import run_many, run_many_stream
 from .store import fetch_by_cache_key
 from .runner import (
@@ -43,6 +44,8 @@ __all__ = [
     "run_many_stream",
     "done_check",
     "fetch_by_cache_key",
+    "resolve_files",
+    "ResolvedFiles",
     # llm_handler (모듈)
     "llm_handler",
     # llm_handler API

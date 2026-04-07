@@ -1,10 +1,12 @@
-# File Handler 설계: 파일 업로드/캐싱 자동화
+# File Handler 설계 (Phase 2): 파일 업로드/캐싱 자동화
+
+> 이 문서는 **Phase 2 (이번 작업)** 범위만 다룬다. Phase 3/4는 [단계별 로드맵](#단계별-로드맵)에서 간략히 기술.
 
 ## 배경
 
-### 현재 상태 (Phase 1 완료)
+### Phase 1 (완료)
 
-[file-checksum-cache.md](file-checksum-cache.md)에서 구현 완료된 사항:
+[file-checksum-cache.md](file-checksum-cache.md)에서 구현 완료:
 - `file_paths` → checksum 계산 → 캐시 키에 포함
 - `cached_content`, `file_uri` 등 volatile 값은 캐시 키에서 제외
 - agent_llm 컬렉션에서 checksum 기반 done_check 동작
@@ -19,49 +21,85 @@
    - 같은 PDF로 질문만 바꿔서 N번 호출 시, N번 업로드 발생
    - `create_cache`도 매번 호출 → 토큰/시간 낭비
 
-3. **run_many에서 파일 미지원**
-   - orchestrator가 `file_paths`를 `llm_request_async`에 전달하지 않는 버그
+### Phase 2 목표
 
-### 목표
-
-- 사용자는 `file_paths`만 전달하면, llm-request가 **자동으로** 최적 방식(inline/Files API/context caching) 결정
-- 동일 파일은 **MDB(file_cache 컬렉션)** 에서 기존 업로드/캐시 재사용
-- run_many에서 공유 파일 1회 처리 후 모든 state에 주입
-
-### Phase 1과의 차이
-
-Phase 1에서는 사용자가 직접 `upload_file()` → `FileRef`를 `contents`에 넣고, `file_paths`는 캐시 키 생성용으로만 사용했다.
-
-Phase 2에서는 **사용자가 `contents`에 텍스트만 넣고 `file_paths`만 전달하면**, llm-request가 자동으로:
-1. 파일 크기에 따라 최적 방식 결정
-2. 업로드/캐싱 수행
-3. `contents`에 Part 추가 또는 `cached_content` 설정
-
-즉, 사용자는 더 이상 `upload_file`, `create_cache`를 직접 호출할 필요가 없다.
+- 사용자는 `file_paths`만 전달하면, llm-request가 **자동으로** 최적 방식(inline / Files API) 결정
+- 동일 파일은 **Redis(file_cache)** 에서 기존 Files API URI / cached_content name 재사용
+- 사용자는 더 이상 `upload_file`, `create_cache`를 직접 호출할 필요 없음
 
 ---
 
-## 사전 정보
+## 파일 처리 방식
 
-### Gemini 파일 처리 방식
-
-| 방식 | 설명 | 이 설계에서 |
-|------|------|-----------|
+| 방식 | 설명 | Phase 2에서 |
+|------|------|------------|
 | Inline (base64) | 요청 body에 base64 포함 | **사용** (≤20MB) |
-| Files API | 서버에 파일 업로드, URI로 참조 | **사용** (>20MB) |
-| Context Caching | 파일을 캐싱하여 토큰 90% 할인 | **사용** (PDF >50MB) |
-| 암시적 캐싱 | Gemini 2.5+에서 자동 적용 | **미사용** (명시적 캐싱만) |
+| Files API | 서버에 파일 업로드, URI로 참조 (무료) | **사용** (>20MB) |
+| Context Caching | 파일을 캐싱하여 토큰 90% 할인 | **opt-in** (`cache_ttl` 명시 시) |
 
-### 파일 크기 임계값
+### 파일 크기 분기
 
-| 조건 | 처리 방식 | file_cache 저장 |
-|------|----------|----------------|
+| 조건 | 처리 방식 | Redis 저장 |
+|------|----------|-----------|
 | ≤20MB | inline (base64 변환) | X |
-| >20MB | Files API 업로드 | O |
-| PDF >50MB | split → Files API → create_cache | O |
+| >20MB | Files API 업로드 | O (URI 캐싱, TTL 48h) |
+| PDF >50MB | split → Files API 업로드 (파트별 50MB 이하) | O (파트별 URI 캐싱) |
 
-- 파일 크기는 checksum 계산 시 이미 구하는 `FileChecksum.size`를 활용
-- inline은 매번 파일에서 base64 변환 (CPU 비용 무시 가능), agent_llm 캐시 hit이면 변환 자체 불필요
+- 파일 크기는 `FileChecksum.size`를 활용 (checksum 계산 시 이미 구함)
+- PDF >50MB split은 Gemini Files API의 PDF 50MB 제한 때문
+
+### Context Caching (opt-in)
+
+- **기본**: context caching 안 함 (Files API/inline만)
+- **opt-in**: `cache_ttl` 명시 시 create_cache 실행 + Redis에 저장
+- **자동 재사용**: Redis에 기존 context cache가 있으면 `cache_ttl` 유무와 관계없이 재사용
+- 비용: 토큰 90% 할인, 저장 비용 $1/1M토큰/시간 (Flash 기준)
+- **같은 파일로 시간당 4회 이상 호출할 때만 권장** (손익분기점)
+
+### Split PDF
+
+PDF >50MB를 split하면 여러 파트가 생긴다. contents에 순서대로 나열하면 Gemini가 전체 내용을 처리한다. 파트 간 연결 관계를 명시할 프롬프트나 메타 정보 불필요.
+
+split으로 생성된 **로컬 임시 파일**은 Files API 업로드 완료 후 즉시 삭제 (try/finally). Files API에 업로드된 데이터는 Google 서버에 48시간 유지.
+
+---
+
+## file_cache 저장소 (Redis)
+
+redis-handler SDK의 `BaseJsonStore` 패턴을 활용.
+
+### 키 설계
+
+```
+// Files API 레코드 (파일 >20MB)
+key:   "file_cache:files_api:{file_checksum}"
+value: JSON { file_checksum, file_name, file_size, mime_type, uri }
+TTL:   48시간 (172800초)
+
+// Context Cache 레코드 (cache_ttl opt-in 시 생성)
+key:   "file_cache:context_cache:{hash_key}"
+value: JSON { file_checksums, model, system_instruction, cached_content_name, files_api_uris }
+TTL:   사용자 설정 cache_ttl (기본 3600초)
+```
+
+### hash_key 생성
+
+keying.py의 canonicalize + sha256 방식과 동일:
+```python
+hash_key = sha256(canonicalize({
+    "file_checksums": sorted(file_checksums),
+    "model": model,
+    "system_instruction": system_instruction or ""
+}))
+```
+
+| create_cache 입력 필드 | hash_key 포함 | 이유 |
+|----------------------|-------------|------|
+| `model` | O | 모델 다르면 다른 캐시 |
+| `contents` | O (file_checksums로 대체) | URI는 매번 변하므로 checksum 사용 |
+| `system_instruction` | O | 시스템 프롬프트 다르면 다른 캐시 |
+| `display_name` | X | 라벨일 뿐 |
+| `ttl` | X | 수명 설정이지 내용 아님 |
 
 ### TTL 정책
 
@@ -70,76 +108,19 @@ Phase 2에서는 **사용자가 `contents`에 텍스트만 넣고 `file_paths`�
 | Files API URI | 48시간 (Google 고정) | Redis native TTL |
 | Context Cache | 사용자 설정 (기본 1시간) | Redis native TTL |
 
-Redis의 native TTL로 Google 만료와 자동 동기화. 만료 시 키가 자동 삭제됨.
+### 404 Fallback
 
-### ESG 참조 로직
-
-[Kiwoom-ESG/backend/LLM/](../../../Kiwoom-ESG/backend/LLM/) 에서 포팅:
-- `file_manager.py` → `split_by_size()`: 페이지 기반 PDF 분할, 초과 시 재귀 재분할
-- `cache_manager.py` → `create_cache_for_files()`: 재시도 2회, 5초 간격
-- `evaluator.py` → `_upload_and_cache()`: split → upload → cache 파이프라인
-
----
-
-## file_cache 저장소 (Redis)
-
-file_cache는 **Redis**에 저장한다. key-value + TTL 용도에 최적이며, 미래 전체 마이그레이션의 선행 작업.
-
-### 키 설계
-
-```
-// Files API 레코드 (파일 >20MB)
-key:   "file_cache:files_api:{file_checksum}"
-       예: "file_cache:files_api:sha256:abcd1234..."
-value: JSON
-{
-  "file_checksum": "sha256:abcd1234...",
-  "file_name": "report.pdf",
-  "file_size": 52428800,
-  "mime_type": "application/pdf",
-  "uri": "https://generativelanguage.googleapis.com/..."
-}
-TTL:   48시간 (172800초)
-
-// Context Cache 레코드 (PDF >50MB, split 후 캐싱)
-key:   "file_cache:context_cache:{hash_key}"
-       예: "file_cache:context_cache:sha256:ef5678..."
-value: JSON
-{
-  "file_checksums": ["sha256:abcd1234..."],
-  "model": "gemini-2.5-flash",
-  "system_instruction": "...",
-  "cached_content_name": "cachedContents/abc123...",
-  "files_api_uris": ["https://..."]
-}
-TTL:   사용자 설정 cache_ttl (기본 3600초)
-```
-
-### 조회 방식
-- Files API: `GET file_cache:files_api:{file_checksum}`
-- Context Cache: `GET file_cache:context_cache:{hash_key}`
-- 키가 없으면 (만료 포함) → miss → 업로드/캐싱 진행
-
-**Context Cache hash_key 구성**:
-
-`create_cache`의 실제 입력 필드:
-
-| 필드 | hash_key 포함 | 이유 |
-|------|-------------|------|
-| `model` | **O** | 모델 다르면 다른 캐시 |
-| `contents` | **O** (file_checksums로 대체) | URI는 매번 변하므로 checksum 사용 |
-| `system_instruction` | **O** | 시스템 프롬프트 다르면 다른 캐시 |
-| `display_name` | X | 라벨일 뿐 |
-| `ttl` | X | 수명 설정이지 내용 아님 |
+Redis hit으로 URI/cached_content를 재사용했는데 Gemini에서 404 반환 시:
+1. Redis 해당 키 삭제
+2. 재업로드/재캐싱 진행
+3. Redis에 새 레코드 저장
 
 ---
 
 ## 전체 파이프라인
 
-### 단일 호출 (llm_request_async)
-
 ```
-사용자: llm_request_async(llm_input, file_paths=[...])
+사용자: llm_request_async(llm_input, file_paths=[...], cache_ttl=선택)
     ↓
 ① checksum 계산 (size, mime_type 포함)
     ↓
@@ -148,110 +129,50 @@ TTL:   사용자 설정 cache_ttl (기본 3600초)
    - URI, cached_content는 캐시 키에서 제외
    ├─ HIT → LLMResponse 반환 (끝)
    └─ MISS ↓
-③ 파일 크기 분기
-   ├─ ≤20MB → inline (base64 변환, contents에 Part 추가)
-   │         file_cache 저장 안 함 → ⑤로
+③ Redis에서 기존 context cache 조회 (항상)
+   ├─ HIT → cached_content_name 재사용 → ⑤로
+   └─ MISS ↓
+④ 각 파일별 독립 처리 (크기 분기)
+   ├─ ≤20MB → inline (base64 Part 생성)
    │
-   ├─ >20MB → file_cache 조회 (file_checksum으로)
-   │   ├─ HIT → 기존 URI 사용 → ⑤로
-   │   └─ MISS → Files API 업로드 → file_cache 저장 → ⑤로
+   ├─ >20MB → Redis 조회 (file_checksum)
+   │   ├─ HIT → 기존 URI 사용
+   │   └─ MISS → Files API 업로드 → Redis 저장
    │
-   └─ PDF >50MB → file_cache 조회 (hash_key로)
-       ├─ HIT → 기존 cached_content_name 사용 → ⑤로
-       └─ MISS → split → Files API 업로드 → create_cache
-                 → file_cache 저장 → ⑤로
+   └─ PDF >50MB → split → 각 파트를 Files API 업로드 → Redis 저장
+                  (임시 파일은 try/finally로 삭제 보장)
+    ↓
+④-b. cache_ttl이 있으면 → create_cache → Redis에 context cache 저장
     ↓
 ⑤ llm_input 조립
-   - inline: contents에 base64 Part 추가
-   - Files API: contents에 file_uri Part 추가
-   - context_cache: llm_input["cached_content"] = cached_content_name
+   - context cache 있으면: llm_input["cached_content"] = cached_content_name
+   - 없으면: contents = [Part(file), ..., "질문 텍스트"]
     ↓
 ⑥ llm_handler.call() 실행
     ↓
 ⑦ agent_llm에 결과 저장 (기존 save 로직)
 ```
 
-### 배치 호출 (run_many)
-
-```
-사용자: run_many(states, file_paths=[...])
-    ↓
-① 공유 file_paths의 checksum 계산
-    ↓
-② 파일 크기 분기 (file_cache 조회 스킵)
-   ├─ ≤20MB → inline 준비
-   ├─ >20MB → Files API 업로드
-   └─ PDF >50MB → split → Files API 업로드 → create_cache
-    ↓
-③ file_cache에 저장 (1회)
-    ↓
-④ 모든 state의 llm_input에 파일 참조 주입
-    ↓
-⑤ 각 state별 기존 파이프라인
-   - done_check (캐시 키에 file_checksums 포함) → cache hit/miss → call → save
-   - semaphore로 동시성 제어
-```
-
-### 단일 vs 배치 차이
-
-| | 단일 호출 | 배치 호출 |
-|--|---------|---------|
-| file_cache 조회 | O | X (스킵) |
-| 파일 업로드 | 필요 시 1회 | 무조건 1회 |
-| file_cache 저장 | O | O |
-| done_check | 1회 | 각 state별 (질문이 다르니까) |
-
-### 404 Fallback
-
-file_cache hit으로 URI/cached_content를 재사용했는데 Gemini에서 404 반환 시:
-1. file_cache 해당 레코드 삭제
-2. 재업로드/재캐싱 진행
-3. file_cache에 새 레코드 저장
-
 ---
 
-## keying.py 변경
-
-### 캐시 키에서 제거
-
-- `cached_content` → 제거 (매번 달라지는 volatile 값)
-- contents 안의 `file_uri`, `Part(type="file")` → 정규화 시 URI 제거
-
-### 캐시 키에 유지
-
-- `file_checksums` → 파일 동일성 판단의 핵심
-
-**결과**: 같은 파일(checksum 동일) + 같은 질문 + 같은 설정 → 어떤 URI/cached_content를 썼든 cache hit.
-
-### 경고사항 (README 명시)
-
-> 캐시 키는 파일 내용(checksum) 기반입니다.
-> - 같은 파일이면 URI/cached_content가 달라도 cache hit
-> - 파일이 수정되면(checksum 변경) 기존 캐시 무효화, 새로 호출
-> - 모델, temperature 등 llm_input 설정이 다르면 별도 캐시 엔트리
-> - `cached_content`, `file_uri`는 캐시 키에서 제외됨
-
----
-
-## file_handler 모듈 구조
+## file_handler 모듈
 
 ```
 llm_request/file_handler/
 ├── __init__.py        # public API: resolve_files
 ├── resolver.py        # 파일 처리 진입점 (크기 분기, 파이프라인 조율)
-├── cache_store.py     # file_cache Redis CRUD (조회, 저장, 갱신)
-├── uploader.py        # Files API 업로드 + create_cache 호출
-└── splitter.py        # PDF 분할 (ESG에서 포팅)
+├── cache_store.py     # Redis CRUD (redis-handler SDK의 BaseJsonStore 활용)
+├── uploader.py        # Files API 업로드 + create_cache (llm-handler SDK 사용)
+└── splitter.py        # PDF 분할 (ESG 코드 복제 + 수정)
 ```
 
-### resolver.py — 진입점
+### resolver.py
 
 ```python
 @dataclass
 class ResolvedFiles:
     contents_parts: list[Part]          # inline 또는 file_uri Part들
     cached_content: str | None          # context cache name (있는 경우)
-    file_cache_docs: list[dict]         # file_cache에 저장할/저장된 문서들
 
 
 async def resolve_files(
@@ -260,113 +181,71 @@ async def resolve_files(
     *,
     model: str | None = None,
     system_instruction: str | None = None,
-    cache_ttl: int = 3600,
-    use_file_cache: bool = True,        # run_many는 False로 전달
-    database: str | None = None,
+    cache_ttl: int | None = None,       # None이면 context caching 안 함
 ) -> ResolvedFiles:
-    """
-    파일 크기에 따라 최적 방식(inline/Files API/context caching) 결정.
-    file_cache 조회 → miss면 업로드/캐싱 → 결과 반환.
-    """
 ```
 
-**분기 로직**:
+**내부 흐름**:
 ```
-for each file_meta, file_path:
-    if file_meta["size"] <= 20MB:
-        → Part.from_file(file_path) (inline base64)
-    elif file_meta["mime_type"] == "application/pdf" and file_meta["size"] > 50MB:
-        → PDF split 경로 (splitter → uploader → create_cache)
-    else:
-        → Files API 업로드 경로
+① Redis context cache 조회 (hash_key = sha256(checksums + model + system))
+   ├─ HIT → cached_content=name, contents_parts=[] 반환
+   └─ MISS ↓
+
+② 각 파일별 독립 처리:
+   for each file_meta, file_path:
+       if size <= 20MB:
+           → Part.from_file(file_path) (inline base64)
+       elif mime_type == "application/pdf" and size > 50MB:
+           → split → Files API 업로드 → URI Part들
+           (임시 파일은 try/finally로 삭제 보장)
+       else:
+           → Redis file_cache 조회 (file_checksum)
+             ├─ HIT → 기존 URI Part
+             └─ MISS → Files API 업로드 → Redis 저장
+
+③ cache_ttl이 있으면:
+   → create_cache 시도
+     ├─ 성공 → cached_content=name, Redis 저장, contents_parts=[]
+     └─ 실패 → contents_parts 유지, cached_content=None
+
+→ ResolvedFiles 반환
 ```
 
-### cache_store.py — file_cache Redis 조작
+### cache_store.py
 
 ```python
-def find_files_api(
-    file_checksum: str,
-) -> dict | None:
-    """Redis에서 Files API 레코드 조회.
-    key: file_cache:files_api:{file_checksum}
-    """
-
-
-def find_context_cache(
-    hash_key: str,
-) -> dict | None:
-    """Redis에서 Context Cache 레코드 조회.
-    key: file_cache:context_cache:{hash_key}
-    """
-
-
-def save_files_api(
-    file_checksum: str,
-    doc: dict,
-    ttl: int = 172800,          # 48시간
-) -> None:
-    """Files API 레코드 저장 (Redis SET + TTL)."""
-
-
-def save_context_cache(
-    hash_key: str,
-    doc: dict,
-    ttl: int = 3600,            # 기본 1시간
-) -> None:
-    """Context Cache 레코드 저장 (Redis SET + TTL)."""
-
-
-def delete_key(key: str) -> None:
-    """404 fallback 시 키 삭제."""
+# BaseJsonStore 상속, prefix="file_cache"
+def find_files_api(file_checksum: str) -> dict | None
+def find_context_cache(hash_key: str) -> dict | None
+def save_files_api(file_checksum: str, doc: dict, ttl: int = 172800) -> None
+def save_context_cache(hash_key: str, doc: dict, ttl: int = 3600) -> None
+def delete_key(key: str) -> None  # 404 fallback용
 ```
 
-### uploader.py — API 호출
+### uploader.py
 
 ```python
-async def upload_file(
-    path: str,
-    mime_type: str,
-) -> FileRef:
-    """Files API 업로드. FileRef(uri, name, mime_type) 반환."""
-
-
+async def upload_file(path: str, mime_type: str) -> FileRef
 async def create_context_cache(
-    file_refs: list[FileRef],
-    *,
-    model: str,
-    system_instruction: str | None = None,
-    ttl: int = 3600,
-) -> CacheRef:
-    """
-    create_cache 호출. CacheRef(name, model, ...) 반환.
-    재시도: 2회, 5초 간격 (500, 503, 429, RESOURCE_EXHAUSTED).
-    """
+    file_refs: list[FileRef], *, model: str,
+    system_instruction: str | None = None, ttl: int = 3600,
+) -> CacheRef
+# create_cache 재시도: 2회, 5초 간격 (500, 503, 429, RESOURCE_EXHAUSTED)
 ```
 
-### splitter.py — PDF 분할
+### splitter.py
 
 ```python
-def split_pdf(
-    path: str,
-    target_mb: int = 50,
-) -> list[str]:
-    """
-    PDF를 target_mb 이하 파트로 분할.
-    반환: 분할된 임시 파일 경로 리스트.
-
-    ESG 로직 포팅:
-    - 페이지별 바이트 추정 (이미지 xref + 텍스트/벡터)
-    - 추정값을 실제 파일 크기에 맞게 스케일링
-    - 누적 그룹핑으로 target_bytes 이하 파트 생성
-    - 생성된 파트가 초과 시 재귀적 재분할
-    """
+def split_pdf(path: str, target_mb: int = 50) -> list[str]
+# ESG의 split_by_size() 복제 + llm-request에 맞게 수정
+# 페이지별 바이트 추정 → 스케일링 → 누적 그룹핑 → 초과 시 재귀 재분할
 ```
 
 ---
 
 ## runner.py 변경
 
-### 공개 함수 시그니처
+### 시그니처
 
 ```python
 async def llm_request_async(
@@ -378,80 +257,32 @@ async def llm_request_async(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int = 3600,              # 신규: create_cache용 TTL
+    cache_ttl: int | None = None,       # 신규: context cache TTL (None=안 함)
 ) -> tuple[LLMResponse, dict]:
 ```
 
-4개 함수 모두 동일 적용: `llm_request`, `llm_request_async`, `llm_request_stream`, `llm_request_stream_async`
+4개 함수 모두 동일: `llm_request`, `llm_request_async`, `llm_request_stream`, `llm_request_stream_async`
 
-### _prepare() 변경
+### 흐름 변경
 
 ```
-기존 흐름:
-  file_paths → checksum → keying_input → done_check → (hit or miss)
-
-변경 흐름:
-  file_paths → checksum → keying_input → done_check
-  ├─ HIT → 반환
-  └─ MISS → resolve_files() 호출
-            → llm_input 조립 (contents/cached_content 주입)
-            → 이후 call/save
+기존:  file_paths → checksum → keying_input → done_check → (hit or miss) → call
+변경:  file_paths → checksum → keying_input → done_check
+       ├─ HIT → 반환
+       └─ MISS → resolve_files() → llm_input 조립 → call → save
 ```
-
-`resolve_files()` 호출 위치는 `_prepare()` 이후, `llm_handler.call()` 이전.
 
 ---
 
-## orchestrator.py 변경
+## keying.py (Phase 1에서 완료, 검증만)
 
-### run_many 시그니처
+| 항목 | 상태 |
+|------|------|
+| `cached_content` 캐시 키에서 제외 | 이미 구현됨 (line 78-81) |
+| FileRef/Part URI 정규화 | 이미 구현됨 (line 156-160) |
+| `file_checksums` 캐시 키에 포함 | 이미 구현됨 (line 39) |
 
-```python
-async def run_many(
-    states: Iterable[dict],
-    *,
-    file_paths: list[str] | None = None,    # 신규: 공유 파일
-    concurrency: int = 5,
-    database: str | None = None,
-    cache_ttl: int = 3600,                  # 신규: create_cache용 TTL
-) -> AsyncGenerator[tuple[LLMResponse, dict], None]:
-```
-
-### run_many 내부 흐름
-
-```python
-# 1. 공유 파일 처리 (1회)
-if file_paths:
-    file_metas = [file_checksum(p) for p in file_paths]
-    first_input = states[0]["llm_input"]  # 첫 번째 state에서 model/system 추출
-    resolved = await resolve_files(
-        file_metas, file_paths,
-        model=first_input.get("model"),
-        system_instruction=first_input.get("system"),
-        cache_ttl=cache_ttl,
-        use_file_cache=False,         # MDB 조회 스킵, 바로 업로드
-    )
-    # file_cache에 저장 (1회)
-
-# 2. 모든 state의 llm_input에 파일 참조 주입
-for state in states:
-    llm_input = state["llm_input"]
-    if resolved.cached_content:
-        llm_input["cached_content"] = resolved.cached_content
-    if resolved.contents_parts:
-        # contents에 Part 추가
-    # keying용 file_checksums 주입
-    llm_input["file_checksums"] = [m["checksum"] for m in file_metas]
-
-# 3. 각 state별 기존 파이프라인 (done_check → call → save)
-```
-
-### run_many_stream도 동일 변경
-
-### 기존 버그 수정
-
-orchestrator가 개별 state의 `file_paths`를 `llm_request_async`에 전달하지 않던 문제.
-새 설계에서는 run_many 레벨에서 파일을 처리하므로 개별 state에 file_paths를 넣는 경우는 없음.
+**캐시 키 동작**: 같은 파일(checksum) + 같은 질문 + 같은 설정 → cache hit. URI/cached_content가 달라도 무관.
 
 ---
 
@@ -460,131 +291,187 @@ orchestrator가 개별 state의 `file_paths`를 `llm_request_async`에 전달하
 | 상황 | 처리 |
 |------|------|
 | Files API 업로드 실패 | llm-handler 측 재시도에 위임 |
-| create_cache 실패 | 재시도 2회, 5초 간격 (500, 503, 429, RESOURCE_EXHAUSTED) |
-| Gemini 404 (만료된 URI/cache) | file_cache 레코드 삭제 → 재업로드/재캐싱 → file_cache 갱신 |
+| create_cache 실패 | 재시도 2회, 5초 간격 |
+| Gemini 404 (만료된 URI/cache) | Redis 키 삭제 → 재업로드/재캐싱 → Redis 갱신 |
 | LLM 호출 실패 | 기존 runner.py 로직 유지 |
-| PDF split 실패 | PyMuPDF 에러 전파 |
+| PDF split 실패 | PyMuPDF 에러 전파, 임시 파일 try/finally로 삭제 보장 |
 | file_paths에 파일 없음 | FileNotFoundError (기존 동작) |
 
 ---
 
-## 의존성 변경
+## 의존성
 
-### 신규 추가 (pyproject.toml)
-
-- `PyMuPDF (fitz)`: PDF 분할용
-- `kiwoom-redis-handler`: file_cache Redis 저장소
-
-### 기존 유지
-
-- `kiwoom-llm-handler >= 0.1.0`: upload_file, create_cache, call, stream
-- `kiwoom-mdb-handler >= 2.0.0`: agent_llm 컬렉션 (LLM 응답 캐시)
-- `filetype >= 1.2.0`: MIME 감지
+| 패키지 | 용도 | 신규/기존 |
+|--------|------|----------|
+| `PyMuPDF (fitz)` | PDF 분할 | 신규 |
+| `kiwoom-redis-handler` | file_cache Redis 저장소 | 신규 |
+| `kiwoom-llm-handler` | upload_file, create_cache, call, stream | 기존 |
+| `kiwoom-mdb-handler` | agent_llm 컬렉션 (LLM 응답 캐시) | 기존 |
+| `filetype` | MIME 감지 | 기존 |
 
 ---
 
-## 이 작업 범위
+## 디렉토리 구조
 
-### 포함
-
-- file_handler 모듈 신규 생성 (resolver, cache_store, uploader, splitter)
-- file_cache MDB 컬렉션 스키마 및 TTL index
-- runner.py 변경 (resolve_files 호출, cache_ttl 파라미터)
-- orchestrator.py 변경 (공유 file_paths, file_paths 미전달 버그 수정)
-- keying.py 변경 (cached_content 캐시 키 제외 — Phase 1에서 완료 확인 필요)
-- 테스트
-
-### 미포함
-
-- 이미지/오디오/비디오 전용 분할 로직 (PDF만)
-- Gemini 이외 LLM 지원
-- file_cache 관리 CLI/API
-- README 업데이트 (구현 완료 후 별도 진행)
-
----
-
-## 미래 방향
-
-현재 file_cache는 Redis, LLM 응답 캐시(agent_llm)는 MDB에 저장한다.
-향후 파일 서버 구축 시:
-- **파일 자체** → 파일 서버에서 관리
-- **메타데이터/조회** → Redis로 통합 (agent_llm도 Redis 마이그레이션 검토)
-- `cache_store.py`만 교체하면 resolver/uploader/splitter는 변경 없음
-
----
-
-## 수정 대상 파일 목록
-
-| 파일 | 작업 |
-|------|------|
-| `llm_request/file_handler/__init__.py` | **신규** — public API export |
-| `llm_request/file_handler/resolver.py` | **신규** — 파일 처리 진입점 |
-| `llm_request/file_handler/cache_store.py` | **신규** — file_cache Redis CRUD |
-| `llm_request/file_handler/uploader.py` | **신규** — Files API + create_cache |
-| `llm_request/file_handler/splitter.py` | **신규** — PDF 분할 (ESG 포팅) |
-| `llm_request/runner.py` | 수정 — resolve_files 호출, cache_ttl |
-| `llm_request/orchestrator.py` | 수정 — 공유 file_paths, 버그 수정 |
-| `llm_request/keying.py` | 확인 — cached_content 제외 동작 검증 |
-| `llm_request/__init__.py` | 수정 — file_handler export 추가 |
-| `pyproject.toml` | 수정 — PyMuPDF 의존성 |
-| `tests/test_resolver.py` | **신규** |
-| `tests/test_cache_store.py` | **신규** |
-| `tests/test_uploader.py` | **신규** |
-| `tests/test_splitter.py` | **신규** |
-| `tests/test_orchestrator.py` | 수정 — 파일 관련 테스트 추가 |
+```
+packages/llm-request/
+├── pyproject.toml                    # PyMuPDF, kiwoom-redis-handler 추가
+├── llm_request/
+│   ├── __init__.py                   # file_handler export 추가
+│   ├── checksum.py                   # 기존 유지
+│   ├── done_check.py                 # 기존 유지
+│   ├── keying.py                     # 기존 유지 (Phase 1에서 완료)
+│   ├── meta.py                       # 기존 유지
+│   ├── orchestrator.py               # 기존 보관 (수정 안 함)
+│   ├── runner.py                     # 수정: resolve_files 호출, cache_ttl
+│   ├── store.py                      # 기존 유지
+│   └── file_handler/                 # ★ 신규
+│       ├── __init__.py
+│       ├── resolver.py
+│       ├── cache_store.py
+│       ├── uploader.py
+│       └── splitter.py
+├── tests/
+│   ├── ... (기존 유지)
+│   ├── test_resolver.py              # ★ 신규
+│   ├── test_cache_store.py           # ★ 신규
+│   ├── test_uploader.py              # ★ 신규
+│   └── test_splitter.py              # ★ 신규
+└── plans/
+```
 
 ---
 
-## 사용 예시 (구현 후)
+## 사용 예시
 
-### 단일 호출 — 파일만 전달하면 자동 처리
+### 기본 — 파일만 전달하면 자동 처리
 
 ```python
-from llm_request import llm_request_async
-
-# 사용자는 file_paths만 전달, 업로드/캐싱은 llm-request가 자동 처리
 result, meta = await llm_request_async(
     {"contents": "이 PDF 요약해줘", "model": "gemini-2.5-flash"},
     file_paths=["report.pdf"],
 )
-# meta["source"] == "cache" or "live"
 ```
 
-### 대용량 PDF — 자동 split + context caching
+### 같은 파일로 여러 번 호출 — context caching opt-in
 
 ```python
-# 100MB PDF → 자동으로 split → Files API → create_cache
-result, meta = await llm_request_async(
-    {
-        "contents": "ESG 점수 평가해줘",
-        "model": "gemini-2.5-flash",
-        "system": "당신은 ESG 평가 전문가입니다.",
-    },
-    file_paths=["large_report.pdf"],
-    cache_ttl=1800,  # context cache 30분
+# 첫 호출: cache_ttl 명시 → context cache 생성
+result1, _ = await llm_request_async(
+    {"contents": "요약해줘", "model": "gemini-2.5-flash"},
+    file_paths=["report.pdf"],
+    cache_ttl=1800,
+)
+
+# 이후: cache_ttl 없어도 Redis에서 기존 캐시 자동 재사용 (90% 할인)
+result2, _ = await llm_request_async(
+    {"contents": f"{result1.text}를 기반으로 분석해줘", "model": "gemini-2.5-flash"},
+    file_paths=["report.pdf"],
 )
 ```
 
-### 배치 호출 — 같은 파일 + 다른 질문 N개
+### 대용량 PDF — 자동 split
 
 ```python
-from llm_request import run_many
+# 100MB PDF → 자동 split → Files API → URI Parts
+result, meta = await llm_request_async(
+    {"contents": "ESG 점수 평가해줘", "model": "gemini-2.5-flash",
+     "system": "당신은 ESG 평가 전문가입니다."},
+    file_paths=["large_report.pdf"],
+)
+```
 
-states = [
-    {"llm_input": {"contents": "ESG 점수 평가해줘", "model": "gemini-2.5-flash"}},
-    {"llm_input": {"contents": "탄소배출 데이터 추출해줘", "model": "gemini-2.5-flash"}},
-    {"llm_input": {"contents": "거버넌스 항목 분석해줘", "model": "gemini-2.5-flash"}},
-]
+### 혼합 파일 — 각 파일별 최적 경로
 
-async for response, meta in run_many(states, file_paths=["report.pdf"], cache_ttl=1800):
-    print(response.text)
+```python
+# 5MB 이미지(inline) + 30MB PDF(Files API) → 자동 혼합 처리
+result, meta = await llm_request_async(
+    {"contents": "이 이미지와 PDF를 비교 분석해줘", "model": "gemini-2.5-flash"},
+    file_paths=["chart.png", "report.pdf"],
+)
 ```
 
 ### 텍스트만 — 기존과 동일
 
 ```python
-# file_paths 생략 → 기존 동작 그대로
-result, meta = await llm_request_async(
-    {"contents": "오늘 날씨 어때?"},
-)
+result, meta = await llm_request_async({"contents": "오늘 날씨 어때?"})
 ```
+
+---
+
+## 구현 TODO
+
+### 1. file_handler 모듈
+
+- [ ] `file_handler/__init__.py` — resolve_files export
+- [ ] `file_handler/resolver.py`
+  - [ ] ResolvedFiles dataclass
+  - [ ] resolve_files() — 크기 분기, Redis 조회, 업로드, context cache
+  - [ ] contents 병합 순서: [Part(file), ..., "질문 텍스트"]
+- [ ] `file_handler/cache_store.py` — BaseJsonStore 상속, Redis CRUD
+- [ ] `file_handler/uploader.py` — Files API 업로드, create_cache, 재시도, 임시 파일 삭제
+- [ ] `file_handler/splitter.py` — ESG split_by_size 복제, 재귀 재분할
+
+### 2. runner.py
+
+- [ ] 4개 함수에 `cache_ttl` 파라미터 추가
+- [ ] done_check miss 후 resolve_files() 호출 + llm_input 조립
+- [ ] 404 fallback 처리
+
+### 3. keying.py 검증
+
+- [ ] cached_content 제외 동작 확인
+- [ ] FileRef/Part URI 정규화 확인
+
+### 4. 의존성 및 export
+
+- [ ] pyproject.toml에 PyMuPDF, kiwoom-redis-handler 추가
+- [ ] `__init__.py`에 file_handler export
+
+### 5. 테스트
+
+- [ ] test_resolver.py — 크기 분기, context cache 재사용, 혼합 파일
+- [ ] test_cache_store.py — Redis CRUD, TTL, hash_key
+- [ ] test_uploader.py — 업로드, create_cache, 재시도, 임시 파일 삭제
+- [ ] test_splitter.py — PDF 분할, 재귀 재분할, 분할 파트가 50MB 이하인데 Files API 업로드 거부당하는 케이스 확인 (실제 업로드 테스트)
+
+### 6. 문서 (구현 완료 후)
+
+- [ ] README: cache_ttl 사용법, 손익분기점, 캐시 키 경고
+
+---
+
+## 미래 고려사항
+
+- **Files API 프로젝트 저장 제한 20GB**: 대량 파일 업로드 시 초과 가능. 사용량 모니터링 + 초과 시 오래된 파일 정리 또는 업로드 제한 로직 필요
+- **파일 원본**: 현재 저장 안 함. 사용자가 매 호출마다 `file_paths` 제공. Redis 만료 시 재업로드
+
+---
+
+## 단계별 로드맵
+
+| Phase | 내용 | 상태 |
+|-------|------|------|
+| 1 | checksum 기반 캐시 키 ([file-checksum-cache.md](file-checksum-cache.md)) | 완료 |
+| 2 | **file_handler 라이브러리 구현** (이 문서) | **이번 작업** |
+| 3 | llm-handler 합체 + 서버화 (SDK+Service 분리, 담당자 합의 후) | 미래 |
+| 4 | orchestrator(run_many) 파일 연동 + 파일 서버 + MDB 파일 존재 여부 체크 | 미래 |
+
+### Phase 3 요약: 서버화
+
+llm-handler와 llm-request를 하나의 SDK+Service로 합침. SDK에서 checksum 계산 + Redis 조회 → cache hit 시 파일 전송 없이 cached_content name만 서버에 전달.
+
+### Phase 4 요약: orchestrator + 파일 서버
+
+orchestrator.py에 file_handler 연동 (run_many + 공유 파일). 파일 서버 구축하여 파일 원본 저장. MDB에서 파일 서버 데이터 존재 여부 체크.
+
+### 왜 라이브러리 먼저 서버화 나중에?
+
+| 관점 | 라이브러리 (Phase 2) | 서버화 (Phase 3) |
+|------|-------------------|----------------|
+| Agent 부담 | handler SDK 전부 agent 메모리에 로드 | SDK 하나만 |
+| 설정 관리 | Redis/MDB/LLM URL 다 설정 | Service URL 하나만 |
+| 보안 | agent가 모든 키 보유 | 키는 서버에만 |
+| 네트워크 | 로컬 함수 호출 (빠름) | HTTP 왕복 (수 ms) |
+
+**Phase 2를 라이브러리로 먼저**: 로직 검증이 우선. 서버화는 구조 변환이지 로직 변경이 아님.
