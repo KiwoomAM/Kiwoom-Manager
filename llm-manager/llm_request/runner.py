@@ -41,28 +41,12 @@ class _Prepared:
 
 # ── file_paths 처리 ───────────────────────────────────────────
 
-def _needs_file_paths(llm_input: dict) -> bool:
-    """contents에 FileRef/Part가 있거나 cached_content가 있으면 True."""
-    contents = llm_input.get("contents")
-    if isinstance(contents, list):
-        if any(isinstance(c, (FileRef, Part)) for c in contents):
-            return True
-    return bool(llm_input.get("cached_content"))
-
-
 def _resolve_file_meta(
-    llm_input: dict, file_paths: list[str] | None,
+    file_paths: list[str] | None,
 ) -> list[dict] | None:
-    """file_paths → file_meta 변환 + 검증."""
-    if not _needs_file_paths(llm_input):
-        return None
-
+    """file_paths → file_meta 변환."""
     if not file_paths:
-        raise ValueError(
-            "contents에 FileRef/Part가 포함되었거나 cached_content가 사용된 경우 "
-            "file_paths를 반드시 제공해야 합니다."
-        )
-
+        return None
     return [_compute_checksum(p) for p in file_paths]
 
 
@@ -85,15 +69,9 @@ def _prepare(
 
     # ── file_paths → file_meta 변환 + 검증 ──────────────────
     if cache_mode or save_mode:
-        file_meta = _resolve_file_meta(llm_input, file_paths)
+        file_meta = _resolve_file_meta(file_paths)
     else:
-        # 캐시/저장 둘 다 꺼져있으면 checksum 불필요, warning만
         file_meta = None
-        if _needs_file_paths(llm_input) and not file_paths:
-            logger.warning(
-                "파일이 포함된 요청이지만 file_paths가 없습니다. "
-                "cache_mode 또는 save_mode 활성화 시 file_paths가 필요합니다."
-            )
 
     # keying용 입력: file_meta가 있으면 checksum만 주입
     if file_meta:

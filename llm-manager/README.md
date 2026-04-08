@@ -16,33 +16,35 @@ Agent에서 LLM을 호출할 때 캐시 조회/저장을 처리
 | 패키지명 | `kiwoom-llm-request` |
 | 버전 | `0.1.0` |
 | Python | **`>=3.11`** |
-| 의존성 | mdb_handler, llm_handler |
+| 의존성 | mdb_handler, llm_handler, redis_handler |
 | 통신 방식 | 패키지 설치,  **LLM Handler·MDB Handler 각각 HTTP(httpx)**. 캐시는 **MDB Handler 서비스** 경유 |
 
 # 3. 디렉터리 구조
 
-```python
-packages/llm-request/llm_request/
-├── __init__.py                   # 공개 API (llm_request*, run_many*, done_check)
-├── runner.py                     # 단건 실행: sync/async + stream, 캐시·저장 연동
-├── orchestrator.py               # run_many, run_many_stream (병렬 N건) (현재 사용되지 않음)
-├── done_check.py                 # 캐시 키 생성·조회 (DoneCheckResult)
-├── store.py                      # MongoDB 캐시 get/set (mdb_handler 연동)
-├── keying.py                     # llm_input canonicalize → SHA-256 캐시 키
-├── checksum.py                   # 파일 checksum + 메타정보 추출 (내부 유틸리티)
-├── meta.py                       # llm_input → 저장용 meta dict (build_meta)
-└── DESIGN.md                     # 설계 문서
+```
+llm_request/
+├── __init__.py              # 공개 API (llm_request*, run_many*, done_check)
+├── runner.py                # 핵심: _prepare → done_check → call → save
+├── keying.py                # 캐시 키 생성 (canonicalize → sha256)
+├── checksum.py              # 파일 SHA-256 checksum + 메타정보
+├── done_check.py            # MDB 캐시 조회
+├── store.py                 # MDB 결과 저장
+├── meta.py                  # 메타데이터 구성
+├── orchestrator.py          # run_many, run_many_stream (배치 처리)
+└── file_handler/            # 파일 업로드/캐싱 자동화 → 8. File Handler 참고
 ```
 
 # 4. 설정 및 준비사항
 
 - LLM Handler 서비스 실행 중 (`http://192.7.9.45:8100`)
 - MongoDB 접근 가능 (`mongodb://192.7.9.45:27017/`)
+- Redis 접근 가능 (파일 캐싱용, 미연결 시 메모리 fallback)
 
 ```bash
 # 패키지 설치
 pip install -e ./packages/llm-handler/sdk
 pip install -e ./packages/mdb-handler/sdk
+pip install -e ./packages/redis-handler
 pip install -e ./packages/llm-request
 ```
 
@@ -96,16 +98,25 @@ llm_handler.aio.configure()
 ```python
 from llm_request import llm_request_async
 
+# 텍스트만
 response, meta = await llm_request_async(
     {
         "contents": "대한민국의 수도는?",
-        "model": "gemini-3-flash-preview",
+        "model": "gemini-2.5-flash",
         "temperature": 0,
         "max_tokens": 200,
     },
 )
 print(response.text)
-print(f"source:{meta['source']}")  # 'live' 또는 'cache'
+print(f"source: {meta['source']}")  # 'live' 또는 'cache'
+```
+
+```python
+# 파일 포함 — file_paths만 넘기면 크기에 따라 자동 처리
+response, meta = await llm_request_async(
+    {"contents": "이 PDF를 요약해줘", "model": "gemini-2.5-flash"},
+    file_paths=["report.pdf"],
+)
 ```
 
 # 6. llm_request function 상세설명
@@ -114,7 +125,7 @@ print(f"source:{meta['source']}")  # 'live' 또는 'cache'
 
 | 함수 | 파라미터 | 반환 타입 | **설명** |
 | --- | --- | --- | --- |
-| `llm_request` | `llm_input: dict`, `*`, `file_paths=None`, `cache_mode=True`, `save_mode=True`, `ttl_seconds=None`, `debug=False`, `database=None` | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
+| `llm_request` | `llm_input: dict`, `*`, `file_paths=None`, `cache_mode=True`, `save_mode=True`, `ttl_seconds=None`, `debug=False`, `database=None`, `context_cache_ttl=None` | `tuple[LLMResponse, dict]` | **동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.call`, 히트면 캐시 결과 반환. |
 | `llm_request_async` | 위와 동일 | `tuple[LLMResponse, dict]` | **비동기 단건 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.aio.call`, 히트면 캐시 결과 반환. |
 | `llm_request_stream` | 위와 동일 | `tuple[Iterator[StreamChunk], dict]` | **동기 스트리밍 LLM 호출**. 캐시 조회 후 미스면 `llm_handler.stream`, 히트면 캐시 결과 반환. |
 | `llm_request_stream_async` | 위와 동일 | `tuple[AsyncIterator[StreamChunk], dict]` | **비동기 스트리밍 LLM 호출.** 캐시 조회 후 미스면 `llm_handler.aio.stream`, 히트면 캐시 결과 반환. |
@@ -133,12 +144,13 @@ response, meta = await llm_request_async(
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
     },
-    file_paths=["report.pdf"],  # 파일 사용 시 경로 리스트. 텍스트만이면 생략 가능
-    cache_mode=True,            # 기본 True
-    save_mode=True,             # 기본 True
-    ttl_seconds=3600,           # 기본 None (예시로 3600 지정)
-    debug=False,                # 기본 False
-    # database=None             # 기본 None → env MONGODB_DATABASE 또는 kw_ai
+    file_paths=["report.pdf"],    # 파일 사용 시 경로 리스트. 텍스트만이면 생략 가능
+    cache_mode=True,              # 기본 True
+    save_mode=True,               # 기본 True
+    ttl_seconds=3600,             # MDB 문서 만료 (기본 None)
+    context_cache_ttl=None,       # Gemini Context Cache TTL (초). None이면 context caching 안 함
+    debug=False,                  # 기본 False
+    # database=None               # 기본 None → env MONGODB_DATABASE 또는 kw_ai
 )
 ```
 
@@ -644,7 +656,82 @@ tasks = [asyncio.create_task(process_item(it, wall0)) for it in items]
 results = [await c for c in asyncio.as_completed(tasks)]
 ```
 
-# 8. 주의사항
+# 8. File Handler
+
+---
+
+file_handler는 llm_request의 하위 모듈로, `file_paths`가 전달되면 자동으로 동작한다.
+
+```
+llm_request/file_handler/
+├── resolver.py      # 파일 크기 분기 (inline/Files API/split)
+├── cache_store.py   # Redis CRUD (file_cache)
+├── uploader.py      # Files API 업로드 + create_cache
+└── splitter.py      # PDF 분할
+```
+
+## 파일 처리 전략
+
+| 조건 | 처리 방식 | 설명 |
+|------|----------|------|
+| ≤20MB | inline (base64) | 파일을 base64로 인코딩하여 요청에 포함 |
+| >20MB | Files API 업로드 | Gemini Files API에 업로드 후 URI로 참조 |
+| PDF >50MB | split → Files API | 페이지 단위로 분할 후 각 파트를 Files API에 업로드 |
+
+## 전체 흐름
+
+```
+file_paths 입력
+  → checksum 계산 (SHA-256)
+  → 캐시 키 생성 (llm_input + file_checksums 해싱)
+  → MDB 캐시 조회
+    → hit: 캐시 반환
+    → miss:
+      → Redis에서 기존 context cache 조회
+        → hit: cached_content 재사용
+        → miss:
+          → 파일 크기별 분기 (inline/Files API/split)
+          → Files API 업로드 시 URI를 Redis에 캐싱 (48시간)
+          → context_cache_ttl이 있으면 context cache 생성 + Redis에 저장
+      → llm_handler로 LLM 호출
+      → MDB에 결과 저장
+```
+
+## Redis 캐시
+
+file_handler는 Files API URI와 Context Cache name을 Redis에 캐싱한다.
+
+| 카테고리 | 키 형식 | TTL | 용도 |
+|---------|--------|-----|------|
+| Files API | `file_cache:files_api:{checksum}` | 48시간 | 업로드된 파일 URI 재사용 |
+| Context Cache | `file_cache:context_cache:{hash_key}` | 사용자 설정 | context cache name 재사용 |
+
+- Redis 미연결 시 메모리 fallback (프로세스 종료 시 소멸)
+- 같은 파일을 다시 업로드하지 않으므로 API 호출 횟수와 시간 절감
+
+## Context Cache (opt-in)
+
+같은 파일로 반복 호출할 때 `context_cache_ttl`을 설정하면 Gemini Context Cache를 생성한다.
+캐시된 토큰은 입력 비용이 **90% 할인**된다.
+
+```python
+# 첫 호출: context cache 생성
+response, meta = await llm_request_async(
+    {"contents": "분석해줘", "model": "gemini-2.5-flash"},
+    file_paths=["report.pdf"],
+    context_cache_ttl=3600,  # 1시간
+)
+
+# 이후 호출: context_cache_ttl 없어도 Redis에서 기존 캐시 자동 재사용
+response2, meta2 = await llm_request_async(
+    {"contents": "ESG 등급은?", "model": "gemini-2.5-flash"},
+    file_paths=["report.pdf"],
+)
+```
+
+> 같은 파일로 시간당 4회 이상 호출할 때만 사용 권장 (저장 비용 손익분기점)
+
+# 9. 주의사항
 
 ---
 
@@ -671,30 +758,20 @@ for chunk in stream:
 
 ### 파일 포함 시 `file_paths` 필수
 
-파일을 LLM에 전달하는 경우(`FileRef`, `Part`, `cached_content` 등) `file_paths` 파라미터로 원본 파일 경로를 전달해야 합니다.
+`file_paths`에 파일 경로를 넘기면 파일 크기에 따라 자동으로 처리됩니다. 내부 동작은 **8. File Handler** 참고.
 
 ```python
-# FileRef 방식
-file_ref = upload_file("report.pdf")
 response, meta = await llm_request_async(
-    {"contents": ["분석해줘", file_ref]},
-    file_paths=["report.pdf"],
-)
-
-# Context Cache 방식 (ESG 패턴)
-cache_name = create_cache([file_ref], system_prompt)
-response, meta = await llm_request_async(
-    {"contents": "분석해줘", "cached_content": cache_name},
+    {"contents": "이 PDF를 요약해줘", "model": "gemini-2.5-flash"},
     file_paths=["report.pdf"],
 )
 ```
 
-- `file_paths`가 있으면 파일 내용의 **SHA-256 checksum**으로 캐시 키를 생성합니다.
+- `file_paths`가 있으면 파일 내용의 **SHA-256 checksum**으로 캐시 키를 생성
 - 같은 파일 내용 → 같은 checksum → **캐시 히트** (재업로드, 다른 URI여도 무관)
 - 파일 내용 변경 → 다른 checksum → **캐시 미스** (자동 재평가)
 - **파일명은 캐시 키에 영향 없음** — 이름이 바뀌어도 내용이 같으면 캐시 히트
 - 파일명, 크기, MIME 타입은 MongoDB에 `file_meta`로 저장되어 추적/조회 가능
-- `file_paths` 없이 `FileRef`/`Part`/`cached_content`를 사용하면 `ValueError` 발생
 - 텍스트만 사용 시 `file_paths` 생략 가능
 
 > **주의: file_paths와 contents 파일 일치 책임**
@@ -711,7 +788,7 @@ response, meta = await llm_request_async(
 
 즉, 실패한 호출은 캐시 문서로 남지 않으며, 다음 요청 시 다시 LLM을 호출합니다.
 
-# 9. llm_handler API re-export
+# 10. llm_handler API re-export
 
 ---
 

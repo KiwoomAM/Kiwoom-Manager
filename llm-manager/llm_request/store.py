@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HISTORY_DB = "kw_ai"
 
 def _get_collection(collection: str, database: str | None = None):
-    db_name = database or DEFAULT_HISTORY_DB
+    db_name = database or os.getenv("MONGODB_DATABASE", DEFAULT_HISTORY_DB)
     mdb = MongoDBHandler()
     return mdb.get_database(db_name, collection)
 
