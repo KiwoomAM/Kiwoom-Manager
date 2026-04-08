@@ -17,7 +17,7 @@ run_many는 같은 파일 + 다른 질문 N개를 배치로 처리하는 함수.
 
 ### 설계 방향
 
-- run_many에 `file_paths`, `cache_ttl` 파라미터 추가
+- run_many에 `file_paths`, `context_cache_ttl` 파라미터 추가
 - 공유 파일 1회 처리 후 모든 state에 주입
 - run_many는 N개 배치이므로 context caching 자동 적용 (거의 항상 이득)
 - model 통일 검증 (다르면 ValueError)
@@ -25,7 +25,7 @@ run_many는 같은 파일 + 다른 질문 N개를 배치로 처리하는 함수.
 ### run_many 파일 처리 흐름
 
 ```
-run_many(states, file_paths=[...], cache_ttl=1800)
+run_many(states, file_paths=[...], context_cache_ttl=1800)
     ↓
 ① model 검증: 모든 state의 model 동일한지 확인
     ↓
@@ -51,7 +51,7 @@ run_many(states, file_paths=[...], cache_ttl=1800)
 
 | | 단일 호출 (Phase 2) | 배치 호출 (Phase 4) |
 |--|-------------------|-------------------|
-| context caching | opt-in (cache_ttl 명시) | 자동 (N개 배치는 거의 항상 이득) |
+| context caching | opt-in (context_cache_ttl 명시) | 자동 (N개 배치는 거의 항상 이득) |
 | Redis 조회 | O (항상) | X (스킵, 바로 업로드+캐싱) |
 | model 통일 | X | O (다르면 ValueError) |
 | 혼합 파일 | 각 파일별 최적 경로 독립 | 모든 파일 하나의 cache에 통합 |
@@ -95,7 +95,7 @@ Phase 2에서는 파일 원본을 저장하지 않음. 사용자가 매 호출�
 
 ## TODO (Phase 4 시작 시 상세화)
 
-- [ ] orchestrator.py에 file_paths, cache_ttl 파라미터 추가
+- [ ] orchestrator.py에 file_paths, context_cache_ttl 파라미터 추가
 - [ ] run_many 내부에 공유 파일 처리 로직 구현
 - [ ] model 통일 검증
 - [ ] run_many_stream도 동일 변경

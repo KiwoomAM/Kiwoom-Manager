@@ -10,7 +10,7 @@ import logging
 import os
 
 from llm_handler.aio import create_cache as _aio_create_cache
-from llm_handler.aio import upload_file as _aio_upload
+from llm_handler.aio import upload_file
 from llm_handler.models import CacheRef, FileRef
 
 from .splitter import split_pdf
@@ -21,19 +21,6 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 2
 _RETRY_DELAY = 5  # 초
 _RETRYABLE_KEYWORDS = ("500", "503", "429", "RESOURCE_EXHAUSTED")
-
-
-async def upload_file(path: str, mime_type: str) -> FileRef:
-    """Files API에 파일 업로드.
-
-    Args:
-        path: 로컬 파일 경로.
-        mime_type: MIME 타입.
-
-    Returns:
-        FileRef(name, uri, mime_type, state).
-    """
-    return await _aio_upload(path, mime_type=mime_type)
 
 
 async def upload_pdf_parts(path: str, target_mb: int = 50) -> list[FileRef]:
@@ -52,7 +39,7 @@ async def upload_pdf_parts(path: str, target_mb: int = 50) -> list[FileRef]:
 
     # 원본 그대로 반환된 경우 (분할 불필요)
     if len(parts) == 1 and parts[0] == path:
-        ref = await upload_file(path, "application/pdf")
+        ref = await upload_file(path, mime_type="application/pdf")
         return [ref]
 
     # 분할된 임시 파일들 업로드
@@ -60,7 +47,7 @@ async def upload_pdf_parts(path: str, target_mb: int = 50) -> list[FileRef]:
     try:
         for i, part_path in enumerate(parts):
             logger.info("PDF 파트 업로드 %d/%d: %s", i + 1, len(parts), part_path)
-            ref = await upload_file(part_path, "application/pdf")
+            ref = await upload_file(part_path, mime_type="application/pdf")
             refs.append(ref)
     finally:
         # 임시 파일 삭제 (원본은 건드리지 않음)
@@ -130,5 +117,3 @@ async def create_context_cache(
                 await asyncio.sleep(_RETRY_DELAY)
             else:
                 raise
-
-    raise last_error  # type: ignore[misc]

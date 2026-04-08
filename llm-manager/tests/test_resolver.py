@@ -81,7 +81,7 @@ class TestFilesApi:
         meta = _meta("sha256:large", "large.bin", 25 * 1024 * 1024, "application/octet-stream")
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -109,7 +109,7 @@ class TestFilesApi:
 
         # upload가 호출되지 않아야 함
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
         ) as mock_upload:
             resolved = await resolve_files([meta], [file_path])
@@ -124,13 +124,13 @@ class TestFilesApi:
 class TestContextCache:
 
     @pytest.mark.asyncio
-    async def test_context_cache_created_with_cache_ttl(self, tmp_path):
-        """cache_ttl이 있으면 context cache 생성."""
+    async def test_context_cache_created_with_context_cache_ttl(self, tmp_path):
+        """context_cache_ttl이 있으면 context cache 생성."""
         file_path = _create_file(str(tmp_path / "ctx.bin"), 25 * 1024 * 1024)
         meta = _meta("sha256:ctx", "ctx.bin", 25 * 1024 * 1024, "application/octet-stream")
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ), patch(
@@ -141,7 +141,7 @@ class TestContextCache:
             resolved = await resolve_files(
                 [meta], [file_path],
                 model="gemini-2.5-flash",
-                cache_ttl=1800,
+                context_cache_ttl=1800,
             )
 
         assert resolved.cached_content == "cachedContents/new"
@@ -165,7 +165,7 @@ class TestContextCache:
 
         # upload/create_cache 호출 없이 Redis에서 가져와야 함
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
         ) as mock_upload, patch(
             "llm_request.file_handler.uploader._aio_create_cache",
@@ -186,7 +186,7 @@ class TestContextCache:
         meta = _meta("sha256:fail", "fail.bin", 25 * 1024 * 1024, "application/octet-stream")
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ), patch(
@@ -197,7 +197,7 @@ class TestContextCache:
             resolved = await resolve_files(
                 [meta], [file_path],
                 model="gemini-2.5-flash",
-                cache_ttl=1800,
+                context_cache_ttl=1800,
             )
 
         assert resolved.cached_content is None
@@ -220,7 +220,7 @@ class TestMixed:
         meta_large = _meta("sha256:l", "large.bin", 25 * 1024 * 1024, "application/octet-stream")
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.resolver.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):

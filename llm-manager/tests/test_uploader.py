@@ -15,7 +15,6 @@ from llm_handler.models import CacheRef, FileRef
 
 from llm_request.file_handler.uploader import (
     create_context_cache,
-    upload_file,
     upload_pdf_parts,
 )
 
@@ -41,24 +40,6 @@ def _fake_cache_ref(name: str = "cachedContents/xyz") -> CacheRef:
     return CacheRef(name=name, model="gemini-2.5-flash")
 
 
-# ── upload_file ──────────────────────────────────────────────
-
-
-class TestUploadFile:
-
-    @pytest.mark.asyncio
-    async def test_calls_aio_upload(self):
-        with patch(
-            "llm_request.file_handler.uploader._aio_upload",
-            new_callable=AsyncMock,
-            return_value=_fake_file_ref(),
-        ) as mock:
-            ref = await upload_file("/path/to/file.pdf", "application/pdf")
-
-            mock.assert_called_once_with("/path/to/file.pdf", mime_type="application/pdf")
-            assert ref.uri == "https://example.com/files/abc"
-
-
 # ── upload_pdf_parts ─────────────────────────────────────────
 
 
@@ -71,7 +52,7 @@ class TestUploadPdfParts:
         _create_pdf(pdf_path, num_pages=5)
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -96,7 +77,7 @@ class TestUploadPdfParts:
             return _fake_file_ref(uri=f"https://example.com/files/part{call_count}")
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.uploader.upload_file",
             side_effect=_mock_upload,
         ):
             refs = await upload_pdf_parts(pdf_path, target_mb=target_mb)
@@ -113,7 +94,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -134,7 +115,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "llm_request.file_handler.uploader._aio_upload",
+            "llm_request.file_handler.uploader.upload_file",
             new_callable=AsyncMock,
             side_effect=RuntimeError("업로드 실패"),
         ):

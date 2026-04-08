@@ -35,7 +35,7 @@
 |------|------|------------|
 | Inline (base64) | 요청 body에 base64 포함 | **사용** (≤20MB) |
 | Files API | 서버에 파일 업로드, URI로 참조 (무료) | **사용** (>20MB) |
-| Context Caching | 파일을 캐싱하여 토큰 90% 할인 | **opt-in** (`cache_ttl` 명시 시) |
+| Context Caching | 파일을 캐싱하여 토큰 90% 할인 | **opt-in** (`context_cache_ttl` 명시 시) |
 
 ### 파일 크기 분기
 
@@ -51,8 +51,8 @@
 ### Context Caching (opt-in)
 
 - **기본**: context caching 안 함 (Files API/inline만)
-- **opt-in**: `cache_ttl` 명시 시 create_cache 실행 + Redis에 저장
-- **자동 재사용**: Redis에 기존 context cache가 있으면 `cache_ttl` 유무와 관계없이 재사용
+- **opt-in**: `context_cache_ttl` 명시 시 create_cache 실행 + Redis에 저장
+- **자동 재사용**: Redis에 기존 context cache가 있으면 `context_cache_ttl` 유무와 관계없이 재사용
 - 비용: 토큰 90% 할인, 저장 비용 $1/1M토큰/시간 (Flash 기준)
 - **같은 파일로 시간당 4회 이상 호출할 때만 권장** (손익분기점)
 
@@ -76,10 +76,10 @@ key:   "file_cache:files_api:{file_checksum}"
 value: JSON { file_checksum, file_name, file_size, mime_type, uri }
 TTL:   48시간 (172800초)
 
-// Context Cache 레코드 (cache_ttl opt-in 시 생성)
+// Context Cache 레코드 (context_cache_ttl opt-in 시 생성)
 key:   "file_cache:context_cache:{hash_key}"
 value: JSON { file_checksums, model, system_instruction, cached_content_name, files_api_uris }
-TTL:   사용자 설정 cache_ttl (기본 3600초)
+TTL:   사용자 설정 context_cache_ttl (기본 3600초)
 ```
 
 ### hash_key 생성
@@ -120,7 +120,7 @@ Redis hit으로 URI/cached_content를 재사용했는데 Gemini에서 404 반환
 ## 전체 파이프라인
 
 ```
-사용자: llm_request_async(llm_input, file_paths=[...], cache_ttl=선택)
+사용자: llm_request_async(llm_input, file_paths=[...], context_cache_ttl=선택)
     ↓
 ① checksum 계산 (size, mime_type 포함)
     ↓
@@ -142,7 +142,7 @@ Redis hit으로 URI/cached_content를 재사용했는데 Gemini에서 404 반환
    └─ PDF >50MB → split → 각 파트를 Files API 업로드 → Redis 저장
                   (임시 파일은 try/finally로 삭제 보장)
     ↓
-④-b. cache_ttl이 있으면 → create_cache → Redis에 context cache 저장
+④-b. context_cache_ttl이 있으면 → create_cache → Redis에 context cache 저장
     ↓
 ⑤ llm_input 조립
    - context cache 있으면: llm_input["cached_content"] = cached_content_name
@@ -181,7 +181,7 @@ async def resolve_files(
     *,
     model: str | None = None,
     system_instruction: str | None = None,
-    cache_ttl: int | None = None,       # None이면 context caching 안 함
+    context_cache_ttl: int | None = None,       # None이면 context caching 안 함
 ) -> ResolvedFiles:
 ```
 
@@ -203,7 +203,7 @@ async def resolve_files(
              ├─ HIT → 기존 URI Part
              └─ MISS → Files API 업로드 → Redis 저장
 
-③ cache_ttl이 있으면:
+③ context_cache_ttl이 있으면:
    → create_cache 시도
      ├─ 성공 → cached_content=name, Redis 저장, contents_parts=[]
      └─ 실패 → contents_parts 유지, cached_content=None
@@ -225,7 +225,7 @@ def delete_key(key: str) -> None  # 404 fallback용
 ### uploader.py
 
 ```python
-async def upload_file(path: str, mime_type: str) -> FileRef
+# upload_file() 래퍼 제거 — llm_handler.aio.upload_file 직접 사용
 async def create_context_cache(
     file_refs: list[FileRef], *, model: str,
     system_instruction: str | None = None, ttl: int = 3600,
@@ -257,7 +257,7 @@ async def llm_request_async(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,       # 신규: context cache TTL (None=안 함)
+    context_cache_ttl: int | None = None,       # 신규: context cache TTL (None=안 함)
 ) -> tuple[LLMResponse, dict]:
 ```
 
@@ -323,7 +323,7 @@ packages/llm-request/
 │   ├── keying.py                     # 기존 유지 (Phase 1에서 완료)
 │   ├── meta.py                       # 기존 유지
 │   ├── orchestrator.py               # 기존 보관 (수정 안 함)
-│   ├── runner.py                     # 수정: resolve_files 호출, cache_ttl
+│   ├── runner.py                     # 수정: resolve_files 호출, context_cache_ttl
 │   ├── store.py                      # 기존 유지
 │   └── file_handler/                 # ★ 신규
 │       ├── __init__.py
@@ -356,14 +356,14 @@ result, meta = await llm_request_async(
 ### 같은 파일로 여러 번 호출 — context caching opt-in
 
 ```python
-# 첫 호출: cache_ttl 명시 → context cache 생성
+# 첫 호출: context_cache_ttl 명시 → context cache 생성
 result1, _ = await llm_request_async(
     {"contents": "요약해줘", "model": "gemini-2.5-flash"},
     file_paths=["report.pdf"],
-    cache_ttl=1800,
+    context_cache_ttl=1800,
 )
 
-# 이후: cache_ttl 없어도 Redis에서 기존 캐시 자동 재사용 (90% 할인)
+# 이후: context_cache_ttl 없어도 Redis에서 기존 캐시 자동 재사용 (90% 할인)
 result2, _ = await llm_request_async(
     {"contents": f"{result1.text}를 기반으로 분석해줘", "model": "gemini-2.5-flash"},
     file_paths=["report.pdf"],
@@ -414,7 +414,7 @@ result, meta = await llm_request_async({"contents": "오늘 날씨 어때?"})
 
 ### 2. runner.py
 
-- [ ] 4개 함수에 `cache_ttl` 파라미터 추가
+- [ ] 4개 함수에 `context_cache_ttl` 파라미터 추가
 - [ ] done_check miss 후 resolve_files() 호출 + llm_input 조립
 - [ ] 404 fallback 처리
 
@@ -437,7 +437,7 @@ result, meta = await llm_request_async({"contents": "오늘 날씨 어때?"})
 
 ### 6. 문서 (구현 완료 후)
 
-- [ ] README: cache_ttl 사용법, 손익분기점, 캐시 키 경고
+- [ ] README: context_cache_ttl 사용법, 손익분기점, 캐시 키 경고
 
 ---
 

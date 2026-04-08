@@ -34,7 +34,7 @@ def file_checksum(
     Args:
         source: 로컬 파일 경로.
         mime_type: 명시적 MIME 타입. None이면 자동 감지.
-        filename: 파일명 오버라이드. None이면 경로에서 추출.
+        filename: 파일명 오버라이드. None이면 path.name으로 경로에서 추출.
 
     Returns:
         FileChecksum dict.
@@ -52,8 +52,8 @@ def file_checksum(
     size = path.stat().st_size
 
     if mime_type is None:
-        ext_mime, _ = mimetypes.guess_type(str(path))
-        guess = filetype.guess(str(path))
+        ext_mime, _ = mimetypes.guess_type(str(path)) # 확장자 기반 MIME 타입 추측
+        guess = filetype.guess(str(path)) # 파일 내용 기반 MIME 타입 추측 (확장자 무관)
         mime_type = ext_mime or (guess.mime if guess else None) or "application/octet-stream"
 
     return FileChecksum(

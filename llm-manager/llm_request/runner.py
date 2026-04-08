@@ -36,7 +36,7 @@ class _Prepared:
     route_reason: str | None
     file_meta: list[dict] | None
     file_paths: list[str] | None
-    cache_ttl: int | None
+    context_cache_ttl: int | None
 
 
 # ── file_paths 처리 ───────────────────────────────────────────
@@ -77,7 +77,7 @@ def _prepare(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직."""
     meta = build_meta(llm_input)
@@ -111,7 +111,7 @@ def _prepare(
             dc=None, cached_output=None,
             route_reason="cache_off_save_off" if debug else None,
             file_meta=None,
-            file_paths=file_paths, cache_ttl=cache_ttl,
+            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
         )
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
@@ -125,7 +125,7 @@ def _prepare(
             dc=dc, cached_output=None,
             route_reason="cache_off_save_on" if debug else None,
             file_meta=file_meta,
-            file_paths=file_paths, cache_ttl=cache_ttl,
+            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
@@ -149,7 +149,7 @@ def _prepare(
                 dc=dc, cached_output=None,
                 route_reason="cache_deserialize_error" if debug else None,
                 file_meta=file_meta,
-                file_paths=file_paths, cache_ttl=cache_ttl,
+                file_paths=file_paths, context_cache_ttl=context_cache_ttl,
             )
 
         cached_meta: dict[str, Any] = {
@@ -170,7 +170,7 @@ def _prepare(
             dc=dc, cached_output=(cached_result, cached_meta),
             route_reason="cache_hit" if debug else None,
             file_meta=file_meta,
-            file_paths=file_paths, cache_ttl=cache_ttl,
+            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
         )
 
     # cache miss (또는 cache error)
@@ -183,7 +183,7 @@ def _prepare(
         dc=dc, cached_output=None,
         route_reason=route_reason if debug else None,
         file_meta=file_meta,
-        file_paths=file_paths, cache_ttl=cache_ttl,
+        file_paths=file_paths, context_cache_ttl=context_cache_ttl,
     )
 
 
@@ -325,7 +325,7 @@ def llm_request(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (sync). (LLMResponse, meta) 튜플 반환.
 
@@ -338,7 +338,7 @@ def llm_request(
         file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
-        cache_ttl=cache_ttl,
+        context_cache_ttl=context_cache_ttl,
     )
     if prep.cached_output:
         return prep.cached_output
@@ -355,12 +355,12 @@ async def llm_request_async(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
 
     Args:
-        cache_ttl: context cache TTL (초). None이면 context caching 안 함.
+        context_cache_ttl: context cache TTL (초). None이면 context caching 안 함.
             같은 파일로 시간당 4회 이상 호출할 때만 권장.
     """
     prep = _prepare(
@@ -368,7 +368,7 @@ async def llm_request_async(
         file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
-        cache_ttl=cache_ttl,
+        context_cache_ttl=context_cache_ttl,
     )
     if prep.cached_output:
         return prep.cached_output
@@ -381,7 +381,7 @@ async def llm_request_async(
             prep.file_paths,
             model=prep.llm_input.get("model"),
             system_instruction=prep.llm_input.get("system"),
-            cache_ttl=prep.cache_ttl,
+            context_cache_ttl=prep.context_cache_ttl,
         )
         call_input = _build_call_input(prep.llm_input, resolved)
 
@@ -398,7 +398,7 @@ def llm_request_stream(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
     """스트리밍 LLM 요청 (sync). 항상 (Iterator[StreamChunk], meta) 튜플 반환.
 
@@ -411,7 +411,7 @@ def llm_request_stream(
         file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
-        cache_ttl=cache_ttl,
+        context_cache_ttl=context_cache_ttl,
     )
     if prep.cached_output:
         response, meta = prep.cached_output
@@ -440,19 +440,19 @@ async def llm_request_stream_async(
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
     """스트리밍 LLM 요청 (async). 항상 (AsyncIterator[StreamChunk], meta) 튜플 반환.
 
     Args:
-        cache_ttl: context cache TTL (초). None이면 context caching 안 함.
+        context_cache_ttl: context cache TTL (초). None이면 context caching 안 함.
     """
     prep = _prepare(
         llm_input,
         file_paths=file_paths,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
-        cache_ttl=cache_ttl,
+        context_cache_ttl=context_cache_ttl,
     )
     if prep.cached_output:
         response, meta = prep.cached_output
@@ -470,7 +470,7 @@ async def llm_request_stream_async(
             prep.file_paths,
             model=prep.llm_input.get("model"),
             system_instruction=prep.llm_input.get("system"),
-            cache_ttl=prep.cache_ttl,
+            context_cache_ttl=prep.context_cache_ttl,
         )
         call_input = _build_call_input(prep.llm_input, resolved)
 

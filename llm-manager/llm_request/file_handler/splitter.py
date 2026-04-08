@@ -28,7 +28,7 @@ def _estimate_page_sizes(doc: fitz.Document, file_size: int) -> list[float]:
     합산하고, 실제 파일 크기에 비례하도록 스케일링한다.
     """
     page_sizes: list[float] = []
-    for page_num in range(len(doc)):
+    for page_num in range(len(doc)): 
         page = doc[page_num]
         size = 0
         for img in page.get_images(full=True):
@@ -81,7 +81,6 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
         return [path]
 
     doc = fitz.open(path)
-    total_pages = len(doc)
 
     # 페이지별 바이트 추정
     page_sizes = _estimate_page_sizes(doc, file_size)
@@ -118,7 +117,7 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
     for idx, group in enumerate(groups):
         part_doc = fitz.open(path)
         part_doc.select(group)
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
         part_doc.save(tmp.name, garbage=4, deflate=True)
         part_doc.close()
 
@@ -140,5 +139,32 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
             result.extend(sub_paths)
         else:
             result.append(tmp.name)
+
+    # 후처리: 인접 파트 병합 (실제 크기 기준)
+    if len(result) > 1:
+        merged: list[str] = [result[0]]
+        for i in range(1, len(result)):
+            prev_size = os.path.getsize(merged[-1])
+            curr_size = os.path.getsize(result[i])
+            if prev_size + curr_size <= limit_bytes:
+                doc_m = fitz.open(merged[-1])
+                doc_c = fitz.open(result[i])
+                doc_m.insert_pdf(doc_c)
+                doc_c.close()
+                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                doc_m.save(tmp.name, garbage=4, deflate=True)
+                doc_m.close()
+                os.unlink(merged[-1])
+                os.unlink(result[i])
+                merged[-1] = tmp.name
+                logger.info(
+                    "병합: 파트 %d+%d → %.1fMB",
+                    len(merged),
+                    len(merged) + 1,
+                    os.path.getsize(tmp.name) / (1024 * 1024),
+                )
+            else:
+                merged.append(result[i])
+        result = merged
 
     return result

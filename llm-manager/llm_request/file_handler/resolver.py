@@ -13,7 +13,8 @@ from llm_handler.models import FileRef, Part
 
 from ..checksum import FileChecksum
 from . import cache_store
-from .uploader import create_context_cache, upload_file, upload_pdf_parts
+from llm_handler.aio import upload_file
+from .uploader import create_context_cache, upload_pdf_parts
 
 logger = logging.getLogger(__name__)
 
@@ -36,20 +37,20 @@ async def resolve_files(
     *,
     model: str | None = None,
     system_instruction: str | None = None,
-    cache_ttl: int | None = None,
+    context_cache_ttl: int | None = None,
 ) -> ResolvedFiles:
     """파일 크기에 따라 최적 방식을 결정하고 처리한다.
 
     1. Redis에서 기존 context cache 조회 (항상)
     2. hit → cached_content 재사용
-    3. miss → 각 파일별 처리 → cache_ttl 있으면 create_cache + Redis 저장
+    3. miss → 각 파일별 처리 → context_cache_ttl 있으면 create_cache + Redis 저장
 
     Args:
         file_metas: checksum.file_checksum()으로 생성된 메타 리스트.
         file_paths: 로컬 파일 경로 리스트 (file_metas와 1:1 대응).
         model: Gemini 모델명 (context cache hash_key용).
         system_instruction: 시스템 프롬프트 (context cache hash_key용).
-        cache_ttl: context cache TTL. None이면 context caching 안 함.
+        context_cache_ttl: context cache TTL. None이면 context caching 안 함.
 
     Returns:
         ResolvedFiles(contents_parts, cached_content).
@@ -72,7 +73,7 @@ async def resolve_files(
 
     # ── ② 각 파일별 독립 처리 ─────────────────────────────────
     contents_parts: list[Part] = []
-    file_refs: list[FileRef] = []  # create_cache용 (cache_ttl 있을 때)
+    file_refs: list[FileRef] = []  # create_cache용 (context_cache_ttl 있을 때)
 
     for meta, path in zip(file_metas, file_paths):
         size = meta["size"]
@@ -95,14 +96,14 @@ async def resolve_files(
             contents_parts.append(part)
             file_refs.append(ref)
 
-    # ── ③ cache_ttl이 있으면 context cache 생성 ──────────────
-    if cache_ttl and file_refs:
+    # ── ③ context_cache_ttl이 있으면 context cache 생성 ──────────────
+    if context_cache_ttl and file_refs:
         try:
             cache_ref = await create_context_cache(
                 file_refs,
                 model=model,
                 system_instruction=system_instruction,
-                ttl=cache_ttl,
+                ttl=context_cache_ttl,
             )
             cache_store.save_context_cache(
                 hash_key,
@@ -113,7 +114,7 @@ async def resolve_files(
                     "cached_content_name": cache_ref.name,
                     "files_api_uris": [r.uri for r in file_refs],
                 },
-                ttl=cache_ttl,
+                ttl=context_cache_ttl,
             )
             logger.info("context cache 생성: %s", cache_ref.name)
             return ResolvedFiles(contents_parts=[], cached_content=cache_ref.name)
@@ -175,7 +176,7 @@ async def _resolve_files_api(
 
     existing = cache_store.find_files_api(checksum)
     if existing:
-        uri = existing["uris"][0] if existing.get("split") else existing["uris"][0]
+        uri = existing["uris"][0]
         logger.info("files_api cache hit: %s", uri)
         ref = FileRef(name="", uri=uri, mime_type=mime, state="ACTIVE")
     else:
