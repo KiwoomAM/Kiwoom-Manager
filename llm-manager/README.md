@@ -773,12 +773,7 @@ response, meta = await llm_request_async(
 - **파일명은 캐시 키에 영향 없음** — 이름이 바뀌어도 내용이 같으면 캐시 히트
 - 파일명, 크기, MIME 타입은 MongoDB에 `file_meta`로 저장되어 추적/조회 가능
 - 텍스트만 사용 시 `file_paths` 생략 가능
-
-> **주의: file_paths와 contents 파일 일치 책임**
->
-> `file_paths`에 전달한 파일과 `contents`에 포함된 `FileRef`/`Part`가 실제로 같은 파일인지는
-> llm_request에서 검증할 수 없습니다. 잘못된 경로를 전달하면 캐시 키가 잘못 생성됩니다.
-> **반드시 동일한 파일 경로를 사용하세요.**
+- `contents`에 `FileRef`/`Part`/`cached_content`를 직접 넣지 않는다 — `file_paths`만 넘기면 내부에서 자동 처리
 
 ---
 
