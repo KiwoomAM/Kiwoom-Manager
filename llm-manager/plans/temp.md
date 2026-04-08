@@ -1,49 +1,63 @@
-# 파일 처리 파이프라인 아키텍처
+# llm-request 아키텍처 다이어그램
 
-## 단건 호출 (llm_request_async)
+## 1. llm-request 전체 흐름
 
 ```mermaid
 flowchart TD
-    Start["사용자: llm_request_async(llm_input, file_paths)"] --> CS["① checksum 계산<br/>(size, mime_type 포함)"]
-    CS --> AgentLLM["② agent_llm 조회 (done_check)<br/>키: hash(llm_input + file_checksums)<br/>URI, cached_content 제외"]
-    AgentLLM -->|HIT| Return["LLMResponse 반환"]
-    AgentLLM -->|MISS| SizeBranch["③ 파일 크기 분기"]
+    Entry["llm_request_async / llm_request_stream_async"]
+    BatchEntry["run_many / run_many_stream"]
 
-    SizeBranch -->|"≤20MB"| Inline["inline<br/>base64 변환, contents에 추가<br/>file_cache 저장 안 함"]
-    SizeBranch -->|">20MB"| FC1["file_cache 조회<br/>(file_checksum)"]
-    SizeBranch -->|"PDF >50MB"| FC2["file_cache 조회<br/>(hash_key)"]
+    BatchEntry --> Sem["Semaphore (concurrency=5)"]
+    Sem --> Entry
 
-    FC1 -->|HIT| URI1["기존 URI 사용"]
-    FC1 -->|MISS| Upload1["Files API 업로드<br/>→ file_cache 저장"]
+    Entry --> Prepare["_prepare()"]
 
-    FC2 -->|HIT| Cache1["기존 cached_content_name 사용"]
-    FC2 -->|MISS| Split["split → Files API 업로드<br/>→ create_cache<br/>→ file_cache 저장"]
+    subgraph _prepare
+        Prepare --> CK["checksum.py<br/>file_checksum(path)<br/>→ SHA-256 + size + mime"]
+        CK --> Keying["keying.py<br/>canonicalize → SHA-256<br/>file_checksums 포함, URI/cached_content 제외"]
+        Keying --> DC["done_check.py<br/>cache_key로 MDB 조회"]
+        DC -->|HIT| Fast["cached_output 즉시 반환"]
+        DC -->|MISS| Prepared["_Prepared 반환<br/>(dc, file_meta, file_paths)"]
+    end
 
-    Inline --> Assemble["⑤ llm_input 조립"]
-    URI1 --> Assemble
-    Upload1 --> Assemble
-    Cache1 --> Assemble
-    Split --> Assemble
+    Prepared --> FH["resolve_files()<br/>(file_handler)"]
+    FH --> Build["_build_call_input()<br/>llm_input에 파일 참조 주입"]
+    Build --> Call["llm_handler.aio_call()<br/>→ Gemini API"]
+    Call --> Finalize["_finalize()"]
 
-    Assemble --> Call["⑥ llm_handler.call()"]
-    Call --> Save["⑦ agent_llm에 결과 저장"]
+    subgraph _finalize
+        Finalize --> Save["store.py<br/>save_result → MDB upsert"]
+        Save --> Meta["meta 구성<br/>(source, cache_hit, cache_key)"]
+    end
+
+    Meta --> Return["(LLMResponse, meta) 반환"]
 ```
 
-## 배치 호출 (run_many)
+## 2. file-handler 상세
 
 ```mermaid
 flowchart TD
-    Start2["사용자: run_many(states, file_paths)"] --> CS2["① 공유 file_paths checksum 계산"]
-    CS2 --> Size2["② 파일 크기 분기<br/>(file_cache 조회 스킵)"]
+    Start["resolve_files(file_metas, file_paths)"]
+    Start --> HashKey["hash_key 생성<br/>(checksums + model + system_instruction)"]
+    HashKey --> RedisCheck["cache_store.py<br/>find_context_cache(hash_key)"]
 
-    Size2 -->|"≤20MB"| Inline2["inline 준비"]
-    Size2 -->|">20MB"| Upload2["Files API 업로드"]
-    Size2 -->|"PDF >50MB"| Split2["split → Files API 업로드<br/>→ create_cache"]
+    RedisCheck -->|HIT| Reuse["기존 cached_content 재사용<br/>contents_parts=[], cached_content=name"]
 
-    Inline2 --> SaveFC["③ file_cache에 저장 (1회)"]
-    Upload2 --> SaveFC
-    Split2 --> SaveFC
+    RedisCheck -->|MISS| Loop["각 파일별 크기 분기"]
 
-    SaveFC --> Inject["④ 모든 state의 llm_input에<br/>파일 참조 주입"]
-    Inject --> Pipeline["⑤ 각 state별 기존 파이프라인<br/>done_check → cache hit/miss<br/>→ call → save<br/>(semaphore 동시성 제어)"]
+    Loop -->|"≤20MB"| Inline["Part.from_file()<br/>inline base64"]
+    Loop -->|">20MB"| FilesAPI["uploader.py<br/>upload_file() → URI"]
+    Loop -->|"PDF >50MB"| Split["splitter.py<br/>split_pdf(target=50MB)<br/>재귀 분할 + 인접 병합"]
+    Split --> UploadParts["uploader.py<br/>upload_pdf_parts()<br/>각 파트 업로드 → URI list"]
+
+    Inline --> Collect["contents_parts에 추가"]
+    FilesAPI --> SaveFA["cache_store.py<br/>save_files_api(checksum, TTL=48h)"]
+    SaveFA --> Collect
+    UploadParts --> Collect
+
+    Collect --> TTLCheck{"context_cache_ttl\n제공됨?"}
+    TTLCheck -->|No| Direct["ResolvedFiles<br/>contents_parts=parts<br/>cached_content=None"]
+    TTLCheck -->|Yes| CreateCache["uploader.py<br/>create_context_cache()<br/>(retry 3x on 500/503/429)"]
+    CreateCache --> SaveCC["cache_store.py<br/>save_context_cache(hash_key, TTL)"]
+    SaveCC --> Cached["ResolvedFiles<br/>contents_parts=[]<br/>cached_content=name"]
 ```

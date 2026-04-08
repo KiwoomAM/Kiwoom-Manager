@@ -670,6 +670,27 @@ llm_request/file_handler/
 └── splitter.py      # PDF 분할
 ```
 
+## 파일 입력 종류
+
+Client가 Gemini에 파일을 전달하는 모든 방식.
+
+### A. `contents`에 직접 넣는 방식
+
+| 방식 | 설명 | 사용 조건 |
+|------|------|----------|
+| **inline** | base64 인코딩하여 요청 body에 포함 | ≤20MB |
+| **Files API URI** | Gemini Files API에 업로드 후 `file_uri`로 참조 | >20MB (PDF >50MB는 split 후 업로드) |
+| **Open URI** | 외부 접근 가능한 URL을 직접 전달 (GCS, YouTube 등) | 공개 URL |
+
+### B. `cached_content`
+
+Gemini Context Cache에 파일을 미리 올려두고, 이후 요청에서 cache name으로 참조.
+같은 파일로 반복 호출 시 입력 토큰 비용 90% 절감.
+
+> `file_paths`를 넘기면 file_handler가 파일 크기에 따라 A의 방식을 자동 선택한다.
+> `cached_content`는 `context_cache_ttl` 설정 시 opt-in으로 생성된다.
+> Open URI는 현재 file_handler에서 미지원 — 필요 시 `contents`에 직접 `Part.from_uri()` 사용.
+
 ## 파일 처리 전략
 
 | 조건 | 처리 방식 | 설명 |
@@ -696,6 +717,44 @@ file_paths 입력
       → llm_handler로 LLM 호출
       → MDB에 결과 저장
 ```
+
+## Phase 2: 서버화 후 아키텍처
+
+현재(Phase 1)는 llm_request가 라이브러리로 동작하지만, Phase 2에서는 llm-handler와 합체하여 서버화된다.
+
+### 현재 (Phase 1: 라이브러리)
+
+```
+Agent → llm_request (라이브러리, 같은 머신)
+         ├→ MDB Handler (HTTP)
+         ├→ Redis (직접 연결)
+         ├→ file_handler (로컬 파일 접근)
+         └→ llm-handler SDK → HTTP → llm-handler Service → Gemini API
+```
+
+### 서버화 후 (Phase 2)
+
+```
+Agent 머신                          별도 서버
+┌────────────────┐                 ┌──────────────────────────┐
+│  Agent          │                │  LLM Handler Service     │
+│    └→ SDK       │── HTTP ──────→│    ├→ MDB (캐시)          │
+│       - checksum│                │    ├→ Redis (파일 캐시)   │
+│       - Redis   │                │    ├→ file_handler        │
+│                 │                │    └→ Gemini API          │
+└────────────────┘                 └──────────────────────────┘
+```
+
+### 핵심 차이: 파일 전송
+
+| | SDK (Agent 머신) | Service (별도 서버) |
+|--|------------------|-------------------|
+| 파일 접근 | **가능** — 로컬 파일 직접 읽기 | **불가** — 파일이 없음 |
+| checksum 계산 | **가능** — 파일 내용 해싱 | checksum을 **받기만** 함 |
+| 파일 전송 | 서버로 파일을 보내지 않음 | Redis/Gemini에서 URI로 참조 |
+
+> 서버화 후에도 파일 원본은 Agent 머신 → Gemini Files API로 직접 업로드되며,
+> Service에는 checksum과 URI만 전달된다. Agent↔Service 간 파일 전송은 없다.
 
 ## Redis 캐시
 
