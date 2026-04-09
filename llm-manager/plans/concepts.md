@@ -120,6 +120,10 @@ content hashing이 mtime보다 신뢰성 높다는 근거를 다루는 공식 �
 - **Git Internals 공식 문서** — content-addressable filesystem 설계 철학. https://git-scm.com/book/en/v2/Git-Internals-Git-Objects
 - **Bazel Remote Caching 공식 문서** — 입력의 SHA-256 해시로 캐시 키 생성. https://bazel.build/remote/caching
 
+### 파일명은 캐시 키에 영향 없음
+
+파일명은 캐시 키에 포함되지 않는다. 캐시 키는 파일 **내용**의 SHA-256 해시(checksum)로 결정되므로, 같은 내용의 파일이면 이름이 달라도 같은 캐시 키가 생성된다.
+
 ### MIME 타입 자동 감지
 
 파일 종류(PDF, 이미지 등)를 자동으로 판별하는 두 가지 방법:
@@ -234,6 +238,77 @@ Agent 머신                                별도 서버
 2. 모듈 경계를 깔끔하게 유지 (나중에 SDK/Service로 분리할 부분 인지)
 3. 검증 완료 후 서버화: 모듈을 SDK(호출자 측)와 Service(서버 측)로 재배치
 4. 리팩토링 비용은 있지만, 검증된 로직을 옮기는 거라 리스크 낮음
+
+---
+
+## 서버 내부 레이어 — config, models(DTO), router, core
+
+서버화할 때 코드를 역할별로 나누는 구조. Kiwoom-Rag의 기존 handler들(llm-handler, mdb-handler, api-handler)이 공통으로 사용하는 패턴.
+
+### 디렉토리 구조
+
+```
+service/app/
+├── main.py          # FastAPI 앱 생성, 미들웨어/에러핸들러 등록
+├── config.py        # 환경변수 관리
+├── core/            # 외부 연결 관리 + 에러 정의
+│   ├── errors.py
+│   └── provider.py  # DB/API 클라이언트 싱글톤
+├── models/          # 요청/응답 데이터 형태 정의 (DTO)
+│   ├── requests.py
+│   └── responses.py
+└── routers/         # HTTP 엔드포인트 정의
+    └── feature.py
+```
+
+### 각 레이어의 역할과 필요성
+
+| 레이어 | 역할 | 왜 필요한가 | 필수? |
+|--------|------|------------|-------|
+| **config.py** | 환경변수(DB URL, 포트 등) 관리 | 라이브러리일 때는 호출자가 설정했지만, 서버는 자기 환경을 스스로 관리해야 함 | 필수 |
+| **models/** (DTO) | HTTP로 주고받는 JSON 형태 정의 | 라이브러리는 Python 객체를 직접 넘기지만, HTTP는 JSON 직렬화가 필요하므로 형태를 명확히 정의해야 함 | 필수 |
+| **routers/** | HTTP 엔드포인트 (URL + 메서드) 정의 | 라이브러리의 함수 호출을 HTTP 요청으로 바꾸는 것. 이게 없으면 서버가 아님 | 필수 |
+| **core/** | 외부 시스템 연결(DB, Redis 등) 싱글톤 관리 | 서버는 오래 살아있는 프로세스이므로 연결을 한 번만 만들고 재사용 | 필수 |
+| **main.py** | FastAPI 앱 진입점, 미들웨어/에러핸들러 등록 | 서버 프로세스의 시작점 | 필수 |
+| **service/** (별도 레이어) | 비즈니스 로직 분리 | 기존 handler들도 사용하지 않음. router에서 직접 비즈니스 로직 호출. 로직이 복잡할 때만 선택적으로 분리 | 선택 |
+
+### DTO (Data Transfer Object)란
+
+HTTP로 데이터를 주고받으려면 JSON 형태를 정의해야 한다. 이 "형태 정의"가 DTO.
+
+```python
+# 라이브러리: Python dict/dataclass를 직접 넘김
+result = await llm_request_async({"contents": "분석해줘", "model": "gemini-2.5-flash"})
+
+# 서버: JSON으로 직렬화 → HTTP 전송 → JSON 역직렬화
+# 이 과정에서 "어떤 필드가 있고, 타입이 뭔지" 정의가 필요
+class LLMRequestBody(BaseModel):      # 요청 DTO
+    llm_input: dict
+    file_checksums: list[FileChecksum] | None = None
+    cache_mode: bool = True
+
+class LLMRequestResponse(BaseModel):  # 응답 DTO
+    text: str
+    cache_hit: bool
+    cache_key: str
+```
+
+Pydantic BaseModel을 사용하면 자동으로 JSON 변환 + 타입 검증 + OpenAPI 문서 생성.
+
+### 기존 handler들의 실제 패턴
+
+기존 handler들은 router 안에서 바로 비즈니스 로직을 실행한다 (별도 service 레이어 없음):
+
+```python
+# llm-handler의 routers/generate.py — router에서 직접 처리
+@router.post("/v1/generate")
+async def generate(request: GenerateRequest):
+    config = _build_config(request)           # 변환 (router 내부 함수)
+    response = await client.generate(config)  # 호출
+    return GenerateResponse(...)              # 응답
+```
+
+llm-request도 이 패턴을 따르면 된다. runner.py의 prepare/finalize 로직이 이미 잘 분리되어 있으므로 router에서 기존 함수를 호출하는 형태.
 
 ---
 
@@ -463,3 +538,120 @@ Redis 키가 Google 만료와 동시에 자동 삭제되므로:
 4. Redis에 새 키 저장
 
 application-level TTL(만료시각 저장 + 조회 시 비교)보다 **Redis native TTL이 깔끔**: 별도 만료 체크 로직 불필요, 안 읽히는 키도 자동 정리.
+
+---
+
+## Dockerfile vs docker-compose.yml vs requirements.txt
+
+Docker로 서비스를 배포할 때 사용하는 세 파일의 역할.
+
+### Dockerfile — "이 서버 하나를 어떻게 만드는가"
+
+하나의 서비스를 컨테이너 이미지로 만드는 레시피.
+
+```dockerfile
+FROM python:3.11-slim              # 기반 이미지
+WORKDIR /app
+COPY requirements.txt .            # 의존성 목록 복사
+RUN pip install -r requirements.txt # 설치
+COPY service/app/ ./app/           # 코드 복사
+EXPOSE 8101                        # 포트 선언
+CMD ["uvicorn", "app.main:app"]    # 실행 명령
+```
+
+결과: **이미지 1개** (예: `kiwoom-llm-request:latest`)
+
+### docker-compose.yml — "여러 서버를 어떻게 같이 띄우는가"
+
+여러 서비스를 한번에 관리하는 설정. Kiwoom-Rag 루트에 위치.
+
+```yaml
+services:
+  llm-request:
+    build:
+      dockerfile: packages/llm-request/service/Dockerfile
+    ports:
+      - "8101:8101"
+    environment:                              # ← config.py 기본값을 덮어씌움
+      - MDB_HANDLER_URL=http://mdb-handler:8300
+      - LLM_HANDLER_URL=http://llm-handler:8100
+```
+
+- Dockerfile을 참조해서 빌드
+- 환경변수, 포트, 네트워크 설정
+- `docker compose up -d` 한 번으로 전체 실행
+
+### requirements.txt — "어떤 패키지를 설치하는가"
+
+Dockerfile 안에서 `pip install`에 사용되는 의존성 목록.
+
+- `uv export`로 생성 (버전 고정 + 해시 포함)
+- 또는 직접 작성 (최소 버전만 명시)
+
+### 세 파일의 관계
+
+```
+docker-compose.yml (루트)
+  └── 서비스: llm-request
+        ├── build: Dockerfile 사용
+        │     └── pip install → requirements.txt
+        ├── environment: MDB_HANDLER_URL=...  ← config.py 기본값 덮어씌움
+        └── ports: 8101:8101
+```
+
+### config.py의 기본값과 환경변수
+
+```python
+# config.py
+class Settings(BaseSettings):
+    mdb_handler_url: str = "http://localhost:8300"  # 기본값 (fallback)
+```
+
+pydantic-settings가 자동으로 우선순위대로 읽는다:
+
+1. **환경변수** (docker-compose.yml의 environment) → 최우선
+2. **.env 파일** → 환경변수 없으면 여기서
+3. **config.py 기본값** → 둘 다 없으면 이걸 사용
+
+실제 운영에서 config.py의 기본값이 쓰이는 경우는 거의 없다. 로컬 개발 시 아무것도 설정 안 했을 때의 편의용.
+
+---
+
+## uv workspace
+
+Python 패키지 관리 도구 `uv`의 workspace 기능. 여러 패키지를 하나의 프로젝트로 관리한다.
+
+### 왜 쓰는가
+
+llm-request처럼 SDK와 Service가 분리된 프로젝트에서:
+- `uv sync` 한 번으로 sdk + service 의존성 전부 설치
+- `uv.lock`으로 버전 고정 (재현 가능한 빌드)
+- pip보다 10~100배 빠른 설치
+
+### 구성
+
+```toml
+# 루트 pyproject.toml
+[tool.uv.workspace]
+members = ["sdk", "service"]       # 하위 패키지 목록
+
+[tool.uv.sources]
+kiwoom-llm-request = { workspace = true }          # SDK
+kiwoom-llm-request-service = { workspace = true }   # Service
+```
+
+루트 pyproject.toml은 **workspace 관리용**일 뿐, 자체 코드는 없다 (`packages = []`).
+
+### 주요 명령어
+
+```bash
+cd packages/llm-request/    # workspace 루트
+uv sync                     # 전체 의존성 설치
+uv run pytest tests/ -v     # workspace 컨텍스트에서 테스트
+uv run uvicorn app.main:app --port 8101  # 서비스 실행
+uv export --no-dev -o requirements.txt   # Docker용 requirements 생성
+```
+
+### Kiwoom-Rag에서의 사용
+
+llm-handler, winus-handler가 이미 동일한 uv workspace 패턴을 사용 중.

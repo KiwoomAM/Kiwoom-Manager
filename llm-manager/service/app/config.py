@@ -1,0 +1,24 @@
+"""Service 설정 (환경변수 기반)."""
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """환경변수로부터 설정을 읽어오는 클래스."""
+
+    # 외부 서비스 URL
+    mdb_handler_url: str = "http://localhost:8300"
+    llm_handler_url: str = "http://localhost:8100"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # MongoDB
+    mongodb_database: str = "kw_ai"
+
+    # Server
+    host: str = "0.0.0.0"
+    port: int = 8101
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+settings = Settings()

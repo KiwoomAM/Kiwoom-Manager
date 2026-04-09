@@ -1,43 +1,27 @@
 [project]
-name = "kiwoom-llm-request"
+name = "LLM-Request"
 version = "0.1.0"
-description = "LLM + MongoDB cache request layer"
+description = "LLM Request - uv workspace root"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "kiwoom-llm-handler>=0.1.0",
-    "kiwoom-mdb-handler>=2.0.0",
-    "kiwoom-redis-handler>=1.0.0",
-    "filetype>=1.2.0",
-    "PyMuPDF>=1.24.0",
+    "kiwoom-llm-request[dev]",
+    "kiwoom-llm-request-service[dev]",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "ruff>=0.8.0",
-    "pyright>=1.1.0",
-    "ipykernel>=7.2.0",
-]
+[tool.uv.workspace]
+members = ["sdk", "service"]
+
+[tool.uv.sources]
+kiwoom-llm-request = { workspace = true }
+kiwoom-llm-request-service = { workspace = true }
+kiwoom-llm-handler = { path = "../llm-handler/sdk", editable = true }
+kiwoom-mdb-handler = { path = "../mdb-handler/sdk", editable = true }
+kiwoom-redis-handler = { path = "../redis-handler", editable = true }
 
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["llm_request*"]
-
-[tool.ruff]
-target-version = "py311"
-line-length = 120
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-
-[tool.pyright]
-pythonVersion = "3.11"
-typeCheckingMode = "standard"
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
+[tool.hatch.build.targets.wheel]
+packages = []
