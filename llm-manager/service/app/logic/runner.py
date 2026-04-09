@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -216,9 +217,17 @@ def _finalize(
                 requested_at=prep.requested_at,
                 file_meta=prep.file_meta,
             )
+            logger.info(
+                "MDB 저장 완료: database=%s, collection=%s, cache_key=%s",
+                database or os.getenv("MONGODB_DATABASE", "kw_ai"),
+                prep.dc.collection,
+                prep.dc.cache_key[:16] + "...",
+            )
         except Exception:
             logger.exception(
-                "LLM 결과 저장 실패: cache_key=%s — 결과는 정상 반환하되 캐시 미저장",
+                "MDB 저장 실패: database=%s, collection=%s, cache_key=%s",
+                database or os.getenv("MONGODB_DATABASE", "kw_ai"),
+                prep.dc.collection,
                 prep.dc.cache_key[:16] + "...",
             )
     return llm_result, _build_live_meta(prep)

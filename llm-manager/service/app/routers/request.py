@@ -43,7 +43,8 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
     """LLM 요청 (MDB 캐시 조회 → 호출 → 저장).
 
     SDK에서 file_checksums를 전달하면 서버가 캐시 키에 반영한다.
-    파일 자체는 /v1/files로 사전 업로드되어 있어야 한다.
+    - inline_files: ≤20MB 파일은 base64로 직접 포함 (Redis/Files API 불필요)
+    - file_checksums만: >20MB 파일은 /v1/files로 사전 업로드 필요
     """
     file_meta = None
     if body.file_checksums:
@@ -68,11 +69,33 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
     # MDB 캐시 미스 → LLM 호출
     call_input = dict(prep.llm_input)
 
-    # file_meta가 있으면 Redis 파일 캐시에서 URI 조회 → call_input 구성
+    # ── inline 파일 처리 (≤20MB, base64 → Part) ──
+    inline_parts: list = []
+    inline_checksums: set[str] = set()
+    if body.inline_files:
+        import base64
+        for f in body.inline_files:
+            raw = base64.b64decode(f.data_base64)
+            inline_parts.append(Part.from_bytes(data=raw, mime_type=f.mime_type))
+            inline_checksums.add(f.checksum)
+
+    # ── >20MB 파일: Redis 파일 캐시에서 URI 조회 ──
     if prep.file_meta:
-        call_input = _build_call_input_from_cache(
-            call_input, prep.file_meta, prep.context_cache_ttl,
-        )
+        large_file_meta = [m for m in prep.file_meta if m["checksum"] not in inline_checksums]
+        if large_file_meta:
+            call_input = _build_call_input_from_cache(
+                call_input, large_file_meta, prep.context_cache_ttl,
+            )
+
+    # ── inline parts를 contents에 추가 ──
+    if inline_parts:
+        contents = call_input.get("contents", "")
+        if isinstance(contents, str):
+            contents = [contents] if contents else []
+        elif isinstance(contents, list):
+            contents = [c for c in contents if isinstance(c, str)]
+        call_input["contents"] = inline_parts + contents
+        call_input.pop("file_checksums", None)
 
     res = await aio_call(**call_input)
     llm_result, meta = _finalize(prep, res, database=body.database)

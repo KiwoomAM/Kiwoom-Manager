@@ -14,11 +14,21 @@ class FileChecksumDTO(BaseModel):
     mime_type: str
 
 
+class InlineFileDTO(BaseModel):
+    """≤20MB 파일: base64로 직접 전달."""
+
+    checksum: str
+    filename: str
+    mime_type: str
+    data_base64: str  # base64 인코딩된 파일 데이터
+
+
 class LLMRequestBody(BaseModel):
     """POST /v1/request 요청 바디."""
 
     llm_input: dict
     file_checksums: list[FileChecksumDTO] | None = None
+    inline_files: list[InlineFileDTO] | None = None  # ≤20MB 파일 직접 포함
     cache_mode: bool = True
     save_mode: bool = True
     ttl_seconds: int | None = None

@@ -46,6 +46,7 @@ class AsyncClient:
         llm_input: dict,
         *,
         file_checksums: list[FileChecksum] | None = None,
+        inline_files: list[dict] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -61,6 +62,8 @@ class AsyncClient:
         }
         if file_checksums:
             body["file_checksums"] = file_checksums
+        if inline_files:
+            body["inline_files"] = inline_files
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if debug:

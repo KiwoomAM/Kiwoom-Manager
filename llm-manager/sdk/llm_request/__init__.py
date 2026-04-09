@@ -107,35 +107,63 @@ async def llm_request_async(
     Returns:
         (result dict, meta dict) 튜플.
     """
+    import base64
+
     client = _get_client()
     file_checksums: list[FileChecksum] | None = None
+    inline_files: list[dict] | None = None
+
+    _INLINE_LIMIT = 20 * 1024 * 1024  # 20MB
 
     if file_paths:
         # 1. checksum 계산 (로컬)
         file_checksums = [file_checksum(p) for p in file_paths]
-        checksums = [fc["checksum"] for fc in file_checksums]
 
-        # 2. Redis 파일 캐시 조회 (로컬)
-        missing = _check_redis_file_cache(checksums)
+        # 2. 크기별 분류: ≤20MB → inline, >20MB → upload
+        inline_files = []
+        large_checksums: list[str] = []
 
-        # 3. Redis 파일 캐시 miss인 파일 → 서버로 업로드
-        if missing:
-            missing_indices = [i for i, fc in enumerate(file_checksums) if fc["checksum"] in missing]
-            missing_paths = [file_paths[i] for i in missing_indices]
-            missing_metas = [file_checksums[i] for i in missing_indices]
+        for i, fc in enumerate(file_checksums):
+            if fc["size"] <= _INLINE_LIMIT:
+                # ≤20MB: base64로 읽어서 request에 직접 포함
+                with open(file_paths[i], "rb") as f:
+                    data = base64.b64encode(f.read()).decode()
+                inline_files.append({
+                    "checksum": fc["checksum"],
+                    "filename": fc["filename"],
+                    "mime_type": fc["mime_type"],
+                    "data_base64": data,
+                })
+            else:
+                large_checksums.append(fc["checksum"])
 
-            await client.upload_files(
-                missing_paths,
-                missing_metas,
-                context_cache_ttl=context_cache_ttl,
-                model=llm_input.get("model"),
-                system_instruction=llm_input.get("system"),
-            )
+        # 3. >20MB 파일: Redis 파일 캐시 조회 → miss면 서버로 업로드
+        if large_checksums:
+            missing = _check_redis_file_cache(large_checksums)
+            if missing:
+                missing_indices = [
+                    i for i, fc in enumerate(file_checksums)
+                    if fc["checksum"] in missing and fc["size"] > _INLINE_LIMIT
+                ]
+                missing_paths = [file_paths[i] for i in missing_indices]
+                missing_metas = [file_checksums[i] for i in missing_indices]
+
+                await client.upload_files(
+                    missing_paths,
+                    missing_metas,
+                    context_cache_ttl=context_cache_ttl,
+                    model=llm_input.get("model"),
+                    system_instruction=llm_input.get("system"),
+                )
+
+        if not inline_files:
+            inline_files = None
 
     # 4. 서버에 LLM 요청
     result = await client.request(
         llm_input,
         file_checksums=file_checksums,
+        inline_files=inline_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=ttl_seconds,
