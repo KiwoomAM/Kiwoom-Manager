@@ -5,7 +5,7 @@
 `llm_handler` SDK 위에 **MongoDB 캐시**를 얹은 레이어로
 Agent에서 LLM을 호출할 때 캐시 조회/저장을 처리
 
-- **Quickstart**: `quickstart.ipynb` — 간단한 예시 실행 가능한 코드
+- **Quickstart**: `quickstarts/quickstart_sdk.ipynb` — 간단한 예시 실행 가능한 코드
 
 # 2. 핵심 특징
 
@@ -623,7 +623,7 @@ print(f"source:{meta['source']}")
 
 ## 패턴 B: N건 처리 — `llm_request_async`
 
-여러 건을 `asyncio.create_task`로 동시에 걸고 `asyncio.as_completed`로 먼저 끝난 순서대로 받는 패턴입니다. 아래 예시는 곧바로 LLM을 호출합니다. 항목마다 **DB 조회 지연을 시뮬**하고 로그로 비동기 겹침을 보고 싶다면 `quickstart.ipynb` 의 패턴B 코드를 참고하시기 바랍니다.
+여러 건을 `asyncio.create_task`로 동시에 걸고 `asyncio.as_completed`로 먼저 끝난 순서대로 받는 패턴입니다. 아래 예시는 곧바로 LLM을 호출합니다. 항목마다 **DB 조회 지연을 시뮬**하고 로그로 비동기 겹침을 보고 싶다면 `quickstarts/quickstart_sdk.ipynb` 의 패턴B 코드를 참고하시기 바랍니다.
 
 ```python
 import asyncio
@@ -815,6 +815,12 @@ for chunk in stream:
 
 ---
 
+### inline 파일(≤20MB) 다수 첨부 시 요청 크기 주의
+
+≤20MB 파일은 base64로 인코딩되어 HTTP JSON body에 직접 포함됩니다. base64 인코딩은 원본 대비 약 33% 크기가 증가하므로, 20MB 파일 5개를 동시에 보내면 요청 body가 약 135MB에 달할 수 있습니다. 다수의 inline 파일을 첨부할 때는 총 크기를 고려하세요.
+
+---
+
 ### 파일 포함 시 `file_paths` 필수
 
 `file_paths`에 파일 경로를 넘기면 파일 크기에 따라 자동으로 처리됩니다. 내부 동작은 **8. File Handler** 참고.
@@ -907,3 +913,5 @@ response = call("질문", model="gemini-3-flash-preview")
 # 비동기 직접 호출
 response = await llm_handler.aio.call("질문", model="gemini-3-flash-preview")
 ```
+
+

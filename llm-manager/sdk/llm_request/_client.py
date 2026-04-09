@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ class AsyncClient:
             response = await self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:
             raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}") from e
+        except httpx.TimeoutException as e:
+            raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
 
         if response.status_code >= 400:
             try:
@@ -107,6 +110,65 @@ class AsyncClient:
         finally:
             for f in opened:
                 f.close()
+
+    async def request_stream(
+        self,
+        llm_input: dict,
+        *,
+        file_checksums: list[FileChecksum] | None = None,
+        inline_files: list[dict] | None = None,
+        cache_mode: bool = True,
+        save_mode: bool = True,
+        ttl_seconds: int | None = None,
+        debug: bool = False,
+        database: str | None = None,
+        context_cache_ttl: int | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """POST /v1/request/stream — SSE 스트리밍 요청."""
+        body: dict[str, Any] = {
+            "llm_input": llm_input,
+            "cache_mode": cache_mode,
+            "save_mode": save_mode,
+        }
+        if file_checksums:
+            body["file_checksums"] = file_checksums
+        if inline_files:
+            body["inline_files"] = inline_files
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if debug:
+            body["debug"] = debug
+        if database is not None:
+            body["database"] = database
+        if context_cache_ttl is not None:
+            body["context_cache_ttl"] = context_cache_ttl
+
+        try:
+            async with self._http.stream("POST", "/v1/request/stream", json=body) as resp:
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    try:
+                        err_body = resp.json()
+                        raise ServiceError(
+                            err_body.get("error", resp.text),
+                            status_code=resp.status_code,
+                            error_type=err_body.get("error_type"),
+                        )
+                    except ServiceError:
+                        raise
+                    except Exception:
+                        raise ServiceError(resp.text, status_code=resp.status_code)
+
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data == "[DONE]":
+                            break
+                        yield json.loads(data)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}") from e
+        except httpx.TimeoutException as e:
+            raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
 
     async def done_check(
         self,

@@ -655,3 +655,32 @@ uv export --no-dev -o requirements.txt   # Docker용 requirements 생성
 ### Kiwoom-Rag에서의 사용
 
 llm-handler, winus-handler가 이미 동일한 uv workspace 패턴을 사용 중.
+
+---
+
+## Redis 인프라 구조 (Predixy + Sentinel)
+
+앱이 사용하는 Redis URL(`redis://192.7.9.45:7617/0`)은 Redis에 직접 연결하는 것이 아니라 **Predixy 프록시**를 통해 접속한다.
+
+### 구조
+
+```
+앱 (port 7617) → Predixy (프록시) → Sentinel (모니터링) → Redis (port 6379)
+```
+
+| 컨테이너 | 역할 | 포트 |
+|----------|------|------|
+| `kiwoom-chatbot-redis` | Redis 본체 | 6379 |
+| `kiwoom-redis-sentinel` | Master 모니터링 / failover | 26379 (내부) |
+| `kiwoom-predixy` | Redis 프록시 (외부 진입점) | **7617** (외부 노출) |
+
+### 트러블슈팅: "Timeout reading from socket" 에러
+
+- Redis, Sentinel이 정상이어도 **Predixy가 Sentinel과의 연결을 잃으면** 타임아웃 발생
+- Predixy 컨테이너는 healthy로 보이지만 내부적으로 연결이 끊어진 상태일 수 있음
+- **해결**: `docker restart kiwoom-predixy`
+- **확인 순서**:
+  1. `docker ps -a | grep predixy` — 컨테이너 상태 확인
+  2. `docker exec kiwoom-redis-sentinel redis-cli -p 26379 sentinel get-master-addr-by-name mymaster` — Sentinel이 master를 아는지 확인
+  3. `docker exec kiwoom-chatbot-redis redis-cli info memory` — Redis 메모리 확인
+  4. Predixy 재시작으로 대부분 해결됨

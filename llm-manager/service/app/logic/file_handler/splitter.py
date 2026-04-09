@@ -18,6 +18,7 @@ import fitz  # PyMuPDF
 logger = logging.getLogger(__name__)
 
 _SAFETY_MARGIN = 0.95  # 5% 안전 마진
+_MERGE_LIMIT_MB = 45  # 병합 시 상한 (insert_pdf 후 크기 증가 가능성 대비)
 _MAX_DEPTH = 3  # 재분할 최대 깊이
 
 
@@ -116,10 +117,12 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
     result: list[str] = []
     for idx, group in enumerate(groups):
         part_doc = fitz.open(path)
-        part_doc.select(group)
-        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
-        part_doc.save(tmp.name, garbage=4, deflate=True)
-        part_doc.close()
+        try:
+            part_doc.select(group)
+            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
+            part_doc.save(tmp.name, garbage=4, deflate=True)
+        finally:
+            part_doc.close()
 
         part_size = os.path.getsize(tmp.name)
         part_mb = part_size / (1024 * 1024)
@@ -140,20 +143,25 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
         else:
             result.append(tmp.name)
 
-    # 후처리: 인접 파트 병합 (실제 크기 기준)
+    # 후처리: 인접 파트 병합 (실제 크기 기준, 45MB 상한)
+    merge_limit_bytes = _MERGE_LIMIT_MB * 1024 * 1024
     if len(result) > 1:
         merged: list[str] = [result[0]]
         for i in range(1, len(result)):
             prev_size = os.path.getsize(merged[-1])
             curr_size = os.path.getsize(result[i])
-            if prev_size + curr_size <= limit_bytes:
+            if prev_size + curr_size <= merge_limit_bytes:
                 doc_m = fitz.open(merged[-1])
-                doc_c = fitz.open(result[i])
-                doc_m.insert_pdf(doc_c)
-                doc_c.close()
-                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-                doc_m.save(tmp.name, garbage=4, deflate=True)
-                doc_m.close()
+                try:
+                    doc_c = fitz.open(result[i])
+                    try:
+                        doc_m.insert_pdf(doc_c)
+                    finally:
+                        doc_c.close()
+                    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                    doc_m.save(tmp.name, garbage=4, deflate=True)
+                finally:
+                    doc_m.close()
                 os.unlink(merged[-1])
                 os.unlink(result[i])
                 merged[-1] = tmp.name

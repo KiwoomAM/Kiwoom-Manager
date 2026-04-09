@@ -185,10 +185,14 @@ def canonicalize_llm_input(
             )
         except Exception:
             logger.error(
-                "캐시 키 정규화 완전 실패: 빈 '{}' 반환 — 캐시 키 충돌 위험",
+                "캐시 키 정규화 완전 실패: llm_input type=%s, keys=%s",
+                type(llm_input).__name__,
+                list(llm_input.keys()) if isinstance(llm_input, dict) else "N/A",
                 exc_info=True,
             )
-            return "{}"
+            raise ValueError(
+                f"캐시 키 정규화 완전 실패: llm_input type={type(llm_input).__name__}"
+            )
 
 
 # ── C. wrapper ───────────────────────────────────────────────

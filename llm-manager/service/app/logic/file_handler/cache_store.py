@@ -11,7 +11,7 @@ from redis_handler import BaseJsonStore
 from app.logic.keying import canonicalize_llm_input, make_cache_key
 
 # TTL 상수
-FILES_API_TTL = 172800  # 48시간 (Google Files API 만료)
+FILES_API_TTL = 169200  # 47시간 (Google Files API 48시간 만료보다 1시간 짧게 → 만료 URI 방지)
 CONTEXT_CACHE_DEFAULT_TTL = 3600  # 1시간
 
 

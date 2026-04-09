@@ -79,6 +79,8 @@ class TestUploadPdfParts:
         with patch(
             "app.logic.file_handler.uploader.upload_file",
             side_effect=_mock_upload,
+        ), patch(
+            "app.logic.file_handler.splitter._MERGE_LIMIT_MB", 0,
         ):
             refs = await upload_pdf_parts(pdf_path, target_mb=target_mb)
             assert len(refs) >= 2

@@ -103,7 +103,7 @@ def test_request_cache_off(test_client):
         "function_calls": None,
     }
 
-    with patch("app.routers.request.aio_call", new_callable=AsyncMock, return_value=mock_response):
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, return_value=mock_response):
         resp = test_client.post("/v1/request", json={
             "llm_input": {"contents": "테스트", "model": "gemini-2.5-flash"},
             "cache_mode": False,

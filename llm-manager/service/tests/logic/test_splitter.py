@@ -7,7 +7,7 @@ import os
 import fitz  # PyMuPDF
 import pytest
 
-from llm_request.file_handler.splitter import split_pdf
+from app.logic.file_handler.splitter import split_pdf
 
 
 # ── 헬퍼: 테스트용 PDF 생성 ─────────────────────────────────────
@@ -39,8 +39,11 @@ class TestSplitPdf:
 
         assert result == [pdf_path]
 
-    def test_split_creates_multiple_parts(self, tmp_path):
+    @pytest.mark.parametrize("merge_limit", [0])
+    def test_split_creates_multiple_parts(self, tmp_path, merge_limit):
         """target_mb를 낮추면 여러 파트로 분할된다."""
+        from unittest.mock import patch
+
         pdf_path = str(tmp_path / "multi.pdf")
         _create_pdf(pdf_path, num_pages=20)
 
@@ -48,7 +51,8 @@ class TestSplitPdf:
         # target을 파일 크기의 절반 이하로 설정 → 최소 2파트
         target_mb = (file_size / (1024 * 1024)) / 2
 
-        result = split_pdf(pdf_path, target_mb=max(target_mb, 0.001))
+        with patch("app.logic.file_handler.splitter._MERGE_LIMIT_MB", merge_limit):
+            result = split_pdf(pdf_path, target_mb=max(target_mb, 0.001))
 
         assert len(result) >= 2
         # 모든 파트가 실제 파일로 존재

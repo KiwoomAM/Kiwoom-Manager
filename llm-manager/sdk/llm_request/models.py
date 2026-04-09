@@ -4,14 +4,9 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+from llm_request.checksum import FileChecksum
 
-class FileChecksum(TypedDict):
-    """파일 checksum + 메타정보."""
-
-    checksum: str  # "sha256:<64자 hex>"
-    filename: str
-    size: int  # bytes
-    mime_type: str
+__all__ = ["FileChecksum", "RequestResult", "DoneCheckResult"]
 
 
 class RequestResult(TypedDict):

@@ -7,14 +7,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from llm_handler import call as sync_call
-from llm_handler import stream as sync_stream
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
-from llm_handler.models import FileRef, LLMResponse, Part, StreamChunk
+from llm_handler.models import LLMResponse, Part, StreamChunk
 
+from app.core.errors import FileUploadError
 from app.logic.done_check import DoneCheckResult, done_check
-from app.logic.file_handler import resolve_files
 from app.logic.meta import build_meta
 from app.logic.store import save_result
 
@@ -35,16 +33,14 @@ class _Prepared:
     cached_output: tuple[LLMResponse, dict[str, Any]] | None
     route_reason: str | None
     file_meta: list[dict] | None
-    file_paths: list[str] | None
     context_cache_ttl: int | None
 
 
 # ── prepare / finalize ─────────────────────────────────────────
 
-def _prepare(
+def prepare(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
     file_meta: list[dict] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -82,7 +78,7 @@ def _prepare(
             dc=None, cached_output=None,
             route_reason="cache_off_save_off" if debug else None,
             file_meta=None,
-            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
+            context_cache_ttl=context_cache_ttl,
         )
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
@@ -96,7 +92,7 @@ def _prepare(
             dc=dc, cached_output=None,
             route_reason="cache_off_save_on" if debug else None,
             file_meta=file_meta,
-            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
+            context_cache_ttl=context_cache_ttl,
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
@@ -120,7 +116,7 @@ def _prepare(
                 dc=dc, cached_output=None,
                 route_reason="cache_deserialize_error" if debug else None,
                 file_meta=file_meta,
-                file_paths=file_paths, context_cache_ttl=context_cache_ttl,
+                context_cache_ttl=context_cache_ttl,
             )
 
         cached_meta: dict[str, Any] = {
@@ -141,7 +137,7 @@ def _prepare(
             dc=dc, cached_output=(cached_result, cached_meta),
             route_reason="cache_hit" if debug else None,
             file_meta=file_meta,
-            file_paths=file_paths, context_cache_ttl=context_cache_ttl,
+            context_cache_ttl=context_cache_ttl,
         )
 
     # cache miss (또는 cache error)
@@ -154,40 +150,8 @@ def _prepare(
         dc=dc, cached_output=None,
         route_reason=route_reason if debug else None,
         file_meta=file_meta,
-        file_paths=file_paths, context_cache_ttl=context_cache_ttl,
+        context_cache_ttl=context_cache_ttl,
     )
-
-
-def _build_call_input(llm_input: dict, resolved: object) -> dict:
-    """resolve_files 결과를 llm_input에 반영한 호출용 dict를 만든다."""
-    from .file_handler import ResolvedFiles
-
-    assert isinstance(resolved, ResolvedFiles)
-    call_input = {**llm_input}
-
-    if resolved.cached_content:
-        # context cache 사용 → cached_content 설정, 파일 관련 contents 제거
-        call_input["cached_content"] = resolved.cached_content
-        # contents에서 기존 FileRef/Part 제거, 텍스트만 유지
-        contents = call_input.get("contents")
-        if isinstance(contents, list):
-            call_input["contents"] = [
-                c for c in contents if isinstance(c, str)
-            ]
-    elif resolved.contents_parts:
-        # inline/Files API → contents에 Part 추가 (파일 먼저, 텍스트 뒤)
-        contents = call_input.get("contents", "")
-        if isinstance(contents, str):
-            contents = [contents] if contents else []
-        elif isinstance(contents, list):
-            # 기존 FileRef/Part 제거, 텍스트만 유지
-            contents = [c for c in contents if isinstance(c, str)]
-        call_input["contents"] = list(resolved.contents_parts) + contents
-
-    # keying용 필드 제거 (llm_handler.call에 전달하면 안 됨)
-    call_input.pop("file_checksums", None)
-
-    return call_input
 
 
 def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
@@ -204,7 +168,7 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
     return meta
 
 
-def _finalize(
+def finalize(
     prep: _Prepared, llm_result: LLMResponse, *, database: str | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """LLM 응답 저장 + (LLMResponse, meta) 튜플 반환."""
@@ -293,43 +257,134 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
     )
 
 
-# ── Public API ─────────────────────────────────────────────────
+# ── 파일 처리 헬퍼 ─────────────────────────────────────────────
 
-def llm_request(
-    llm_input: dict,
-    *,
-    file_paths: list[str] | None = None,
-    cache_mode: bool = True,
-    save_mode: bool = True,
-    ttl_seconds: int | None = None,
-    debug: bool = False,
-    database: str | None = None,
-    context_cache_ttl: int | None = None,
-) -> tuple[LLMResponse, dict[str, Any]]:
-    """단일 LLM 요청 실행 (sync). (LLMResponse, meta) 튜플 반환.
+def _apply_inline_files(
+    call_input: dict,
+    inline_files: list[dict] | None,
+) -> tuple[dict, set[str]]:
+    """≤20MB inline 파일을 base64 디코딩하여 call_input에 추가.
 
-    Note:
-        file_handler(resolve_files)는 async 전용. sync에서는 file_paths에 의한
-        자동 업로드/캐싱이 동작하지 않음. async 함수(llm_request_async) 사용 권장.
+    Returns:
+        (수정된 call_input, inline으로 처리된 checksum set)
     """
-    prep = _prepare(
-        llm_input,
-        file_paths=file_paths,
-        cache_mode=cache_mode, save_mode=save_mode,
-        ttl_seconds=ttl_seconds, debug=debug, database=database,
-        context_cache_ttl=context_cache_ttl,
-    )
-    if prep.cached_output:
-        return prep.cached_output
-    res = sync_call(**prep.llm_input)
-    return _finalize(prep, res, database=database)
+    if not inline_files:
+        return call_input, set()
 
+    import base64
+
+    inline_parts: list = []
+    inline_checksums: set[str] = set()
+
+    for f in inline_files:
+        raw = base64.b64decode(f["data_base64"])
+        inline_parts.append(Part.from_bytes(data=raw, mime_type=f["mime_type"]))
+        inline_checksums.add(f["checksum"])
+
+    if inline_parts:
+        contents = call_input.get("contents", "")
+        if isinstance(contents, str):
+            contents = [contents] if contents else []
+        elif isinstance(contents, list):
+            contents = [c for c in contents if isinstance(c, str)]
+        call_input["contents"] = inline_parts + contents
+        call_input.pop("file_checksums", None)
+
+    return call_input, inline_checksums
+
+
+def _apply_cached_files(
+    call_input: dict,
+    file_meta: list[dict],
+    context_cache_ttl: int | None,
+) -> dict:
+    """Redis 파일 캐시에서 URI를 조회하여 call_input에 추가.
+
+    >20MB 파일의 URI를 Redis에서 가져온다 (SDK가 /v1/files로 사전 업로드).
+    """
+    from app.logic.file_handler.cache_store import (
+        find_context_cache,
+        find_files_api,
+        make_context_cache_key,
+    )
+
+    checksums = [m["checksum"] for m in file_meta]
+
+    # context cache 확인
+    hash_key = make_context_cache_key(
+        checksums,
+        model=call_input.get("model"),
+        system_instruction=call_input.get("system"),
+    )
+    cached = find_context_cache(hash_key)
+    if cached:
+        call_input["cached_content"] = cached["cached_content_name"]
+        contents = call_input.get("contents")
+        if isinstance(contents, list):
+            call_input["contents"] = [c for c in contents if isinstance(c, str)]
+        call_input.pop("file_checksums", None)
+        return call_input
+
+    # 개별 파일 URI 조회
+    contents_parts: list = []
+    for meta in file_meta:
+        existing = find_files_api(meta["checksum"])
+        if existing:
+            if existing.get("split"):
+                for uri in existing["uris"]:
+                    contents_parts.append(Part.from_uri(uri, mime_type=meta["mime_type"]))
+            else:
+                contents_parts.append(
+                    Part.from_uri(existing["uris"][0], mime_type=meta["mime_type"])
+                )
+        else:
+            raise FileUploadError(
+                f"파일 URI를 찾을 수 없습니다: {meta['checksum'][:16]}... "
+                "— /v1/files로 먼저 업로드하세요"
+            )
+
+    contents = call_input.get("contents", "")
+    if isinstance(contents, str):
+        contents = [contents] if contents else []
+    elif isinstance(contents, list):
+        contents = [c for c in contents if isinstance(c, str)]
+    call_input["contents"] = contents_parts + contents
+    call_input.pop("file_checksums", None)
+
+    return call_input
+
+
+def _build_server_call_input(
+    prep: _Prepared,
+    inline_files: list[dict] | None,
+) -> dict:
+    """inline 파일 + Redis 캐시 파일을 조합하여 최종 call_input을 만든다."""
+    call_input = dict(prep.llm_input)
+
+    # 1. inline 파일 적용
+    call_input, inline_checksums = _apply_inline_files(call_input, inline_files)
+
+    # 2. >20MB 파일: Redis에서 URI 조회
+    if prep.file_meta:
+        large_file_meta = [
+            m for m in prep.file_meta
+            if m["checksum"] not in inline_checksums
+        ]
+        if large_file_meta:
+            call_input = _apply_cached_files(
+                call_input, large_file_meta, prep.context_cache_ttl,
+            )
+
+    return call_input
+
+
+# ── Public API ─────────────────────────────────────────────────
 
 async def llm_request_async(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
     file_meta: list[dict] | None = None,
+    inline_files: list[dict] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -337,16 +392,9 @@ async def llm_request_async(
     database: str | None = None,
     context_cache_ttl: int | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
-    """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
-
-    Args:
-        file_meta: SDK에서 계산한 checksum 메타 리스트 (서버 모드).
-        context_cache_ttl: context cache TTL (초). None이면 context caching 안 함.
-            같은 파일로 시간당 4회 이상 호출할 때만 권장.
-    """
-    prep = _prepare(
+    """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환."""
+    prep = prepare(
         llm_input,
-        file_paths=file_paths,
         file_meta=file_meta,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
@@ -355,112 +403,98 @@ async def llm_request_async(
     if prep.cached_output:
         return prep.cached_output
 
-    # ── file_paths가 있으면 resolve_files → llm_input 조립 ────
-    call_input = prep.llm_input
-    if prep.file_meta and prep.file_paths:
-        resolved = await resolve_files(
-            prep.file_meta,
-            prep.file_paths,
-            model=prep.llm_input.get("model"),
-            system_instruction=prep.llm_input.get("system"),
-            context_cache_ttl=prep.context_cache_ttl,
-        )
-        call_input = _build_call_input(prep.llm_input, resolved)
-
+    call_input = _build_server_call_input(prep, inline_files)
     res = await aio_call(**call_input)
-    return _finalize(prep, res, database=database)
+    return finalize(prep, res, database=database)
 
 
-def llm_request_stream(
+def llm_request(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_meta: list[dict] | None = None,
+    inline_files: list[dict] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
-) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). 항상 (Iterator[StreamChunk], meta) 튜플 반환.
-
-    Note:
-        file_handler(resolve_files)는 async 전용. sync에서는 file_paths에 의한
-        자동 업로드/캐싱이 동작하지 않음. async 함수(llm_request_stream_async) 사용 권장.
-    """
-    prep = _prepare(
+) -> tuple[LLMResponse, dict[str, Any]]:
+    """단일 LLM 요청 실행 (sync)."""
+    import asyncio
+    return asyncio.run(llm_request_async(
         llm_input,
-        file_paths=file_paths,
+        file_meta=file_meta, inline_files=inline_files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
-    )
-    if prep.cached_output:
-        response, meta = prep.cached_output
-
-        def _cached() -> Iterator[StreamChunk]:
-            yield _to_stream_chunk(response)
-
-        return _cached(), meta
-
-    def _stream() -> Iterator[StreamChunk]:
-        accumulated: list[StreamChunk] = []
-        for chunk in sync_stream(**prep.llm_input):
-            accumulated.append(chunk)
-            yield chunk
-        _finalize_stream(prep, accumulated, database=database)
-
-    return _stream(), _build_live_meta(prep)
+    ))
 
 
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_meta: list[dict] | None = None,
+    inline_files: list[dict] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
-) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). 항상 (AsyncIterator[StreamChunk], meta) 튜플 반환.
+) -> AsyncIterator[StreamChunk]:
+    """스트리밍 LLM 요청 (async). StreamChunk를 yield.
 
-    Args:
-        context_cache_ttl: context cache TTL (초). None이면 context caching 안 함.
+    캐시 히트 시 단일 StreamChunk 1개 yield.
+    스트림 완료 후 MDB에 결과 자동 저장.
     """
-    prep = _prepare(
+    prep = prepare(
         llm_input,
-        file_paths=file_paths,
+        file_meta=file_meta,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
     )
+
     if prep.cached_output:
-        response, meta = prep.cached_output
+        response, _meta = prep.cached_output
+        yield _to_stream_chunk(response)
+        return
 
-        async def _cached() -> AsyncIterator[StreamChunk]:
-            yield _to_stream_chunk(response)
+    call_input = _build_server_call_input(prep, inline_files)
 
-        return _cached(), meta
+    accumulated: list[StreamChunk] = []
+    async for chunk in aio_stream(**call_input):
+        accumulated.append(chunk)
+        yield chunk
+    _finalize_stream(prep, accumulated, database=database)
 
-    # ── file_paths가 있으면 resolve_files → llm_input 조립 ────
-    call_input = prep.llm_input
-    if prep.file_meta and prep.file_paths:
-        resolved = await resolve_files(
-            prep.file_meta,
-            prep.file_paths,
-            model=prep.llm_input.get("model"),
-            system_instruction=prep.llm_input.get("system"),
-            context_cache_ttl=prep.context_cache_ttl,
-        )
-        call_input = _build_call_input(prep.llm_input, resolved)
 
-    async def _stream() -> AsyncIterator[StreamChunk]:
-        accumulated: list[StreamChunk] = []
-        async for chunk in aio_stream(**call_input):
-            accumulated.append(chunk)
-            yield chunk
-        _finalize_stream(prep, accumulated, database=database)
+def llm_request_stream(
+    llm_input: dict,
+    *,
+    file_meta: list[dict] | None = None,
+    inline_files: list[dict] | None = None,
+    cache_mode: bool = True,
+    save_mode: bool = True,
+    ttl_seconds: int | None = None,
+    debug: bool = False,
+    database: str | None = None,
+    context_cache_ttl: int | None = None,
+) -> Iterator[StreamChunk]:
+    """스트리밍 LLM 요청 (sync)."""
+    import asyncio
 
-    return _stream(), _build_live_meta(prep)
+    async def _collect():
+        results = []
+        async for chunk in llm_request_stream_async(
+            llm_input,
+            file_meta=file_meta, inline_files=inline_files,
+            cache_mode=cache_mode, save_mode=save_mode,
+            ttl_seconds=ttl_seconds, debug=debug, database=database,
+            context_cache_ttl=context_cache_ttl,
+        ):
+            results.append(chunk)
+        return results
+
+    return iter(asyncio.run(_collect()))

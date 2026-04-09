@@ -72,7 +72,6 @@ async def run_many_stream(
     이벤트 타입:
         - ``{"_index": int, "_type": "chunk", "chunk": StreamChunk, "meta": dict}``
         - ``{"_index": int, "_type": "done", "meta": dict}``
-        - ``{"_index": int, "_type": "cache_hit", "data": (LLMResponse, meta), "meta": dict}``
         - ``{"_index": int, "_type": "error", "error": Exception, "meta": dict}``
 
     Args:
@@ -97,56 +96,29 @@ async def run_many_stream(
             )
         async with sem:
             try:
-                stream_iter, meta = await llm_request_stream_async(
+                async for chunk in llm_request_stream_async(
                     llm_input,
                     cache_mode=state.get("cache_mode", True),
                     save_mode=state.get("save_mode", True),
                     ttl_seconds=state.get("ttl_seconds"),
                     debug=state.get("debug", False),
                     database=database,
-                )
-                meta["_index"] = idx
-                meta["_state"] = state
-
-                if meta["cache_hit"]:
-                    first_chunk: StreamChunk | None = None
-                    async for chunk in stream_iter:
-                        first_chunk = chunk
-                        break
-                    if first_chunk is not None:
-                        response = LLMResponse(
-                            text=first_chunk.text,
-                            model=meta.get("meta", {}).get("model", "unknown"),
-                            usage=first_chunk.usage,
-                            finish_reason=first_chunk.finish_reason,
-                            request_id="",
-                            function_calls=first_chunk.function_calls,
-                        )
-                        await queue.put(
-                            {
-                                "_index": idx,
-                                "_type": "cache_hit",
-                                "data": (response, meta),
-                                "meta": meta,
-                            }
-                        )
-                else:
-                    async for chunk in stream_iter:
-                        await queue.put(
-                            {
-                                "_index": idx,
-                                "_type": "chunk",
-                                "chunk": chunk,
-                                "meta": meta,
-                            }
-                        )
+                ):
                     await queue.put(
                         {
                             "_index": idx,
-                            "_type": "done",
+                            "_type": "chunk",
+                            "chunk": chunk,
                             "meta": meta,
                         }
                     )
+                await queue.put(
+                    {
+                        "_index": idx,
+                        "_type": "done",
+                        "meta": meta,
+                    }
+                )
             except Exception as exc:
                 await queue.put({
                     "_index": idx, "_type": "error",
