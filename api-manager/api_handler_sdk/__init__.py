@@ -23,11 +23,9 @@ API Handler SDK - HTTP 클라이언트
 
 from .handler import APIHandlerSDK
 from .exceptions import APIHandlerSDKError, APIHandlerConnectionError
-from .schemas import TOOL_SCHEMAS
 
 __all__ = [
     "APIHandlerSDK",
     "APIHandlerSDKError",
     "APIHandlerConnectionError",
-    "TOOL_SCHEMAS",
 ]
