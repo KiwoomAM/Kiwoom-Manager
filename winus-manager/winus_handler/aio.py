@@ -24,6 +24,8 @@ __all__ = [
     "execute_many_dml",
     "execute_insert",
     "execute_update",
+    "search_index",
+    "get_index_data",
     "check_database_connection",
 ]
 
@@ -108,6 +110,21 @@ async def execute_update(
     query: str, params: dict[str, Any] | None = None,
 ) -> int:
     return await _get_client().execute_update(query, params)
+
+
+# ── Index ──────────────────────────────────────────
+
+
+async def search_index(keyword: str) -> list[dict]:
+    """지수 검색. 한글↔영문 동의어, 정확 매칭 우선."""
+    return await _get_client().search_index(keyword)
+
+
+async def get_index_data(
+    bm_code: str, start_date: str, end_date: str,
+) -> "pd.DataFrame":
+    """지수 일자별 데이터 → pandas DataFrame."""
+    return await _get_client().get_index_data(bm_code, start_date, end_date)
 
 
 # ── Health ─────────────────────────────────────────

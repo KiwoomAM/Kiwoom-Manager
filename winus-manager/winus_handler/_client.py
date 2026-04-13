@@ -13,6 +13,7 @@ from winus_handler.models import (
     DataFrameData,
     DictRowsData,
     DmlResult,
+    IndexSearchData,
     OneRowData,
     RowsData,
 )
@@ -129,6 +130,35 @@ class AsyncClient:
     ) -> int:
         resp = await self._request("POST", "/v1/dml/update", json=self._dml_body(query, params))
         return DmlResult.model_validate(resp.json()).rowcount
+
+    # ── Index ──────────────────────────────────────────
+
+    async def search_index(self, keyword: str) -> list[dict]:
+        """지수 검색. 한글↔영문 동의어, 정확 매칭 우선."""
+        resp = await self._request("POST", "/v1/index/search", json={"keyword": keyword})
+        data = IndexSearchData.model_validate(resp.json())
+        return data.results
+
+    async def get_index_data(
+        self, bm_code: str, start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """지수 일자별 데이터 → pandas DataFrame."""
+        resp = await self._request("POST", "/v1/index/data", json={
+            "bm_code": bm_code, "start_date": start_date, "end_date": end_date,
+        })
+        data = DataFrameData.model_validate(resp.json())
+        df = pd.DataFrame(data.rows, columns=data.columns)
+        for col, dtype in data.dtypes.items():
+            if col not in df.columns:
+                continue
+            try:
+                if dtype == "datetime64[ns]":
+                    df[col] = pd.to_datetime(df[col])
+                elif dtype in ("int64", "float64"):
+                    df[col] = pd.to_numeric(df[col])
+            except Exception as e:
+                logger.warning("컬럼 '%s' dtype 복원 실패 (%s): %s", col, dtype, e)
+        return df
 
     # ── Health ─────────────────────────────────────────
 
