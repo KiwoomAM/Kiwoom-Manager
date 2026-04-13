@@ -141,7 +141,7 @@ class VDBHandler:
         top_k: int = 20,
         use_rerank: bool = True,
         rerank_top_k: int = 50,
-        block_type_filter: Optional[str] = None,
+        payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense + Sparse 하이브리드 검색"""
         return self.hybrid.search(
@@ -150,7 +150,7 @@ class VDBHandler:
             top_k=top_k,
             use_rerank=use_rerank,
             rerank_top_k=rerank_top_k,
-            block_type_filter=block_type_filter,
+            payload_filter=payload_filter,
         )
 
     def dense_search(
@@ -159,7 +159,7 @@ class VDBHandler:
         collection_name: str,
         top_k: int = 20,
         score_threshold: Optional[float] = None,
-        block_type_filter: Optional[str] = None,
+        payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense 벡터 단독 검색"""
         return self.dense.search(
@@ -167,7 +167,7 @@ class VDBHandler:
             collection_name=collection_name,
             top_k=top_k,
             score_threshold=score_threshold,
-            block_type_filter=block_type_filter,
+            payload_filter=payload_filter,
         )
 
     def sparse_search(
@@ -176,7 +176,7 @@ class VDBHandler:
         collection_name: str,
         top_k: int = 20,
         score_threshold: Optional[float] = None,
-        block_type_filter: Optional[str] = None,
+        payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Sparse 벡터 단독 검색 (SPLADE)"""
         return self.sparse.search(
@@ -184,7 +184,7 @@ class VDBHandler:
             collection_name=collection_name,
             top_k=top_k,
             score_threshold=score_threshold,
-            block_type_filter=block_type_filter,
+            payload_filter=payload_filter,
         )
 
     # ------------------------------------------------------------------
