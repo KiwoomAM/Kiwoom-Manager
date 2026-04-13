@@ -90,7 +90,7 @@ VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 |--------|--------|------|
 | `embed(text, task_type)` | `List[float]` | 단일 텍스트 Dense 임베딩 (1536차원) |
 | `embed_batch(texts, batch_size, task_type)` | `List[List[float]]` | 배치 Dense 임베딩 |
-| `search(query, collection_name, top_k, score_threshold, block_type_filter)` | `List[Dict]` | Dense 벡터 단독 검색 |
+| `search(query, collection_name, top_k, score_threshold, payload_filter)` | `List[Dict]` | Dense 벡터 단독 검색 |
 | `get_dimension()` | `int` | 임베딩 차원 조회 |
 | `is_ready` (property) | `bool` | 모델 준비 상태 |
 
@@ -100,7 +100,7 @@ VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 |--------|--------|------|
 | `embed(text)` | `Tuple[List[int], List[float]]` | 단일 SPLADE 임베딩 → (indices, values) |
 | `embed_batch(texts, batch_size)` | `List[Tuple]` | 배치 SPLADE 임베딩 |
-| `search(query, collection_name, top_k, score_threshold, block_type_filter)` | `List[Dict]` | Sparse 벡터 단독 검색 |
+| `search(query, collection_name, top_k, score_threshold, payload_filter)` | `List[Dict]` | Sparse 벡터 단독 검색 |
 | `is_ready` (property) | `bool` | 모델 준비 상태 |
 
 #### handler.hybrid — HybridClient
@@ -109,7 +109,7 @@ VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 |--------|--------|------|
 | `embed(text, task_type)` | `Dict` | 단일 하이브리드 임베딩 `{"dense": [...], "sparse": (indices, values)}` |
 | `embed_batch(texts, dense_batch_size, sparse_batch_size, task_type)` | `Dict` | 배치 하이브리드 임베딩 `{"dense": [[...]], "sparse": [...]}` |
-| `search(query, collection_name, top_k, use_rerank, rerank_top_k, block_type_filter)` | `List[Dict]` | Dense + Sparse + RRF 하이브리드 검색 |
+| `search(query, collection_name, top_k, use_rerank, rerank_top_k, payload_filter)` | `List[Dict]` | Dense + Sparse + RRF 하이브리드 검색 |
 | `is_ready` (property) | `bool` | Dense + Sparse 모두 준비 상태 |
 
 #### handler.collection — CollectionClient
@@ -228,14 +228,29 @@ handler.collection.upsert(
 ### 검색 파이프라인
 
 ```python
+# 기본 검색
 results = handler.hybrid.search(
     "2024년 실적 전망",
     collection_name="kw_gp",
     top_k=10,
     use_rerank=True,
 )
+
+# payload_filter를 사용한 검색
+results = handler.dense.search(
+    "삼성전자 ETF",
+    collection_name="etf_reports",
+    payload_filter={
+        "must": [
+            {"key": "일자", "range": {"gte": 20250101, "lte": 20250401}},
+            {"key": "category", "match": {"value": "ETF"}},
+        ]
+    },
+)
+
 for r in results:
     print(f"[{r['score']:.4f}] {r['file_name']} p.{r['page']}: {r['text'][:80]}")
+    print(f"  payload: {r['payload']}")
 ```
 
 ## 주의사항

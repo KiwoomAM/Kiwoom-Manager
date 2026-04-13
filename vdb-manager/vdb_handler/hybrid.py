@@ -78,7 +78,7 @@ class HybridClient:
         top_k: int = 20,
         use_rerank: bool = True,
         rerank_top_k: int = 50,
-        block_type_filter: Optional[str] = None,
+        payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense + Sparse 하이브리드 검색"""
         resp = self._client.post(
@@ -89,7 +89,7 @@ class HybridClient:
                 "top_k": top_k,
                 "use_rerank": use_rerank,
                 "rerank_top_k": rerank_top_k,
-                "block_type_filter": block_type_filter,
+                "payload_filter": payload_filter,
             },
         )
         return resp["results"]
