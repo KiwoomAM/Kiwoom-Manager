@@ -541,6 +541,66 @@ application-level TTL(만료시각 저장 + 조회 시 비교)보다 **Redis nat
 
 ---
 
+## 역인덱스 (Reverse Index)
+
+키-밸류 저장소에서 **역방향 조회**를 빠르게 하기 위한 보조 키. Redis처럼 "키로 값 얻기"만 O(1)인 저장소에선 반대 방향(값→키)을 직접 풀 수 없어 별도 보조 키가 필요하다.
+
+### 비유: 책의 목차 vs 색인
+
+- **목차(정방향)**: "1장은 어디?" → 23페이지
+- **책 뒤쪽 색인(역인덱스)**: "'갯벌'이란 단어 어디 나왔어?" → 45, 78, 102페이지
+
+목차만으론 단어 위치 못 찾음 → 책 전체를 뒤져야 함. 색인은 그걸 빠르게 해주는 보조 데이터.
+
+### Redis에서의 모습
+
+정방향 (기본 키):
+```
+files_api:abc123   →   { uris: ["gs://.../xyz789"], size: 30MB }
+      ↑                         ↑
+   키=checksum              값에 uri 포함
+```
+
+이 형태로 `"abc123의 uri 뭐야?"`는 즉시 풀림 (O(1)).
+그러나 `"xyz789라는 uri의 주인(checksum) 누구야?"`는 기본 키로는 불가능 → Redis 전체를 SCAN해서 각 value를 확인해야 함.
+
+역인덱스 추가:
+```
+files_api_uri:xyz789   →   "abc123"
+       ↑                       ↑
+    키=uri                 값=checksum
+```
+
+이러면 uri만 알아도 즉시 checksum 얻음. 단점: **Redis 키 2배**, 저장·삭제마다 두 키를 동기화해야 함.
+
+### 언제 쓰는가
+
+조회의 **시작점**이 "원본 키가 아닌 쪽"이고 거기서 원본 키를 역추적해야 할 때.
+예: 외부 시스템(Gemini Files API 등)이 uri 목록만 알려주는데, 우리 Redis는 checksum 기준으로 정렬돼 있을 때.
+
+### 언제 필요 없는가
+
+조회 시작점이 **원본 키 자체**인 경우. Redis SCAN으로 checksum을 직접 얻고 value에서 uri를 꺼내 외부 시스템에 전달하는 방향이면 역방향 조회가 일어나지 않음.
+
+llm-request의 Files API 용량 관리가 이 경우: **Redis SCAN + TTL 기반 FIFO**로 오래된 checksum을 시작점으로 고르고, value의 uri로 Gemini `delete_file` 호출. 역인덱스 불필요.
+
+### 트레이드오프
+
+| 방식 | 역방향 조회 속도 | 저장 공간 | 동기화 부담 |
+|---|---|---|---|
+| 역인덱스 추가 | O(1) | 2배 | 저장·삭제 2회 |
+| 역인덱스 없이 SCAN | O(N) | 기본 | 없음 |
+
+역방향 조회 빈도가 높거나 키 개수가 크면 역인덱스. 빈도 낮거나 "시작점을 바꿔서 역조회 자체를 회피" 가능하면 생략.
+
+### llm-request의 최종 선택
+
+- **파일 캐시(`files_api`) 역인덱스 생략**. 용량 관리는 SCAN + TTL로 처리 ([inline-vs-files-api-strategy.md](inline-vs-files-api-strategy.md) §8).
+- **장점**: Redis 키 개수 절반, 동기화 부담 없음, Phase A에서 저장 부담 없음.
+- **감수하는 것**: 용량 관리 시 O(N) SCAN. 현재 예상 키 개수(수백~수천)에선 무시 가능.
+
+---
+
 ## Dockerfile vs docker-compose.yml vs requirements.txt
 
 Docker로 서비스를 배포할 때 사용하는 세 파일의 역할.

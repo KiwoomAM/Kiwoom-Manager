@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     llm_handler_url: str = "http://localhost:8100"
     redis_url: str = "redis://localhost:6379/0"
 
+    # file_manager Service (포트는 TBD — 담당자 협의 후 확정)
+    file_manager_url: str = "http://localhost:8102"
+    file_manager_timeout: float = 30.0
+
     # MongoDB
     mongodb_database: str = "kw_ai"
 
