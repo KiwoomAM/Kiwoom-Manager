@@ -7,17 +7,25 @@ import logging
 from typing import Dict, List, Optional
 
 from mdb_handler._client import SyncClient
+from mdb_handler._paths import (
+    CollectionRoute,
+    build_aggregate_body,
+    build_count_body,
+    build_delete_body,
+    build_distinct_body,
+    build_find_body,
+    build_find_one_body,
+    build_insert_many_body,
+    build_insert_one_body,
+    build_replace_body,
+    build_update_body,
+)
 
 logger = logging.getLogger("mdb_handler.blocks")
 
 
 class BlocksCollection:
-    """
-    블록 컬렉션 CRUD / 집계 -- HTTP 클라이언트 래퍼.
-
-    기존 pymongo 기반 BlocksCollection과 동일한 메서드 시그니처를 유지합니다.
-    내부적으로 MDB Handler Service의 REST API를 호출합니다.
-    """
+    """블록 컬렉션 CRUD / 집계 -- HTTP 클라이언트 래퍼."""
 
     def __init__(
         self,
@@ -28,15 +36,16 @@ class BlocksCollection:
         self._client = client
         self.collection_name = collection_name
         self.database = database
-        self._prefix = f"/v1/{database}/{collection_name}"
+        self._route = CollectionRoute(database=database, collection=collection_name)
 
-    # =========================================================================
+    @property
+    def _prefix(self) -> str:
+        return self._route.prefix
+
     # Create
-    # =========================================================================
-
     def insert_one(self, document: Dict) -> str:
         resp = self._client.post(
-            f"{self._prefix}/insert_one", json={"document": document}
+            self._route.path("insert_one"), json=build_insert_one_body(document)
         )
         return resp["inserted_id"]
 
@@ -46,64 +55,65 @@ class BlocksCollection:
         if not documents:
             return []
         resp = self._client.post(
-            f"{self._prefix}/insert_many",
-            json={"documents": documents, "ordered": ordered},
+            self._route.path("insert_many"),
+            json=build_insert_many_body(documents, ordered=ordered),
         )
         return resp["inserted_ids"]
 
-    # =========================================================================
     # Read
-    # =========================================================================
-
     def get_all(self) -> List[Dict]:
-        resp = self._client.post(f"{self._prefix}/find", json={"filter": {}})
+        resp = self._client.post(
+            self._route.path("find"), json=build_find_body()
+        )
         return resp["data"]
 
     def get_by_id(self, block_id: str) -> Optional[Dict]:
         resp = self._client.post(
-            f"{self._prefix}/find_one",
-            json={"filter": {"block_id": block_id}},
+            self._route.path("find_one"),
+            json=build_find_one_body({"block_id": block_id}),
         )
         return resp["data"]
 
     def get_by_source(self, source_pdf: str) -> List[Dict]:
         resp = self._client.post(
-            f"{self._prefix}/find",
-            json={"filter": {"_metadata.source_pdf": source_pdf}},
+            self._route.path("find"),
+            json=build_find_body({"_metadata.source_pdf": source_pdf}),
         )
         return resp["data"]
 
     def get_sample(self, n: int = 5) -> List[Dict]:
         resp = self._client.post(
-            f"{self._prefix}/find", json={"filter": {}, "limit": n}
+            self._route.path("find"), json=build_find_body(limit=n)
         )
         return resp["data"]
 
     def find(self, filter: Dict = None, **kwargs) -> List[Dict]:
-        body: dict = {"filter": filter or {}}
-        for key in ("projection", "sort", "limit", "skip"):
-            if key in kwargs:
-                body[key] = kwargs[key]
-        resp = self._client.post(f"{self._prefix}/find", json=body)
+        resp = self._client.post(
+            self._route.path("find"),
+            json=build_find_body(
+                filter,
+                projection=kwargs.get("projection"),
+                sort=kwargs.get("sort"),
+                limit=kwargs.get("limit"),
+                skip=kwargs.get("skip"),
+            ),
+        )
         return resp["data"]
 
     def find_one(self, filter: Dict = None, **kwargs) -> Optional[Dict]:
-        body: dict = {"filter": filter or {}}
-        if "projection" in kwargs:
-            body["projection"] = kwargs["projection"]
-        resp = self._client.post(f"{self._prefix}/find_one", json=body)
+        resp = self._client.post(
+            self._route.path("find_one"),
+            json=build_find_one_body(filter, projection=kwargs.get("projection")),
+        )
         return resp["data"]
 
-    # =========================================================================
     # Update
-    # =========================================================================
-
     def update_one(
         self, filter: Dict, update: Dict, upsert: bool = False
     ) -> int:
         resp = self._client.post(
-            f"{self._prefix}/update_one",
-            json={"filter": filter, "update": update, "upsert": upsert},
+            self._route.path("update_one"),
+            json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
@@ -111,8 +121,8 @@ class BlocksCollection:
         self, filter: Dict, update: Dict, upsert: bool = False
     ) -> int:
         resp = self._client.post(
-            f"{self._prefix}/update_many",
-            json={"filter": filter, "update": update, "upsert": upsert},
+            self._route.path("update_many"),
+            json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
@@ -125,28 +135,21 @@ class BlocksCollection:
         self, filter: Dict, replacement: Dict, upsert: bool = False
     ) -> int:
         resp = self._client.post(
-            f"{self._prefix}/replace_one",
-            json={
-                "filter": filter,
-                "replacement": replacement,
-                "upsert": upsert,
-            },
+            self._route.path("replace_one"),
+            json=build_replace_body(filter, replacement, upsert=upsert),
         )
         return resp["modified_count"]
 
-    # =========================================================================
     # Delete
-    # =========================================================================
-
     def delete_one(self, filter: Dict) -> int:
         resp = self._client.post(
-            f"{self._prefix}/delete_one", json={"filter": filter}
+            self._route.path("delete_one"), json=build_delete_body(filter)
         )
         return resp["deleted_count"]
 
     def delete_many(self, filter: Dict) -> int:
         resp = self._client.post(
-            f"{self._prefix}/delete_many", json={"filter": filter}
+            self._route.path("delete_many"), json=build_delete_body(filter)
         )
         return resp["deleted_count"]
 
@@ -157,22 +160,19 @@ class BlocksCollection:
         return self.delete_many({"_metadata.source_pdf": source_pdf})
 
     def drop(self) -> None:
-        self._client.delete(f"{self._prefix}/drop")
+        self._client.delete(self._route.path("drop"))
 
-    # =========================================================================
-    # 메타데이터 / 통계
-    # =========================================================================
-
+    # 메타/집계
     def get_source_list(self) -> List[str]:
         resp = self._client.post(
-            f"{self._prefix}/distinct",
-            json={"field": "_metadata.source_pdf"},
+            self._route.path("distinct"),
+            json=build_distinct_body("_metadata.source_pdf"),
         )
         return resp["data"]
 
     def count(self, filter: Dict = None) -> int:
         resp = self._client.post(
-            f"{self._prefix}/count", json={"filter": filter or {}}
+            self._route.path("count"), json=build_count_body(filter)
         )
         return resp["count"]
 
@@ -182,12 +182,12 @@ class BlocksCollection:
             {"$sort": {"count": -1}},
         ]
         resp = self._client.post(
-            f"{self._prefix}/aggregate", json={"pipeline": pipeline}
+            self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return {doc["_id"]: doc["count"] for doc in resp["data"]}
 
     def aggregate(self, pipeline: List[Dict]) -> List[Dict]:
         resp = self._client.post(
-            f"{self._prefix}/aggregate", json={"pipeline": pipeline}
+            self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return resp["data"]
