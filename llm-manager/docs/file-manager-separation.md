@@ -292,7 +292,8 @@ class Settings(BaseSettings):
 - 파일이 file_manager MDB엔 있지만 file_server 실체가 사라진 경우는 운영상 배제
 - 동시성으로 인한 정합성 깨짐도 같은 가정 범주
 - 이후 운영 중 실제 발생이 확인되면 복구 전략을 별도 task로 설계
-- README의 "Future Work" 섹션에 기록 예정
+
+**Redis/Files API 등 기타 에러 상세는 문서 ② §9 참고.**
 
 ## 10. Phase 3 결정사항 중 폐기되는 것
 

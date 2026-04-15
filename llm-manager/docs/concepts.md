@@ -744,3 +744,169 @@ llm-handler, winus-handler가 이미 동일한 uv workspace 패턴을 사용 중
   2. `docker exec kiwoom-redis-sentinel redis-cli -p 26379 sentinel get-master-addr-by-name mymaster` — Sentinel이 master를 아는지 확인
   3. `docker exec kiwoom-chatbot-redis redis-cli info memory` — Redis 메모리 확인
   4. Predixy 재시작으로 대부분 해결됨
+
+---
+
+## Cache Stampede / Thundering Herd / Dogpile
+
+세 용어 모두 **같은 현상**을 부르는 이름이다: 캐시가 비어있는 동안 동일한 요청 N개가 동시에 백엔드로 몰려 중복 작업이 발생하는 문제.
+
+### 시나리오 (llm-request 기준)
+
+에이전트가 같은 PDF + 같은 프롬프트로 3개 요청을 동시에 보낸 상황:
+
+```
+t=0ms   req A, B, C 모두 도착
+t=1ms   A, B, C 각자 done_check → MDB 비어있음 → 모두 cache miss
+t=2ms   A, B, C 각자 Redis files_api:{checksum} 조회 → 모두 miss
+t=3ms   A, B, C 각자 upload_file() 호출 → Gemini 업로드 3회 ⚠️
+t=10s   A, B, C 각자 create_cache() → context_cache 3개 ⚠️
+t=11s   A, B, C 각자 llm_handler.call() → LLM 호출 3회 ⚠️
+```
+
+**피해**: Gemini 업로드 비용 3배, context_cache 3개(48h 중복 저장), 토큰 비용 3배.
+
+### 왜 발생하는가
+
+캐시 조회와 캐시 저장 사이에 **간극**이 있기 때문. 그 사이에 들어온 요청들은 모두 "비어있음"을 보고 각자 실제 작업을 시작한다.
+
+### 용어 출처
+
+- **cache stampede**: 캐시가 비어지는 순간 백엔드가 몰매 맞는 모습 → 가축 떼의 폭주(stampede) 비유
+- **thundering herd**: 잠자던 프로세스들이 동시에 깨어나 경쟁 → 천둥소리에 놀란 가축 떼 비유 (유닉스 `accept()` 경쟁에서 유래)
+- **dogpile**: 같은 뜻, Python 진영에서 자주 씀 (`dogpile.cache` 라이브러리 존재)
+
+---
+
+## Single-flight (= Request Coalescing)
+
+Cache stampede의 **해법 패턴**. "같은 작업은 한 번만 날린다(flight)"는 의미.
+
+### 핵심 아이디어
+
+같은 key에 대한 작업이 **진행 중이면, 뒤따라온 요청들은 첫 번째의 결과를 공유**한다. 첫 번째가 실패하면 실패도 공유한다.
+
+```python
+# 관용 구현 (Python asyncio, 약 20줄)
+_in_flight: dict[str, asyncio.Future] = {}
+
+async def run(key: str, factory):
+    if fut := _in_flight.get(key):
+        return await fut                 # 팔로워: 리더의 Future await
+    fut = asyncio.get_running_loop().create_future()
+    _in_flight[key] = fut
+    try:
+        result = await factory()
+        fut.set_result(result)
+        return result
+    except BaseException as e:
+        fut.set_exception(e)
+        raise
+    finally:
+        _in_flight.pop(key, None)
+```
+
+### 용어 구분 — single-flight vs 비슷한 것들
+
+| 용어 | 정확도 | 설명 |
+|------|--------|------|
+| **single-flight** ⭐ | **정식 명칭** | Go의 `golang.org/x/sync/singleflight` 가 업계 표준으로 만듦 |
+| request coalescing | 동의어 | CDN/프록시 문맥에서 자주 씀 |
+| request collapsing | 동의어 | Netflix Hystrix 용어 |
+| deduplication / dedup | 상위 개념 | 일반 용어 (중복 제거). 주로 **데이터** dedup(스토리지)에서 씀. "request deduplication" 이라고 하면 이 패턴을 포함 |
+| memoization | 다름 | 결과 캐싱 일반. single-flight는 "**진행 중인 호출**까지 공유"하는 특수 케이스 |
+
+### Sync vs Lock vs Single-flight — 비교
+
+세 개념은 다르다. 특히 **Lock과 헷갈리기 쉬움**.
+
+| | 정의 | 같은 key 요청 3개 | 다른 key 요청 3개 |
+|---|---|---|---|
+| **Sync / Sequential** | 모든 요청을 한 줄로 세워 하나씩 처리 | 3번 실행, 순차 | 3번 실행, **순차 (느림)** |
+| **Lock (mutex)** | 공유 자원 접근 시만 한 명씩 통과 | 3번 실행, 순차 (각자 자기 일 끝까지) | 다른 자원이면 병렬 |
+| **Single-flight** | 같은 일은 **1번만** 실행하고 결과 공유 | **1번 실행**, 나머지는 await | 3번 실행, **병렬** |
+
+비유:
+- **Sync** = 계산대 1개 — 주문이 같든 다르든 한 줄로
+- **Lock** = 창고 열쇠 1개 — 꺼낼 때만 한 명씩, 하지만 각자 자기 커피 끓임 (같은 커피라도 2번 끓임)
+- **Single-flight** = 같은 주문 묶어서 1번만 조리 — A가 커피 시키면 B도 그 커피 받음
+
+**결정적 차이**: Lock은 팔로워도 **자기 차례에 실행**함. Single-flight은 팔로워가 **실행 자체를 건너뜀** (Future await만).
+
+### 요청 단위가 아니라 "작업 단위" dedup
+
+Single-flight의 강력함은 **각 sub-operation이 자체 key와 자체 registry를 가질 수 있다**는 것. 바깥 요청이 완전히 달라도, 내부 sub-operation의 key만 같으면 그 단계에서 dedup 된다.
+
+예: llm-request에선 3계층으로 설계 가능
+
+```
+llm_request_async(req)
+└─ llm_call_registry.run(cache_key=전체해시)          ← ① LLM 레벨
+   └─ resolve_files(...)
+      └─ context_cache_registry.run(hash_key=파일+모델+system)  ← ② context_cache 레벨
+         └─ files_api_registry.run(file_checksum=파일내용)        ← ③ 업로드 레벨
+            └─ upload_file()
+```
+
+시나리오 — **질문은 다 다른데 파일은 같은** 3개 요청:
+
+| | Req A | Req B | Req C |
+|---|---|---|---|
+| 입력 | PDF + "요약" | PDF + "핵심 3개" | PDF + "번역" |
+| ① cache_key | `q1` | `q2` | `q3` |
+| ② hash_key | `k1` | `k1` | `k1` |
+| ③ file_checksum | `f1` | `f1` | `f1` |
+
+→ ①에선 dedup X (질문 다름), 하지만 ②에서 context_cache **1번만 생성**, ③에서 업로드 **1번만 실행**. LLM 호출만 각자 3번 수행.
+
+**요지**: "요청 전체가 같냐?"가 아니라 **"각 작업 단위가 같냐?"** 가 기준.
+
+### 시간축별 동작 — in-flight + persistent cache 협업
+
+Single-flight 혼자로는 완전하지 않다. 실행이 끝나면 in-flight dict에서 사라지므로. **persistent cache(Redis/MDB)와 한 쌍**으로 동작해야 한다.
+
+```
+시간 ─────────────────────────────────────►
+       A 실행          Redis/MDB 저장 기간        TTL 만료
+     ┌──────────┐ ┌──────────────────────────┐ ┌────────
+     │single-flight│ │    persistent cache       │ │  miss
+     │ dedup       │ │        dedup              │ │  (재실행)
+     └──────────┘ └──────────────────────────┘ └────────
+```
+
+| 시점 | 동작 |
+|------|------|
+| A 실행 중 (수 초) | 새 요청은 A의 Future await — **single-flight** |
+| A 완료 후 ~ TTL 내 | 새 요청은 Redis/MDB 조회 HIT — **persistent cache** |
+| TTL 만료 후 | 새 요청이 새 리더가 되어 재실행 |
+
+**핵심**: 시간차는 상관 없음. "A가 아직 뛰고 있냐?"만 확인. 끝난 뒤에 온 요청도 걱정 없음 — persistent cache가 받아줌.
+
+### 라이브러리
+
+| 언어 | 라이브러리 |
+|------|------------|
+| Go | [`golang.org/x/sync/singleflight`](https://pkg.go.dev/golang.org/x/sync/singleflight) (원조) |
+| Python | 표준 없음. [`aiocache`](https://github.com/aio-libs/aiocache) 에 내장, [`dogpile.cache`](https://github.com/sqlalchemy/dogpile.cache) (SQLAlchemy 팀), [`async-lru`](https://github.com/aio-libs/async-lru) |
+
+Python 진영에선 **직접 구현**이 관용적. 20줄 패턴이면 충분하고, 동작이 중요해서 투명하게 두는 걸 선호.
+
+### 교육과정에서의 위치
+
+학부 CS 커리큘럼에 **"single-flight"라는 이름으로 배우는 과목은 거의 없다**. 다만 관련 기반 개념은 여러 수업에서 만난다:
+
+- **운영체제**: race condition, mutex, synchronization — *기반*
+- **동시성 프로그래밍 / 병렬 컴퓨팅**: Future, Promise, async await — *도구*
+- **분산 시스템**: thundering herd, cache coherence — *문제 정의를 다루는 경우 있음*
+- **시스템 디자인 인터뷰**: cache stampede 해법으로 출제됨 — *실무 지향*
+
+정리하면:
+- **이름(single-flight)을 몰라도 개념은 익숙할 수 있음** (Future/Promise를 배웠다면)
+- **백엔드 실무에서 거의 필수로 만나는 패턴** — 캐시가 있는 시스템이면 언젠가 부딪힘
+- Go 커뮤니티가 이 이름을 널리 퍼뜨린 게 2017년경, 업계 용어로 정착한 지 10년 미만
+- 학부보단 **대학원 분산시스템 수업** 혹은 **실무/인터뷰 준비 과정**에서 접할 확률이 높음
+
+상사 등에게 설명할 땐:
+> "동시성 상황에서 **single-flight 패턴** (= request coalescing)을 적용해 **cache stampede**를 방지합니다. Go 표준 `singleflight` 가 그 방식이고, Python은 20줄 관용 구현으로 대체합니다."
+
+이 정도로 말하면 충분히 소통된다.

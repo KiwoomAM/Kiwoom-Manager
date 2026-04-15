@@ -46,8 +46,9 @@ Google 공식 문서를 모달리티별로 확인한 결과:
 | Gemini Files API URI | **48시간** | 만료 후 404 발생 → 재업로드 필요 |
 | Gemini Context Cache | 사용자 설정 TTL (기본 1h) | 토큰 90% 할인 but 저장비 발생 (시간당 4회 미만이면 손해) |
 | Redis `files_api:{checksum}` | 47시간 (안전 마진) | Gemini 48h보다 1h 짧게 |
-| Redis `files_api_uri:{uri}` | 47시간 (Files API와 동일) | 역인덱스 (§8 용량 관리용) |
 | Redis `context_cache:{hash}` | 사용자 TTL과 동일 | Gemini Context Cache와 동기화 |
+
+(※ 역인덱스 `files_api_uri:{uri}`는 이전 설계에서 고려됐으나 SCAN+TTL 기반 Phase B 용량 관리로 **채택 안 함**. 개념: `docs/concepts.md` "역인덱스")
 
 ### 2.3 base64 오버헤드
 원본 × 약 1.33배. 원본 20MB → base64 ~26.6MB. 요청 body 한도 계산 시 주의.
@@ -402,32 +403,56 @@ Files API 분류 진입
 - 기존 `splitter.split_pdf(path, target_mb=50)` 그대로 활용
 - C 분기에서 bytes → tempfile 저장 → split 필요 여부 체크
 - split된 각 파트는 개별 Files API URI로 업로드 → Redis `files_api:{checksum}`에 `split: True` + `uris: [...]` 저장
-- 역인덱스는 **각 파트 URI마다** 등록 (§8 용량 관리에서 파트별 삭제 가능성 대비)
 - 재호출 시 Redis HIT이면 복수 URI로 복수 Part 구성
+- Phase B 용량 관리 시 한 checksum의 복수 URI를 **한 번의 삭제로 일괄 정리** (§8.6)
 
 ## 7. 모듈별 상세
 
 ### 7.1 `runner.py`
 
 **제거**
-- `_apply_inline_files()`, `_apply_cached_files()`, `_build_server_call_input()`
+- `_apply_inline_files()`, `_apply_cached_files()` (입력 형식 폐기)
+
+**재설계**
+- `_build_server_call_input(prep)` — **async 변환** + `resolve_files()` 호출 + `_apply_resolved()`로 call_input 조합.
+- `_apply_resolved(llm_input, resolved) -> dict` — 신규. `inline_parts + uri_parts + 텍스트`를 contents에 합치고 `cached_content`는 별도 필드로, `file_checksums`는 제거 (Gemini에 전달 금지).
+- `_is_gemini_404(exc) -> bool` — 신규. 예외 메시지 기반 판정 (llm-handler가 예외 타입 세분화하면 개선).
 
 **수정**
-- `llm_request_async` / `llm_request_stream_async`: **진입 직후 validation 수행 (prepare 호출 이전 — fail-fast)**.
+- `llm_request_async` / `llm_request_stream_async`: **진입 직후 validation** (prepare 호출 이전 — fail-fast). `aio_call` / `aio_stream` 호출을 try/except로 감싸 Gemini 404 감지 시 `resolve_files_after_404` 호출 후 1회 재시도.
   ```python
   async def llm_request_async(llm_input, *, file_metas=None, ...):
       if file_metas:
           validate_mime_types(file_metas)     # §4.5 화이트리스트
           validate_file_sizes(file_metas)     # §4.6 2GB 상한
       prep = prepare(llm_input, file_metas=file_metas, ...)
-      ...
+      if prep.cached_output:
+          return prep.cached_output
+      call_input = await _build_server_call_input(prep)
+      try:
+          res = await aio_call(**call_input)
+      except Exception as e:
+          if _is_gemini_404(e) and prep.file_metas:
+              resolved = await resolve_files_after_404(...)
+              call_input = _apply_resolved(prep.llm_input, resolved)
+              res = await aio_call(**call_input)   # 1회만
+          else:
+              raise
+      return finalize(prep, res, database=database)
   ```
-- `prepare()`: `file_meta` 인자를 `file_metas: list[FileMeta]`로 받고, 각 FileMeta에 대해 `keying.make_file_checksum()` 호출하여 checksum 리스트 생성. 기존 keying 로직 그대로 연결.
-- `inline_files` 인자 제거, 파일 처리 후 `call_input` 구성 로직을 `resolve_files()` 호출로 단순화.
+- `prepare()`: `file_meta` → `file_metas: list[FileMeta]`, 각 FileMeta에 대해 `keying.make_file_checksum()` 호출하여 cache_key 구성.
 
 ### 7.2 `resolver.py` (재설계)
 
-Phase 2 라이브러리 버전(`Part.from_file(path)` 로컬 경로 사용)을 **완전히 교체**. `resolve_files`는 **부분 섞기 결과**를 반환.
+Phase 2 라이브러리 버전(`Part.from_file(path)` 로컬 경로 사용)을 **완전히 교체**. 구성:
+- `_inline_total_limit(pool)` — 모달리티 인지 한도 (20/50MB)
+- `_estimate_non_file_bytes(llm_input)` — 비파일 크기 추정
+- `classify_files(file_metas, llm_input)` — 부분 섞기 분류 (§4.1)
+- `_process_inline(inline_pool)` — inline 파일 처리 (§6.1)
+- `_process_files_api(pool, *, checksums, ...)` — Files API A/B/C 분기 (§6.2)
+- `ResolvedFiles` dataclass — 반환 구조
+- `resolve_files(file_metas, llm_input, *, model, system_instruction, context_cache_ttl)` — 진입점
+- `resolve_files_after_404(file_metas, llm_input, ...)` — Gemini 404 자동 복구 (§9)
 
 ```python
 @dataclass
@@ -592,8 +617,9 @@ def validate_file_sizes(file_metas: list[FileMeta]) -> None:
 
 ## 8. Files API 용량 관리 (Phase B — 후속 phase)
 
-> ⚠️ 이 섹션의 기능은 **후속 phase로 분리**한다. 1차 구현(Phase A — §11)에서는 포함하지 않는다.
-> Phase A에서도 `files_api:{checksum}` value에 `size`가 저장되는지만 확인 필요 (§7.5 기존 `save_files_api`가 이미 저장 중).
+> ⚠️ **Phase B 보류 중** — llm-handler SDK에 `delete_file(name)` 미노출 상태. 담당자 요청 중 (`/home/rladustn1227/02.github/llm-handler-requests.md`).
+> 제공 받기 전엔 Gemini 48h TTL + Redis 47h TTL 자연 정리에 의존.
+> `files_api:{checksum}` value의 `size` 필드는 **Phase A에서 이미 저장 중** ([resolver.py `_process_files_api`](../service/app/logic/file_handler/resolver.py)). Phase B는 이 값을 SCAN 시 용량 합산 기준으로 사용.
 
 ### 8.1 목적
 Gemini Files API 프로젝트 할당 **20GB 상한**을 넘지 않도록 llm-request가 자동 정리.
@@ -700,17 +726,25 @@ upload_file(tmp_path, mime, size) 호출 직전:
 
 ## 9. 에러 처리 (일반)
 
+**기본 정책**
+- llm-request 자체에는 재시도 없음 — 재시도는 각 handler(redis-handler / llm-handler) 내부에서 처리하도록 위임 (§12 백로그)
+- 각 실패 지점에서 원인 분류 가능한 에러 타입 + checksum/file_name 등 컨텍스트 로그 + raise
+- **예외**: Gemini "리소스 없음" 신호(404 — 파일/cache 부재)는 자동 복구 1회 (Redis 무효화 + 재업로드 + aio_call 재시도)
+
 | 상황 | 대응 |
 |---|---|
 | 지원하지 않는 mime 타입 (§2.4 화이트리스트 미포함) | `UnsupportedFileTypeError` → HTTP 422. `resolve_files()` 진입 직후 차단하여 LLM 호출 비용 낭비 방지 |
 | 개별 파일 2GB 초과 (§4.6) | `FileTooLargeError` → HTTP 422. Gemini Files API 파일당 상한. mime 검증 직후 차단 |
 | 오디오 9.5시간 초과 | **사전 체크 불가** — 파일 bytes로 재생 길이 산출 불가. 업로드 후 Gemini가 거부 → 런타임 에러로 상위 전파 |
-| Gemini 404 (URI 만료) | 해당 `files_api:{checksum}` 키 삭제 → 재다운로드·재업로드 재시도. URI → checksum 역추적은 불필요 (해당 요청 처리 과정에서 checksum을 이미 알고 있음) |
-| `create_context_cache` 실패 | 경고 로그 + Files API URI 그대로 사용해 LLM 호출 진행 (기존 resolver 패턴 유지) |
+| Redis 조회/저장 실패 (find_*, save_*) — 연결 실패 포함 | `CacheError` (HTTP 502) raise. 로그에 어느 연산(find_files_api / save_context_cache 등) + checksum/hash_key 명시. 재시도는 redis-handler 측 책임 (§12 백로그) |
+| Files API 업로드 실패 (`upload_file` / `upload_pdf_parts`) | `FileUploadError` (HTTP 502) raise. 로그에 file_name, mime_type, 원본 예외 명시. 재시도는 llm-handler 측 책임 (§12 백로그) |
+| `create_context_cache` 실패 | `FileUploadError` (HTTP 502) raise. `context_cache_ttl` 지정 자체가 "캐시가 필요하다"는 명시이므로 silent fallback 안 함 |
+| Gemini 404 (URI/cache 부재 — 드문 상황) | **자동 복구 1회**: 해당 checksums의 `files_api:{checksum}` + `context_cache:{hash_key}` Redis 키 삭제 → `_process_files_api` 재호출 (분기 C로 자연 유입) → aio_call 재호출. 두 번째 404는 진짜 오류 → raise. 정상 운영에선 Redis TTL(47h) < Gemini TTL(48h)로 거의 발생 안 함 |
+| 그 외 Gemini 5xx / 429 / 인증 오류 | 그대로 raise. llm-handler가 재시도 책임 (§12 백로그) |
 | `delete_cached_content` 실패 (§8.5 연쇄 삭제) | 경고 로그 + Files API 삭제는 계속 진행. stale Gemini context cache는 TTL로 자연 만료 |
-| file_manager 404 (파일 없음) | 문서 ①에 따라 "발생하지 않는다고 가정". 발생 시 503 + future work로 기록 |
-| file_manager 타임아웃/연결 실패 | 504/503 + 기존 에러 계층(`FileUploadError` 또는 신규 에러) 통해 라우터에서 HTTP 응답 |
-| tempfile 누수 | `with NamedTemporaryFile(delete=True)` 블록으로 자동 삭제. split 내부 tempfile은 기존 uploader의 finally에서 `os.unlink` |
+| file_manager 404 (파일 없음) | 문서 ①에 따라 "발생하지 않는다고 가정". 발생 시 `LLMRequestServiceError(502)` |
+| file_manager 타임아웃/연결 실패 | `LLMRequestServiceError(503/504)` raise (① T2에서 구현됨) |
+| tempfile 누수 | `try/finally`에서 `os.unlink` (uploader / resolver 모두 동일 패턴) |
 | PDF split 후에도 파트가 50MB 초과 | 기존 splitter의 재귀(`_MAX_DEPTH=3`)로 처리. 초과 시 경고 후 그대로 업로드 → Gemini가 거부하면 에러 전파 |
 
 ## 10. Phase 3 폐기 항목 정리
@@ -737,8 +771,8 @@ upload_file(tmp_path, mime, size) 호출 직전:
 - Gemini 404 fallback (해당 checksum 키 삭제 + 재업로드)
 - 테스트 작성
 
-### Phase B (후속 — Files API 용량 관리)
-20GB 한도 대응. Phase A 운영 중 용량 압박 확인 후 착수.
+### Phase B (미구현 — llm-handler SDK 제공 대기)
+20GB 한도 대응. **진입 조건**: llm-handler SDK에 `delete_file(name)` 노출 (담당자 요청 중, `/home/rladustn1227/02.github/llm-handler-requests.md`). 제공 받으면 재개.
 
 - `ensure_files_api_capacity(required_size)` 신규 모듈
 - **Redis SCAN + TTL 기반 FIFO** 삭제 (§8.4)
@@ -764,9 +798,8 @@ upload_file(tmp_path, mime, size) 호출 직전:
 - [ ] inline 분류: `Part.from_bytes` 구현 (tempfile 불필요)
 - [ ] Files API 분류: A/B/C 분기 구현 — `files_api_pool`의 checksum만으로 context_cache hash 계산
 - [ ] `context_cache_ttl` 지정 + 전원 inline 상황에서 Files API 승급 + 경고 로그 (§4.4)
-- [ ] `cache_store.py`: `scan_files_api_keys`, `get_ttl_files_api`, `find_context_caches_with_checksum` 추가 (Phase B 대비)
-- [ ] `save_files_api` value에 `size` 필드가 저장되는지 확인 (기존 코드 확인 / 필요 시 추가)
-- [ ] Gemini 404 fallback: 해당 `files_api:{checksum}` 키 삭제 → 재다운로드·재업로드
+- [x] `save_files_api` value에 `size` 필드 저장 — 기존 코드에서 이미 저장 중 ([resolver.py](../service/app/logic/file_handler/resolver.py) `_process_files_api` 확인 완료)
+- [ ] Gemini 404 자동 복구: `resolve_files_after_404` 함수로 캡슐화 (Redis invalidate + `resolve_files` 재호출). runner의 `aio_call`/`aio_stream` 호출을 try/except로 감싸 1회 복구 + 재시도. 두 번째 실패는 raise
 - [ ] `core/errors.py`에 `UnsupportedFileTypeError` (HTTP 422) 추가
 - [ ] `core/errors.py`에 `FileTooLargeError` (HTTP 422) 추가
 - [ ] `service/app/logic/file_handler/validators.py` 신설 — `SUPPORTED_MIME_TYPES` + `validate_mime_types()` + `MAX_FILE_SIZE` + `validate_file_sizes()`
@@ -776,6 +809,8 @@ upload_file(tmp_path, mime, size) 호출 직전:
 
 ### Phase B (후속)
 
+- [ ] **선결**: llm-handler `delete_file(name)` SDK 노출 대기 (`/home/rladustn1227/02.github/llm-handler-requests.md`)
+- [ ] `cache_store.py`에 `scan_files_api_keys`, `get_ttl_files_api`, `find_context_caches_with_checksum` 신설 (Phase B 진입 시점에)
 - [ ] `service/app/logic/file_handler/capacity.py` 신설
 - [ ] `ensure_files_api_capacity(required_size)` 구현 — **Redis SCAN + TTL 기반 FIFO**
 - [ ] llm_handler `delete_file` / `delete_cached_content` 래핑 상태 확인 (없으면 래퍼 추가)
@@ -786,3 +821,11 @@ upload_file(tmp_path, mime, size) 호출 직전:
 ### 공통
 - [ ] `docs/concepts.md`에 "역인덱스" 개념 소절 추가
 - [ ] 문서 ①과 상호 링크
+
+### 외부 담당자 요청 (백로그)
+
+llm-request는 자체 재시도 안 하고 raise만 함. 재시도는 각 handler 책임으로 위임.
+
+- [ ] **redis-handler**: `BaseJsonStore` 조회/저장 실패 시 재시도 로직 추가 (현재 try/except + 메모리 폴백만 있음). exponential backoff 권장
+- [ ] **llm-handler**: `aio.upload_file` / `aio.upload_pdf_parts` 재시도 로직 추가 (Gemini 5xx, 429 등 retryable 에러 한정, 2회 정도)
+- [ ] **llm-handler**: SDK에 `get_file(name)` 또는 `head_file(name)` 노출 — Gemini 404 자동 복구를 사전 확인 방식으로 정교화 (현재는 aio_call 실패 후 사후 복구 방식)

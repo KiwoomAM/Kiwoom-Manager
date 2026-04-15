@@ -18,12 +18,41 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+import llm_handler as llm_handler  # noqa: PLC0414  (방법 2: 모듈 접근 — llm_handler.aio.call 등)
+import llm_handler.aio  # noqa: F401  (llm_handler.aio 속성 보장)
+from llm_handler import (
+    CacheRef,
+    ContentsType,
+    EmbeddingStatistics,
+    EmbeddingValue,
+    EmbedResponse,
+    FileRef,
+    FunctionCall,
+    HandlerConnectionError,
+    HandlerError,
+    LLMResponse,
+    Part,
+    Session,
+    StreamChunk,
+    TokenUsage,
+    call,
+    create_cache,
+    delete_cache,
+    embed,
+    list_caches,
+    session,
+    stream,
+    upload_file,
+)
+
+from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
 from llm_request._client import AsyncClient
 from llm_request._file_meta import FileMeta
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
 from llm_request.models import DoneCheckResult, RequestResult
 
 __all__ = [
+    # llm_request 자체 API
     "llm_request_async",
     "llm_request",
     "llm_request_stream_async",
@@ -35,6 +64,33 @@ __all__ = [
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
+    # llm_handler 모듈 (방법 2 — llm_handler.configure, llm_handler.SDKError 등)
+    "llm_handler",
+    # llm_request.aio 서브모듈 (llm_handler.aio re-export)
+    "aio",
+    # llm_handler flat re-export (방법 1 — sync)
+    "call",
+    "stream",
+    "embed",
+    "session",
+    "Session",
+    "upload_file",
+    "create_cache",
+    "delete_cache",
+    "list_caches",
+    "CacheRef",
+    "ContentsType",
+    "EmbeddingStatistics",
+    "EmbeddingValue",
+    "EmbedResponse",
+    "FileRef",
+    "FunctionCall",
+    "LLMResponse",
+    "Part",
+    "StreamChunk",
+    "TokenUsage",
+    "HandlerConnectionError",
+    "HandlerError",
 ]
 
 _instance: AsyncClient | None = None

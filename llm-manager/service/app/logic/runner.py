@@ -13,6 +13,11 @@ from llm_handler.aio import stream as aio_stream
 from llm_handler.models import LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
+from app.logic.file_handler import (
+    ResolvedFiles,
+    resolve_files,
+    resolve_files_after_404,
+)
 from app.logic.file_handler.validators import (
     validate_file_sizes,
     validate_mime_types,
@@ -268,23 +273,63 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
     )
 
 
-# ── 파일 처리 (② Phase A에서 채울 자리) ─────────────────────────
+# ── 파일 처리 (② Phase A 구현) ──────────────────────────────
 
-def _build_server_call_input(prep: _Prepared) -> dict:
+def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
+    """ResolvedFiles를 llm_input에 녹여 call_input 완성.
+
+    - inline_parts + uri_parts → contents 앞에 삽입
+    - cached_content → 별도 필드로 세팅
+    - file_checksums → 제거 (Gemini에 전달되면 안 되는 cache_key 계산용 필드)
+    """
+    call_input = dict(llm_input)
+
+    contents = call_input.get("contents", "")
+    if isinstance(contents, str):
+        text_contents = [contents] if contents else []
+    elif isinstance(contents, list):
+        text_contents = [c for c in contents if isinstance(c, str)]
+    else:
+        text_contents = []
+
+    call_input["contents"] = resolved.inline_parts + resolved.uri_parts + text_contents
+
+    if resolved.cached_content:
+        call_input["cached_content"] = resolved.cached_content
+
+    call_input.pop("file_checksums", None)
+    return call_input
+
+
+async def _build_server_call_input(prep: _Prepared) -> dict:
     """파일 처리 후 call_input 구성.
 
-    파일 없는 요청: llm_input 그대로 반환 (Gemini 호출 가능).
-    파일 있는 요청: ② Phase A의 새 resolver/classify_files가 채울 자리 →
-                   현 단계에선 NotImplementedError로 명시적 신호.
+    file_metas 없으면 llm_input 그대로. 있으면 resolve_files 호출하여
+    inline/Files API 경로 처리 후 contents 조합.
 
-    docs/inline-vs-files-api-strategy.md §4.1, §6, §7.2 참고.
+    상세: docs/inline-vs-files-api-strategy.md §5, §7.2
     """
-    if prep.file_metas:
-        raise NotImplementedError(
-            "phase-② pending: file processing routing not yet implemented "
-            "(see docs/inline-vs-files-api-strategy.md §4.1, §6)"
-        )
-    return dict(prep.llm_input)
+    if not prep.file_metas:
+        return dict(prep.llm_input)
+
+    resolved = await resolve_files(
+        prep.file_metas,
+        prep.llm_input,
+        model=prep.llm_input.get("model"),
+        system_instruction=prep.llm_input.get("system"),
+        context_cache_ttl=prep.context_cache_ttl,
+    )
+    return _apply_resolved(prep.llm_input, resolved)
+
+
+def _is_gemini_404(exc: Exception) -> bool:
+    """Gemini 에러가 '리소스 없음(404)' 신호인지 추정.
+
+    llm-handler가 정확한 예외 타입을 노출하지 않아 메시지 기반 판정 (보수적).
+    llm-handler 담당자에게 예외 타입 세분화 요청 (docs/inline-vs-files-api-strategy.md §12 백로그).
+    """
+    msg = str(exc).lower()
+    return "404" in msg or "not found" in msg
 
 
 # ── Public API ─────────────────────────────────────────────────
@@ -319,8 +364,22 @@ async def llm_request_async(
     if prep.cached_output:
         return prep.cached_output
 
-    call_input = _build_server_call_input(prep)
-    res = await aio_call(**call_input)
+    call_input = await _build_server_call_input(prep)
+    try:
+        res = await aio_call(**call_input)
+    except Exception as e:
+        if _is_gemini_404(e) and prep.file_metas:
+            logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
+            resolved = await resolve_files_after_404(
+                prep.file_metas, prep.llm_input,
+                model=prep.llm_input.get("model"),
+                system_instruction=prep.llm_input.get("system"),
+                context_cache_ttl=prep.context_cache_ttl,
+            )
+            call_input = _apply_resolved(prep.llm_input, resolved)
+            res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
+        else:
+            raise
     return finalize(prep, res, database=database)
 
 
@@ -379,12 +438,30 @@ async def llm_request_stream_async(
         yield _to_stream_chunk(response)
         return
 
-    call_input = _build_server_call_input(prep)
+    call_input = await _build_server_call_input(prep)
 
     accumulated: list[StreamChunk] = []
-    async for chunk in aio_stream(**call_input):
-        accumulated.append(chunk)
-        yield chunk
+    try:
+        async for chunk in aio_stream(**call_input):
+            accumulated.append(chunk)
+            yield chunk
+    except Exception as e:
+        # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
+        # (이미 일부 yield됐으면 부분 응답이 사용자에게 간 상태라 복구 시 중복)
+        if _is_gemini_404(e) and prep.file_metas and not accumulated:
+            logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
+            resolved = await resolve_files_after_404(
+                prep.file_metas, prep.llm_input,
+                model=prep.llm_input.get("model"),
+                system_instruction=prep.llm_input.get("system"),
+                context_cache_ttl=prep.context_cache_ttl,
+            )
+            call_input = _apply_resolved(prep.llm_input, resolved)
+            async for chunk in aio_stream(**call_input):
+                accumulated.append(chunk)
+                yield chunk
+        else:
+            raise
     _finalize_stream(prep, accumulated, database=database)
 
 
