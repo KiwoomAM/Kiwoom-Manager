@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from llm_request.checksum import FileChecksum
-
-__all__ = ["FileChecksum", "RequestResult", "DoneCheckResult"]
+__all__ = ["RequestResult", "DoneCheckResult"]
 
 
 class RequestResult(TypedDict):

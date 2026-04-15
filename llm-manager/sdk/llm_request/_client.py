@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import httpx
 
+from llm_request._file_meta import FileMeta
 from llm_request.exceptions import ServiceConnectionError, ServiceError
-from llm_request.models import DoneCheckResult, FileChecksum, RequestResult
+from llm_request.models import DoneCheckResult, RequestResult
 
 
 class AsyncClient:
@@ -48,8 +48,7 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        file_checksums: list[FileChecksum] | None = None,
-        inline_files: list[dict] | None = None,
+        file_metas: list[FileMeta] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -63,10 +62,8 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
         }
-        if file_checksums:
-            body["file_checksums"] = file_checksums
-        if inline_files:
-            body["inline_files"] = inline_files
+        if file_metas:
+            body["file_metas"] = [m.model_dump() for m in file_metas]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if debug:
@@ -79,44 +76,11 @@ class AsyncClient:
         resp = await self._request("POST", "/v1/request", json=body)
         return resp.json()
 
-    async def upload_files(
-        self,
-        file_paths: list[str],
-        file_metas: list[FileChecksum],
-        *,
-        context_cache_ttl: int | None = None,
-        model: str | None = None,
-        system_instruction: str | None = None,
-    ) -> None:
-        """POST /v1/files — 파일 업로드 (Redis 파일 캐시 miss 시)."""
-        files = []
-        opened = []
-        for path in file_paths:
-            p = Path(path)
-            f = open(p, "rb")
-            opened.append(f)
-            files.append(("files", (p.name, f, "application/octet-stream")))
-
-        data: dict[str, Any] = {"checksums": json.dumps(file_metas)}
-        if context_cache_ttl is not None:
-            data["context_cache_ttl"] = str(context_cache_ttl)
-        if model is not None:
-            data["model"] = model
-        if system_instruction is not None:
-            data["system_instruction"] = system_instruction
-
-        try:
-            await self._request("POST", "/v1/files", files=files, data=data)
-        finally:
-            for f in opened:
-                f.close()
-
     async def request_stream(
         self,
         llm_input: dict,
         *,
-        file_checksums: list[FileChecksum] | None = None,
-        inline_files: list[dict] | None = None,
+        file_metas: list[FileMeta] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -130,10 +94,8 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
         }
-        if file_checksums:
-            body["file_checksums"] = file_checksums
-        if inline_files:
-            body["inline_files"] = inline_files
+        if file_metas:
+            body["file_metas"] = [m.model_dump() for m in file_metas]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if debug:
@@ -174,13 +136,13 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        file_checksums: list[str] | None = None,
+        file_metas: list[FileMeta] | None = None,
         database: str | None = None,
     ) -> DoneCheckResult:
         """POST /v1/done-check — MDB 캐시(LLM 응답) 존재 확인."""
         body: dict[str, Any] = {"llm_input": llm_input}
-        if file_checksums:
-            body["file_checksums"] = file_checksums
+        if file_metas:
+            body["file_metas"] = [m.model_dump() for m in file_metas]
         if database is not None:
             body["database"] = database
 

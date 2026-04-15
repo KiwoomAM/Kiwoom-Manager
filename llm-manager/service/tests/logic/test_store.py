@@ -38,11 +38,12 @@ class TestSaveResult:
 
 
     def test_saved_doc_with_file_meta(self, mock_collection):
-        file_meta = [{"checksum": "sha256:abc", "filename": "report.pdf", "size": 12345, "mime_type": "application/pdf"}]
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION, file_meta=file_meta)
+        file_metas = [{"checksum": "sha256:abc", "filename": "report.pdf", "size": 12345, "mime_type": "application/pdf"}]
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION, file_metas=file_metas)
 
         doc = mock_collection[CACHE_KEY]
-        assert doc["file_meta"] == file_meta
+        # 저장 스키마 호환을 위해 doc 키는 기존 "file_meta" 유지 (store.py 주석 참조)
+        assert doc["file_meta"] == file_metas
 
     def test_saved_doc_without_file_meta(self, mock_collection):
         save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION)

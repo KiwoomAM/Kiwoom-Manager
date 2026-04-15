@@ -69,11 +69,14 @@ def save_result(
     database: str | None = None,
     ttl_seconds: int | None = None,
     requested_at: datetime | None = None,
-    file_meta: list[dict] | None = None,
+    file_metas: list[dict] | None = None,
 ) -> None:
     """LLM 결과를 캐시 문서로 구성하여 저장한다.
 
     llm_result가 Pydantic 모델(LLMResponse 등)이면 자동으로 dict 변환 후 저장한다.
+
+    file_metas: FileMeta.model_dump() 리스트. 저장 스키마 호환을 위해
+    문서엔 기존 키 이름 "file_meta"로 저장한다.
     """
     result_dict = llm_result.model_dump() if hasattr(llm_result, "model_dump") else llm_result
 
@@ -85,8 +88,8 @@ def save_result(
         "metadata": meta,
         "created_at": now.isoformat(),
     }
-    if file_meta:
-        doc["file_meta"] = file_meta
+    if file_metas:
+        doc["file_meta"] = file_metas
     if requested_at is not None:
         doc["requested_at"] = requested_at.isoformat()
         doc["elapsed_ms"] = round((now - requested_at).total_seconds() * 1000)

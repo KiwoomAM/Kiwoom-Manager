@@ -1,11 +1,13 @@
 """llm-request SDK — LLM 응답 캐싱 서비스 클라이언트.
 
 사용법:
+    from file_manager import FileMeta, resolve   # file_manager SDK 사용
     from llm_request import llm_request_async
 
+    file_metas = [resolve("report.pdf")]   # FileMeta 리스트
     response, meta = await llm_request_async(
         {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-        file_paths=["report.pdf"],
+        file_metas=file_metas,
     )
 """
 
@@ -17,7 +19,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from llm_request._client import AsyncClient
-from llm_request.checksum import FileChecksum, file_checksum
+from llm_request._file_meta import FileMeta
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
 from llm_request.models import DoneCheckResult, RequestResult
 
@@ -29,17 +31,13 @@ __all__ = [
     "done_check",
     "fetch_by_cache_key",
     "configure",
-    "file_checksum",
-    "FileChecksum",
+    "FileMeta",
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
 ]
 
 _instance: AsyncClient | None = None
-_file_cache_store = None
-
-_INLINE_LIMIT = 20 * 1024 * 1024  # 20MB
 
 
 def _resolve_base_url() -> str:
@@ -67,107 +65,12 @@ def configure(base_url: str | None = None, timeout: float = 120.0) -> None:
     _instance = AsyncClient(base_url=url, timeout=timeout)
 
 
-def _get_file_cache_store():
-    """Redis file_cache 싱글톤 반환. 연결 실패 시 None."""
-    global _file_cache_store
-    if _file_cache_store is None:
-        try:
-            from redis_handler import BaseJsonStore
-            _file_cache_store = BaseJsonStore(prefix="file_cache")
-        except Exception:
-            return None
-    return _file_cache_store
-
-
-def _check_redis_file_cache(checksums: list[str]) -> list[str]:
-    """Redis 파일 캐시에서 miss인 checksum 목록을 반환한다.
-
-    >20MB 파일의 checksum만 전달해야 한다 (≤20MB는 inline 처리되므로 Redis 불필요).
-    Redis 연결이 없거나 실패하면 전부 miss로 처리한다.
-    """
-    store = _get_file_cache_store()
-    if store is None:
-        return list(checksums)
-    try:
-        missing = []
-        for cs in checksums:
-            key = store._make_key("files_api", cs)
-            if store._get_json(key) is None:
-                missing.append(cs)
-        return missing
-    except Exception:
-        return list(checksums)
-
-
-# ── 파일 처리 공통 헬퍼 ────────────────────────────────────────
-
-def _prepare_files(
-    file_paths: list[str] | None,
-) -> tuple[list[FileChecksum] | None, list[dict] | None]:
-    """파일 경로에서 checksum 계산 + inline/large 분류."""
-    if not file_paths:
-        return None, None
-
-    import base64
-
-    file_checksums = [file_checksum(p) for p in file_paths]
-    inline_files: list[dict] = []
-
-    for i, fc in enumerate(file_checksums):
-        if fc["size"] <= _INLINE_LIMIT:
-            with open(file_paths[i], "rb") as f:
-                data = base64.b64encode(f.read()).decode()
-            inline_files.append({
-                "checksum": fc["checksum"],
-                "filename": fc["filename"],
-                "mime_type": fc["mime_type"],
-                "data_base64": data,
-            })
-
-    return file_checksums, inline_files or None
-
-
-async def _upload_missing_files(
-    client: AsyncClient,
-    file_paths: list[str],
-    file_checksums: list[FileChecksum],
-    inline_files: list[dict] | None,
-    context_cache_ttl: int | None,
-    llm_input: dict,
-) -> None:
-    """>20MB 파일 중 Redis에 없는 것만 서버로 업로드."""
-    inline_checksums = {f["checksum"] for f in inline_files} if inline_files else set()
-    large_checksums = [
-        fc["checksum"] for fc in file_checksums
-        if fc["size"] > _INLINE_LIMIT and fc["checksum"] not in inline_checksums
-    ]
-
-    if not large_checksums:
-        return
-
-    missing = _check_redis_file_cache(large_checksums)
-    if not missing:
-        return
-
-    missing_indices = [
-        i for i, fc in enumerate(file_checksums)
-        if fc["checksum"] in missing and fc["size"] > _INLINE_LIMIT
-    ]
-    await client.upload_files(
-        [file_paths[i] for i in missing_indices],
-        [file_checksums[i] for i in missing_indices],
-        context_cache_ttl=context_cache_ttl,
-        model=llm_input.get("model"),
-        system_instruction=llm_input.get("system"),
-    )
-
-
 # ── Public API ─────────────────────────────────────────────────
 
 async def llm_request_async(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_metas: list[FileMeta] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -175,20 +78,15 @@ async def llm_request_async(
     database: str | None = None,
     context_cache_ttl: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환."""
+    """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
+
+    file_metas는 file_manager가 제공하는 metadata 리스트.
+    SDK는 파일 bytes를 보내지 않는다 (file_manager 분리 설계).
+    """
     client = _get_client()
-    file_checksums, inline_files = _prepare_files(file_paths)
-
-    if file_paths and file_checksums:
-        await _upload_missing_files(
-            client, file_paths, file_checksums, inline_files,
-            context_cache_ttl, llm_input,
-        )
-
     result = await client.request(
         llm_input,
-        file_checksums=file_checksums,
-        inline_files=inline_files,
+        file_metas=file_metas,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=ttl_seconds,
@@ -196,14 +94,13 @@ async def llm_request_async(
         database=database,
         context_cache_ttl=context_cache_ttl,
     )
-
     return result["result"], result["meta"]
 
 
 def llm_request(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_metas: list[FileMeta] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -214,7 +111,7 @@ def llm_request(
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
-        file_paths=file_paths,
+        file_metas=file_metas,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=ttl_seconds,
@@ -227,7 +124,7 @@ def llm_request(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_metas: list[FileMeta] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -235,26 +132,11 @@ async def llm_request_stream_async(
     database: str | None = None,
     context_cache_ttl: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). SSE 이벤트를 파싱하여 dict로 yield.
-
-    Returns:
-        AsyncIterator of event dicts:
-        - {"type": "chunk", "text": "...", "finish_reason": None}
-        - {"type": "chunk", "text": "...", "finish_reason": "STOP", "usage": {...}}
-    """
+    """스트리밍 LLM 요청 (async). SSE 이벤트를 파싱하여 dict로 yield."""
     client = _get_client()
-    file_checksums, inline_files = _prepare_files(file_paths)
-
-    if file_paths and file_checksums:
-        await _upload_missing_files(
-            client, file_paths, file_checksums, inline_files,
-            context_cache_ttl, llm_input,
-        )
-
     async for event in client.request_stream(
         llm_input,
-        file_checksums=file_checksums,
-        inline_files=inline_files,
+        file_metas=file_metas,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=ttl_seconds,
@@ -268,7 +150,7 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    file_paths: list[str] | None = None,
+    file_metas: list[FileMeta] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -276,15 +158,12 @@ def llm_request_stream(
     database: str | None = None,
     context_cache_ttl: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). llm_request_stream_async의 동기 래퍼.
-
-    Note: 내부적으로 새 event loop을 생성하여 실행. 기존 event loop 안에서는 사용 불가.
-    """
+    """스트리밍 LLM 요청 (sync). llm_request_stream_async의 동기 래퍼."""
     async def _collect():
         results = []
         async for event in llm_request_stream_async(
             llm_input,
-            file_paths=file_paths,
+            file_metas=file_metas,
             cache_mode=cache_mode,
             save_mode=save_mode,
             ttl_seconds=ttl_seconds,
@@ -301,14 +180,14 @@ def llm_request_stream(
 async def done_check(
     llm_input: dict,
     *,
-    file_checksums: list[str] | None = None,
+    file_metas: list[FileMeta] | None = None,
     database: str | None = None,
 ) -> DoneCheckResult:
     """MDB 캐시(LLM 응답) 존재 여부 확인."""
     client = _get_client()
     return await client.done_check(
         llm_input,
-        file_checksums=file_checksums,
+        file_metas=file_metas,
         database=database,
     )
 

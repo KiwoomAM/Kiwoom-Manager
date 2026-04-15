@@ -784,6 +784,5 @@ upload_file(tmp_path, mime, size) 호출 직전:
 - [ ] 테스트: SCAN 순서, TTL 정렬, 연쇄 삭제, 임계값 경계, 실패 케이스
 
 ### 공통
-- [ ] README "Future Work"에 동시성·정합성·이진 분기 대안 기록
 - [ ] `docs/concepts.md`에 "역인덱스" 개념 소절 추가
 - [ ] 문서 ①과 상호 링크

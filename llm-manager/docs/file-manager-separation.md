@@ -323,5 +323,4 @@ class Settings(BaseSettings):
 - [ ] 신규 `file_handler/resolver.py`의 `classify_files(file_metas, llm_input)` + `_estimate_non_file_bytes(llm_input)` (상세: 문서 ② §4.1)
 - [ ] `runner.py`에서 `llm_request_async` / `llm_request_stream_async` 진입 직후 `validate_mime_types` → `validate_file_sizes` fail-fast 호출 (prepare·MDB 조회 이전)
 - [ ] 테스트 전면 수정 (`file_paths`/`file_checksums` → `file_metas`, validators, classify_files 케이스 추가)
-- [ ] README의 Future Work에 file_manager 404/동시성/정합성 항목 추가
 - [ ] 문서 ② (`inline-vs-files-api-strategy.md`) 작성 완료 후 이 문서와 상호 링크

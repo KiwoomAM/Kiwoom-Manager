@@ -31,13 +31,6 @@ class FetchResponse(BaseModel):
     meta: dict[str, Any]
 
 
-class FileUploadResponse(BaseModel):
-    """POST /v1/files 응답."""
-
-    uploaded: list[str]  # 업로드된 file checksum 리스트
-    message: str = "ok"
-
-
 class ErrorResponse(BaseModel):
     """에러 응답."""
 

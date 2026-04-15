@@ -4,31 +4,18 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-
-class FileChecksumDTO(BaseModel):
-    """파일 checksum 메타정보."""
-
-    checksum: str  # "sha256:<64자 hex>"
-    filename: str
-    size: int
-    mime_type: str
-
-
-class InlineFileDTO(BaseModel):
-    """≤20MB 파일: base64로 직접 전달."""
-
-    checksum: str
-    filename: str
-    mime_type: str
-    data_base64: str  # base64 인코딩된 파일 데이터
+from file_manager import FileMeta  # TODO: SDK 배포 전까지 없음. ② Phase A 검증 시 stub/실물 준비
 
 
 class LLMRequestBody(BaseModel):
-    """POST /v1/request 요청 바디."""
+    """POST /v1/request 요청 바디.
+
+    file_metas: file_manager가 제공한 metadata 리스트.
+    SDK는 파일 bytes를 직접 보내지 않는다 (file_manager 분리 설계).
+    """
 
     llm_input: dict
-    file_checksums: list[FileChecksumDTO] | None = None
-    inline_files: list[InlineFileDTO] | None = None  # ≤20MB 파일 직접 포함
+    file_metas: list[FileMeta] | None = None
     cache_mode: bool = True
     save_mode: bool = True
     ttl_seconds: int | None = None
@@ -41,7 +28,7 @@ class DoneCheckBody(BaseModel):
     """POST /v1/done-check 요청 바디."""
 
     llm_input: dict
-    file_checksums: list[str] | None = None
+    file_metas: list[FileMeta] | None = None
     database: str | None = None
 
 

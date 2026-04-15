@@ -15,6 +15,8 @@ from typing import Any
 
 from llm_handler.models import FileRef, Part
 
+from file_manager import FileMeta  # TODO: SDK 배포 전까지 없음. ② Phase A 검증 시 stub/실물 준비
+
 logger = logging.getLogger(__name__)
 
 # ── 상수 / 설정 ──────────────────────────────────────────────
@@ -234,3 +236,32 @@ def make_cache_key(canonical_json: str, *, debug: bool = False) -> str:
         logger.warning("캐시 키 생성: 값이 비어있거나 유효하지 않습니다. len=%d", len(canonical_json))
 
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+# ── FileMeta → checksum ─────────────────────────────────────
+
+
+def make_file_checksum(meta: FileMeta) -> str:
+    """FileMeta의 (file_name, file_mtime, file_size) 3필드로 sha256 hex 생성.
+
+    file_manager는 checksum을 제공하지 않고 metadata만 준다. llm-request가
+    `keying.py`의 canonicalize + sha256 로직을 재사용하여 자체 계산.
+
+    이 checksum은:
+      - Redis `files_api:{checksum}` 키
+      - Redis `context_cache:{...}` hash_key 구성 요소
+      - LLM 응답 cache_key 구성 요소 (file_checksums 리스트로 주입)
+
+    Returns:
+        길이 64의 lowercase hex SHA-256 digest. prefix 없음.
+
+    docs/file-manager-separation.md §3.2,
+    docs/inline-vs-files-api-strategy.md §3 참고.
+    """
+    file_meta = {
+        "file_name":  meta.file_name,
+        "file_mtime": meta.file_mtime,
+        "file_size":  meta.file_size,
+    }
+    canonical = canonicalize_llm_input(file_meta)
+    return make_cache_key(canonical)
