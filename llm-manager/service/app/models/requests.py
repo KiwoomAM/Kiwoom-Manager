@@ -22,6 +22,7 @@ class LLMRequestBody(BaseModel):
     debug: bool = False
     database: str | None = None
     context_cache_ttl: int | None = None
+    standby_ttl_seconds: int = 600
 
 
 class DoneCheckBody(BaseModel):

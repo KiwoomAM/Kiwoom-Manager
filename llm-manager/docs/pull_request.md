@@ -576,6 +576,89 @@ Gemini Files API 계정당 20GB 저장 한도 초과 시 자동 삭제 로직.
 
 ---
 
+## 9. 이슈 대응
+
+### Issue #441: re-export 목록에서 async 함수 누락 + llm_handler 직접 import 강제
+
+**이슈 내용**: `llm_request`의 re-export 목록에서 `create_cache`, `configure` 등이 async로 노출되지 않음. `llm_handler.aio`에 이미 async 구현이 있으니 이를 참조해서 연결 필요.
+
+#### main 기준 문제 진단 (이슈 raise 시점)
+
+main의 `packages/llm-request/llm_request/__init__.py`는 sync 버전만 flat re-export하고 있었음:
+
+```python
+# main: packages/llm-request/llm_request/__init__.py
+import llm_handler
+import llm_handler.aio              # 모듈만 import, 함수 노출 X
+from llm_handler import (
+    ...
+    configure,
+    create_cache,
+    delete_cache,
+    list_caches,
+    upload_file,                    # ← sync 버전만 flat re-export
+    ...
+)
+```
+
+→ async 함수를 쓰려면 `llm_request.llm_handler.aio.create_cache()`처럼 긴 경로로 접근해야 했음. 이
+
+#### 이 PR에서 해결된 방식
+
+**1) async re-export — SDK 분리 과정에서 해결됨**
+
+SDK/Service 분리(Stage 4)에서 `llm_request.aio` 서브모듈을 신설:
+
+```python
+# sdk/llm_request/aio.py (이 PR에서 신설)
+from llm_handler.aio import (
+    call, configure, create_cache, delete_cache,
+    embed, list_caches, session, stream, upload_file,
+    AsyncSession, CacheRef, ..., FileRef, ...,
+)
+```
+
+이제 외부는 `from llm_request.aio import create_cache` 식으로 async 함수를 그대로 사용 가능. 별도 경로(`llm_request.llm_handler.aio.*`) 불필요.
+
+**2) sync 쪽 configure 이름 충돌 — 추가 수정**
+
+이슈 검토 중 발견: sync 쪽 `llm_request.configure`가 llm-request 자체의 base_url 설정 함수를 가리키고 있어 **llm_handler.configure가 덮어씌워져 노출 불가**했음.
+
+[sdk/llm_request/__init__.py](../sdk/llm_request/__init__.py) 수정:
+
+- `from llm_handler import (...)` 목록에 `configure` 추가 → flat re-export
+- 기존 `def configure(...)` (llm-request 자체 함수) → `def _configure(...)`로 private 처리
+- `__all__`의 `"configure"` 위치를 llm_handler flat re-export 섹션으로 이동
+
+llm-request 자체 서비스 URL은 `LLM_REQUEST_URL` 환경변수로 제어하므로 public 함수가 불필요했고, 테스트/내부 오버라이드용으로만 `_configure`를 남김.
+
+**참고**: `configure`는 싱글톤 클라이언트 인스턴스를 설정하는 함수로 네트워크 I/O가 없어 sync로 구현됨. llm_handler 원본도 sync(`def`)이며, async 전환은 불필요.
+
+#### 결과
+
+```python
+# 외부 사용 (llm_handler 직접 import 없이, sync/async 모두 지원)
+from llm_request import configure, create_cache           # sync
+from llm_request.aio import configure, create_cache       # async (create_cache만 async def)
+
+# sync
+configure(base_url="http://handler:8100")
+cache = create_cache(...)
+
+# async
+configure(base_url="http://handler:8100")                 # configure는 sync 동일
+cache = await create_cache(...)
+```
+
+| 항목 | main 기준 | 이 PR 기준 |
+|------|-----------|------------|
+| `llm_request.create_cache` (sync) | O | O |
+| `llm_request.aio.create_cache` (async) | ✗ 없음 | **O 신설** |
+| `llm_request.configure` → llm_handler.configure | ✗ llm-request 자체 함수가 덮어씀 | **O 수정** |
+| `llm_request.aio.configure` → llm_handler.aio.configure | ✗ 없음 | **O 신설** |
+
+---
+
 ## 관련 설계 문서
 
 이 PR의 변경은 아래 설계 문서를 기반으로 진행되었습니다:

@@ -848,6 +848,28 @@ response, meta = await llm_request_async(
 
 즉, 실패한 호출은 캐시 문서로 남지 않으며, 다음 요청 시 다시 LLM을 호출합니다.
 
+---
+
+### 동시 호출 한계 (cache stampede dedup)
+
+같은 input의 동시 요청은 Redis standby 메커니즘으로 중복 호출을 방지합니다:
+
+- 첫 요청이 `standby_ttl_seconds`(기본 10분) 내에 완료되면 후속 요청은 자동으로 캐시 결과를 사용합니다.
+- 첫 요청이 `standby_ttl_seconds` 내에 완료되지 않으면 후속 요청이 자기 작업을 시작합니다.
+  - LLM 비결정성으로 두 요청이 다른 응답을 받을 수 있습니다.
+  - 캐시(MDB)는 마지막 저장된 응답으로 유지됩니다.
+- 작업 소요 시간에 맞게 `standby_ttl_seconds`를 조정하세요:
+  - 짧은 작업: 120~300초
+  - 대용량 + 무거운 LLM: 900~1200초
+
+```python
+response, meta = await llm_request_async(
+    {"contents": "큰 PDF 분석", "model": "gemini-2.5-pro"},
+    file_metas=file_metas,
+    standby_ttl_seconds=1200,  # 20분 — 대용량 + pro 모델용
+)
+```
+
 # 10. llm_handler API re-export
 
 ---

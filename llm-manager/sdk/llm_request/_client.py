@@ -55,12 +55,14 @@ class AsyncClient:
         debug: bool = False,
         database: str | None = None,
         context_cache_ttl: int | None = None,
+        standby_ttl_seconds: int = 600,
     ) -> RequestResult:
         """POST /v1/request — LLM 요청."""
         body: dict[str, Any] = {
             "llm_input": llm_input,
             "cache_mode": cache_mode,
             "save_mode": save_mode,
+            "standby_ttl_seconds": standby_ttl_seconds,
         }
         if file_metas:
             body["file_metas"] = [m.model_dump() for m in file_metas]
@@ -87,12 +89,14 @@ class AsyncClient:
         debug: bool = False,
         database: str | None = None,
         context_cache_ttl: int | None = None,
+        standby_ttl_seconds: int = 600,
     ) -> AsyncIterator[dict[str, Any]]:
         """POST /v1/request/stream — SSE 스트리밍 요청."""
         body: dict[str, Any] = {
             "llm_input": llm_input,
             "cache_mode": cache_mode,
             "save_mode": save_mode,
+            "standby_ttl_seconds": standby_ttl_seconds,
         }
         if file_metas:
             body["file_metas"] = [m.model_dump() for m in file_metas]

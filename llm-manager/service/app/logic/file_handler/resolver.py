@@ -3,9 +3,12 @@
 file_manager 분리 후 새 설계 — file_metas + llm_input 받아서
 (inline_parts, uri_parts, cached_content)를 반환하는 부분 섞기 흐름.
 
-세부 함수는 Phase A T2~T6에서 차례로 추가된다 (T1에선 상수 + 헬퍼만).
+cache stampede dedup (docs/cache-stampede-dedup.md):
+- files_api 업로드, context_cache 생성 시점에 Redis standby 선점
+- 다른 요청이 이미 작업 중이면 exponential backoff로 대기
 
 상세 설계: docs/inline-vs-files-api-strategy.md §4, §5, §6, §7
+             docs/cache-stampede-dedup.md §6
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from llm_handler.aio import upload_file
 from llm_handler.models import FileRef, Part
 
 from app.core.errors import CacheError, FileUploadError
-from app.logic.file_handler import cache_store
+from app.logic.file_handler import cache_store, dedup
 from app.logic.file_handler.uploader import create_context_cache, upload_pdf_parts
 from app.logic.keying import make_file_checksum
 
@@ -137,6 +140,134 @@ async def _process_inline(inline_pool: list[FileMeta]) -> list[Part]:
     return inline_parts
 
 
+# ── files_api 헬퍼 ───────────────────────────────────────────
+
+
+def _reuse_files_api_uris(
+    meta: FileMeta,
+    existing: dict,
+    uri_parts: list[Part],
+    file_refs: list[FileRef],
+) -> None:
+    """기존 Redis URI 재사용 (분기 B) — uri_parts/file_refs에 append."""
+    for uri in existing["uris"]:
+        uri_parts.append(Part.from_uri(uri, mime_type=meta.mime_type))
+        file_refs.append(
+            FileRef(name="", uri=uri, mime_type=meta.mime_type, state="ACTIVE")
+        )
+    logger.info(
+        "files_api cache hit: uris=%d",
+        len(existing["uris"]),
+    )
+
+
+async def _upload_and_cache_file(
+    meta: FileMeta,
+    checksum: str,
+    uri_parts: list[Part],
+    file_refs: list[FileRef],
+) -> None:
+    """file_manager에서 bytes 받아 Files API 업로드 + Redis 저장 (분기 C).
+
+    standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
+    양쪽에서 호출된다.
+    """
+    bytes_data = await aget_file(meta.file_path)
+    suffix = f".{meta.extension}" if meta.extension else ""
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        tmp.write(bytes_data)
+        tmp.close()
+        try:
+            if meta.mime_type == "application/pdf" and meta.file_size > _PDF_SPLIT_LIMIT:
+                refs = await upload_pdf_parts(tmp.name)
+            else:
+                refs = [await upload_file(tmp.name, meta.mime_type)]
+        except Exception as e:
+            logger.exception(
+                "Files API 업로드 실패: file_name=%s, mime=%s",
+                meta.file_name, meta.mime_type,
+            )
+            raise FileUploadError(
+                f"Files API 업로드 실패: file_name={meta.file_name}, {e}"
+            ) from e
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    uris = [r.uri for r in refs]
+    try:
+        cache_store.save_files_api(checksum, {
+            "file_checksum": checksum,
+            "file_name": meta.file_name,
+            "file_size": meta.file_size,
+            "mime_type": meta.mime_type,
+            "uris": uris,
+            "split": len(refs) > 1,
+        })
+    except Exception as e:
+        logger.exception("Redis files_api 저장 실패: checksum=%s", checksum[:16])
+        raise CacheError(f"Redis files_api 저장 실패: {e}") from e
+
+    for r in refs:
+        uri_parts.append(Part.from_uri(r.uri, mime_type=r.mime_type))
+        file_refs.append(r)
+    logger.info(
+        "files_api 신규 업로드: checksum=%s, uris=%d, split=%s",
+        checksum[:16], len(refs), len(refs) > 1,
+    )
+
+
+# ── context_cache 헬퍼 ───────────────────────────────────────
+
+
+async def _create_and_save_context_cache(
+    hash_key: str,
+    checksums: list[str],
+    file_refs: list[FileRef],
+    *,
+    model: str | None,
+    system_instruction: str | None,
+    ttl: int,
+) -> str:
+    """context_cache 생성 + Redis 저장 → cached_content_name 반환 (분기 ④).
+
+    standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
+    양쪽에서 호출된다.
+    """
+    try:
+        cache_ref = await create_context_cache(
+            file_refs,
+            model=model,
+            system_instruction=system_instruction,
+            ttl=ttl,
+        )
+    except Exception as e:
+        logger.exception("Context cache 생성 실패")
+        raise FileUploadError(f"Context cache 생성 실패: {e}") from e
+
+    try:
+        cache_store.save_context_cache(
+            hash_key,
+            {
+                "file_checksums": checksums,
+                "model": model,
+                "system_instruction": system_instruction,
+                "cached_content_name": cache_ref.name,
+                "files_api_uris": [r.uri for r in file_refs],
+            },
+            ttl=ttl,
+        )
+    except Exception as e:
+        logger.exception("Redis context_cache 저장 실패: hash_key=%s", hash_key[:16])
+        raise CacheError(f"Redis context_cache 저장 실패: {e}") from e
+
+    logger.info("context cache 생성: %s", cache_ref.name)
+    return cache_ref.name
+
+
 # ── Files API 분류 처리 — A/B/C miss 3단계 분기 (§6.2) ──────
 
 
@@ -147,27 +278,19 @@ async def _process_files_api(
     model: str | None,
     system_instruction: str | None,
     context_cache_ttl: int | None,
+    standby_ttl_seconds: int,
 ) -> tuple[list[Part], str | None]:
-    """Files API 분류 파일 처리 — A/B/C miss 3단계 분기.
+    """Files API 분류 파일 처리 — A/B/C miss 3단계 분기 + standby dedup.
 
     A: Redis context_cache HIT → cached_content만 반환 (uri_parts=[])
     B: Redis files_api 모두 HIT → 기존 URI로 Part.from_uri 구성
-    C: 일부/전부 MISS → file_manager에서 bytes 받아 Files API 업로드 + Redis 저장
+    C: 일부/전부 MISS → standby 선점 → 업로드 → Redis 저장 (또는 대기 → HIT)
        (PDF + 50MB 초과면 splitter.split_pdf → upload_pdf_parts)
 
-    context_cache_ttl 지정 시 분기 B/C 마지막에 create_context_cache + Redis 저장.
-
-    Args:
-        files_api_pool: Files API로 분류된 FileMeta 리스트.
-        checksums: 각 FileMeta의 checksum (호출자가 make_file_checksum으로 계산하여 1:1 전달).
-        model: Gemini 모델명 (context cache hash_key용).
-        system_instruction: 시스템 프롬프트 (context cache hash_key용).
-        context_cache_ttl: context cache TTL(초). None이면 context caching 안 함.
-
-    Returns:
-        (uri_parts, cached_content) 튜플. files_api_pool이 비면 ([], None).
+    context_cache_ttl 지정 시 분기 B/C 마지막에 standby로 보호된 create_context_cache.
 
     상세: docs/inline-vs-files-api-strategy.md §6.2
+         docs/cache-stampede-dedup.md §6
     """
     if not files_api_pool:
         return [], None
@@ -188,7 +311,7 @@ async def _process_files_api(
         logger.info("context cache hit: %s", cached["cached_content_name"])
         return [], cached["cached_content_name"]
 
-    # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 업로드 ──
+    # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 standby → 업로드 ──
     uri_parts: list[Part] = []
     file_refs: list[FileRef] = []  # context_cache 생성용
 
@@ -200,94 +323,71 @@ async def _process_files_api(
             raise CacheError(f"Redis files_api 조회 실패: {e}") from e
 
         if existing:
-            # 분기 B 부분: 기존 URI 재사용
-            for uri in existing["uris"]:
-                uri_parts.append(Part.from_uri(uri, mime_type=meta.mime_type))
-                file_refs.append(
-                    FileRef(name="", uri=uri, mime_type=meta.mime_type, state="ACTIVE")
-                )
-            logger.info("files_api cache hit: checksum=%s, uris=%d", checksum[:16], len(existing["uris"]))
-        else:
-            # 분기 C: file_manager에서 bytes 받아 업로드
-            bytes_data = await fetch_file_bytes(meta.file_path)
-            suffix = f".{meta.extension}" if meta.extension else ""
-            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            _reuse_files_api_uris(meta, existing, uri_parts, file_refs)
+            continue
+
+        # MISS — standby 선점 시도
+        acquired = await dedup.try_acquire_standby(
+            "files_api", checksum, standby_ttl_seconds,
+        )
+        if acquired:
             try:
-                tmp.write(bytes_data)
-                tmp.close()
-                try:
-                    if meta.mime_type == "application/pdf" and meta.file_size > _PDF_SPLIT_LIMIT:
-                        refs = await upload_pdf_parts(tmp.name)
-                    else:
-                        refs = [await upload_file(tmp.name, meta.mime_type)]
-                except Exception as e:
-                    logger.exception(
-                        "Files API 업로드 실패: file_name=%s, mime=%s",
-                        meta.file_name, meta.mime_type,
-                    )
-                    raise FileUploadError(
-                        f"Files API 업로드 실패: file_name={meta.file_name}, {e}"
-                    ) from e
+                await _upload_and_cache_file(meta, checksum, uri_parts, file_refs)
             finally:
-                try:
-                    os.unlink(tmp.name)
-                except OSError:
-                    pass
-
-            uris = [r.uri for r in refs]
-            try:
-                cache_store.save_files_api(checksum, {
-                    "file_checksum": checksum,
-                    "file_name": meta.file_name,
-                    "file_size": meta.file_size,
-                    "mime_type": meta.mime_type,
-                    "uris": uris,
-                    "split": len(refs) > 1,
-                })
-            except Exception as e:
-                logger.exception("Redis files_api 저장 실패: checksum=%s", checksum[:16])
-                raise CacheError(f"Redis files_api 저장 실패: {e}") from e
-
-            for r in refs:
-                uri_parts.append(Part.from_uri(r.uri, mime_type=r.mime_type))
-                file_refs.append(r)
-            logger.info(
-                "files_api 신규 업로드: checksum=%s, uris=%d, split=%s",
-                checksum[:16], len(refs), len(refs) > 1,
+                await dedup.release_standby("files_api", checksum)
+        else:
+            # 다른 요청이 업로드 중 → 대기
+            cached_file = await dedup.wait_for_standby_release(
+                "files_api", checksum, standby_ttl_seconds,
+                find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
             )
+            if cached_file:
+                _reuse_files_api_uris(meta, cached_file, uri_parts, file_refs)
+            else:
+                # timeout → 자기가 업로드 (Y' Hybrid)
+                logger.warning(
+                    "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
+                    checksum[:16],
+                )
+                await _upload_and_cache_file(meta, checksum, uri_parts, file_refs)
 
-    # ── ④ context_cache_ttl 지정 시 create_cache + Redis 저장 (실패 시 raise) ──
+    # ── ④ context_cache_ttl 지정 시 standby로 보호된 create_cache + Redis 저장 ──
     cached_content: str | None = None
     if context_cache_ttl and file_refs:
-        try:
-            cache_ref = await create_context_cache(
-                file_refs,
-                model=model,
-                system_instruction=system_instruction,
-                ttl=context_cache_ttl,
+        acquired_cc = await dedup.try_acquire_standby(
+            "context_cache", hash_key, standby_ttl_seconds,
+        )
+        if acquired_cc:
+            try:
+                cached_content = await _create_and_save_context_cache(
+                    hash_key, checksums, file_refs,
+                    model=model,
+                    system_instruction=system_instruction,
+                    ttl=context_cache_ttl,
+                )
+            finally:
+                await dedup.release_standby("context_cache", hash_key)
+        else:
+            # 다른 요청이 생성 중 → 대기
+            cached_cc = await dedup.wait_for_standby_release(
+                "context_cache", hash_key, standby_ttl_seconds,
+                find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
             )
-        except Exception as e:
-            logger.exception("Context cache 생성 실패")
-            raise FileUploadError(f"Context cache 생성 실패: {e}") from e
-
-        try:
-            cache_store.save_context_cache(
-                hash_key,
-                {
-                    "file_checksums": checksums,
-                    "model": model,
-                    "system_instruction": system_instruction,
-                    "cached_content_name": cache_ref.name,
-                    "files_api_uris": [r.uri for r in file_refs],
-                },
-                ttl=context_cache_ttl,
-            )
-        except Exception as e:
-            logger.exception("Redis context_cache 저장 실패: hash_key=%s", hash_key[:16])
-            raise CacheError(f"Redis context_cache 저장 실패: {e}") from e
-
-        cached_content = cache_ref.name
-        logger.info("context cache 생성: %s", cache_ref.name)
+            if cached_cc:
+                cached_content = cached_cc["cached_content_name"]
+                logger.info("context cache hit after wait: %s", cached_content)
+            else:
+                # timeout → 자기가 생성 (Y' Hybrid)
+                logger.warning(
+                    "context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s",
+                    hash_key[:16],
+                )
+                cached_content = await _create_and_save_context_cache(
+                    hash_key, checksums, file_refs,
+                    model=model,
+                    system_instruction=system_instruction,
+                    ttl=context_cache_ttl,
+                )
 
     return uri_parts, cached_content
 
@@ -302,6 +402,7 @@ async def resolve_files_after_404(
     model: str | None,
     system_instruction: str | None,
     context_cache_ttl: int | None,
+    standby_ttl_seconds: int = 600,
 ) -> ResolvedFiles:
     """Gemini 404 발생 후 Redis 무효화 + resolve_files 재호출.
 
@@ -350,6 +451,7 @@ async def resolve_files_after_404(
         model=model,
         system_instruction=system_instruction,
         context_cache_ttl=context_cache_ttl,
+        standby_ttl_seconds=standby_ttl_seconds,
     )
 
 
@@ -375,6 +477,7 @@ async def resolve_files(
     model: str | None,
     system_instruction: str | None,
     context_cache_ttl: int | None,
+    standby_ttl_seconds: int = 600,
 ) -> ResolvedFiles:
     """파일 처리 전체 흐름.
 
@@ -382,6 +485,9 @@ async def resolve_files(
     Step 2: context_cache_ttl 지정 + 전원 inline이면 전 파일 Files API로 승급 (§4.4)
     Step 3: 두 풀 처리 (서로 독립이라 병렬 실행)
     Step 4: ResolvedFiles 반환
+
+    Args:
+        standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600).
 
     상세: docs/inline-vs-files-api-strategy.md §4, §5, §6
     """
@@ -408,6 +514,7 @@ async def resolve_files(
             model=model,
             system_instruction=system_instruction,
             context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
         ),
     )
 

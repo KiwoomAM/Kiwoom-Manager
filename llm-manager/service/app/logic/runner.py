@@ -15,6 +15,7 @@ from llm_handler.models import LLMResponse, StreamChunk
 from app.logic.done_check import DoneCheckResult, done_check
 from app.logic.file_handler import (
     ResolvedFiles,
+    dedup,
     resolve_files,
     resolve_files_after_404,
 )
@@ -24,7 +25,7 @@ from app.logic.file_handler.validators import (
 )
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
-from app.logic.store import save_result
+from app.logic.store import cache_get, save_result
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class _Prepared:
     route_reason: str | None
     file_metas: list[FileMeta] | None
     context_cache_ttl: int | None
+    standby_ttl_seconds: int
 
 
 # ── prepare / finalize ─────────────────────────────────────────
@@ -58,6 +60,7 @@ def prepare(
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
+    standby_ttl_seconds: int = 600,
 ) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직.
 
@@ -89,6 +92,7 @@ def prepare(
             route_reason="cache_off_save_off" if debug else None,
             file_metas=None,
             context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
         )
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
@@ -103,6 +107,7 @@ def prepare(
             route_reason="cache_off_save_on" if debug else None,
             file_metas=file_metas,
             context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
@@ -127,6 +132,7 @@ def prepare(
                 route_reason="cache_deserialize_error" if debug else None,
                 file_metas=file_metas,
                 context_cache_ttl=context_cache_ttl,
+                standby_ttl_seconds=standby_ttl_seconds,
             )
 
         cached_meta: dict[str, Any] = {
@@ -148,6 +154,7 @@ def prepare(
             route_reason="cache_hit" if debug else None,
             file_metas=file_metas,
             context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
         )
 
     # cache miss (또는 cache error)
@@ -161,6 +168,7 @@ def prepare(
         route_reason=route_reason if debug else None,
         file_metas=file_metas,
         context_cache_ttl=context_cache_ttl,
+        standby_ttl_seconds=standby_ttl_seconds,
     )
 
 
@@ -318,6 +326,7 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
         model=prep.llm_input.get("model"),
         system_instruction=prep.llm_input.get("system"),
         context_cache_ttl=prep.context_cache_ttl,
+        standby_ttl_seconds=prep.standby_ttl_seconds,
     )
     return _apply_resolved(prep.llm_input, resolved)
 
@@ -332,6 +341,66 @@ def _is_gemini_404(exc: Exception) -> bool:
     return "404" in msg or "not found" in msg
 
 
+# ── agent_llm standby 헬퍼 (cache-stampede-dedup §6) ────────
+
+
+def _recheck_agent_llm_cache(
+    prep: _Prepared, database: str | None,
+) -> tuple[LLMResponse, dict[str, Any]] | None:
+    """MDB를 직접 조회하여 HIT면 (response, meta), MISS/역직렬화 실패면 None.
+
+    standby 대기 중 주기적으로 호출 — 다른 요청이 LLM을 끝내고 MDB에
+    저장했는지 확인.
+    """
+    if not prep.dc:
+        return None
+    doc = cache_get(prep.dc.cache_key, prep.dc.collection, database=database)
+    if doc is None:
+        return None
+    try:
+        response = LLMResponse.model_validate(doc.get("result", {}))
+    except Exception:
+        logger.warning(
+            "standby 대기 중 캐시 역직렬화 실패: cache_key=%s",
+            prep.dc.cache_key[:16],
+        )
+        return None
+    meta: dict[str, Any] = {
+        "source": "cache",
+        "cache_hit": True,
+        "cache_key": prep.dc.cache_key,
+        "metadata": doc.get("metadata", {}),
+        "collection": prep.dc.collection,
+    }
+    if prep.debug:
+        meta["route_reason"] = "standby_wait_hit"
+    return response, meta
+
+
+async def _do_llm_call(
+    prep: _Prepared, database: str | None,
+) -> tuple[LLMResponse, dict[str, Any]]:
+    """파일 처리 + LLM 호출 + 404 자동 복구 + finalize 까지 실행."""
+    call_input = await _build_server_call_input(prep)
+    try:
+        res = await aio_call(**call_input)
+    except Exception as e:
+        if _is_gemini_404(e) and prep.file_metas:
+            logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
+            resolved = await resolve_files_after_404(
+                prep.file_metas, prep.llm_input,
+                model=prep.llm_input.get("model"),
+                system_instruction=prep.llm_input.get("system"),
+                context_cache_ttl=prep.context_cache_ttl,
+                standby_ttl_seconds=prep.standby_ttl_seconds,
+            )
+            call_input = _apply_resolved(prep.llm_input, resolved)
+            res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
+        else:
+            raise
+    return finalize(prep, res, database=database)
+
+
 # ── Public API ─────────────────────────────────────────────────
 
 async def llm_request_async(
@@ -344,11 +413,15 @@ async def llm_request_async(
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
+    standby_ttl_seconds: int = 600,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
 
     진입 직후 fail-fast 검증 (mime 화이트리스트 + 2GB 초과) → prepare → call → finalize.
-    파일 처리 본문은 ② Phase A에서 구현.
+    cache miss 시 agent_llm standby로 중복 호출 방지 (docs/cache-stampede-dedup.md).
+
+    Args:
+        standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
     """
     if file_metas:
         validate_mime_types(file_metas)
@@ -360,27 +433,39 @@ async def llm_request_async(
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
+        standby_ttl_seconds=standby_ttl_seconds,
     )
     if prep.cached_output:
         return prep.cached_output
 
-    call_input = await _build_server_call_input(prep)
-    try:
-        res = await aio_call(**call_input)
-    except Exception as e:
-        if _is_gemini_404(e) and prep.file_metas:
-            logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
-            resolved = await resolve_files_after_404(
-                prep.file_metas, prep.llm_input,
-                model=prep.llm_input.get("model"),
-                system_instruction=prep.llm_input.get("system"),
-                context_cache_ttl=prep.context_cache_ttl,
-            )
-            call_input = _apply_resolved(prep.llm_input, resolved)
-            res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
-        else:
-            raise
-    return finalize(prep, res, database=database)
+    # dc 없는 경우(cache_off_save_off) → 공유 캐시 없어서 standby 불필요
+    if prep.dc is None:
+        return await _do_llm_call(prep, database)
+
+    # cache miss — agent_llm standby 선점 시도
+    cache_key = prep.dc.cache_key
+    acquired = await dedup.try_acquire_standby(
+        "agent_llm", cache_key, standby_ttl_seconds,
+    )
+    if acquired:
+        try:
+            return await _do_llm_call(prep, database)
+        finally:
+            await dedup.release_standby("agent_llm", cache_key)
+
+    # 다른 요청이 처리 중 → 대기
+    cached = await dedup.wait_for_standby_release(
+        "agent_llm", cache_key, standby_ttl_seconds,
+        find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
+    )
+    if cached:
+        return cached
+    # timeout → 자기가 LLM 호출 (Y' Hybrid)
+    logger.warning(
+        "agent_llm standby timeout → 자기가 LLM 호출 (중복 가능): cache_key=%s",
+        cache_key[:16],
+    )
+    return await _do_llm_call(prep, database)
 
 
 def llm_request(
@@ -393,6 +478,7 @@ def llm_request(
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
+    standby_ttl_seconds: int = 600,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (sync)."""
     import asyncio
@@ -402,7 +488,38 @@ def llm_request(
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
+        standby_ttl_seconds=standby_ttl_seconds,
     ))
+
+
+async def _do_llm_stream(
+    prep: _Prepared, database: str | None,
+) -> AsyncIterator[StreamChunk]:
+    """파일 처리 + LLM stream + 404 자동 복구 + stream finalize."""
+    call_input = await _build_server_call_input(prep)
+    accumulated: list[StreamChunk] = []
+    try:
+        async for chunk in aio_stream(**call_input):
+            accumulated.append(chunk)
+            yield chunk
+    except Exception as e:
+        # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
+        if _is_gemini_404(e) and prep.file_metas and not accumulated:
+            logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
+            resolved = await resolve_files_after_404(
+                prep.file_metas, prep.llm_input,
+                model=prep.llm_input.get("model"),
+                system_instruction=prep.llm_input.get("system"),
+                context_cache_ttl=prep.context_cache_ttl,
+                standby_ttl_seconds=prep.standby_ttl_seconds,
+            )
+            call_input = _apply_resolved(prep.llm_input, resolved)
+            async for chunk in aio_stream(**call_input):
+                accumulated.append(chunk)
+                yield chunk
+        else:
+            raise
+    _finalize_stream(prep, accumulated, database=database)
 
 
 async def llm_request_stream_async(
@@ -415,10 +532,12 @@ async def llm_request_stream_async(
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
+    standby_ttl_seconds: int = 600,
 ) -> AsyncIterator[StreamChunk]:
     """스트리밍 LLM 요청 (async). StreamChunk를 yield.
 
     캐시 히트 시 단일 StreamChunk 1개 yield.
+    standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield.
     스트림 완료 후 MDB에 결과 자동 저장.
     """
     if file_metas:
@@ -431,6 +550,7 @@ async def llm_request_stream_async(
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
+        standby_ttl_seconds=standby_ttl_seconds,
     )
 
     if prep.cached_output:
@@ -438,31 +558,42 @@ async def llm_request_stream_async(
         yield _to_stream_chunk(response)
         return
 
-    call_input = await _build_server_call_input(prep)
-
-    accumulated: list[StreamChunk] = []
-    try:
-        async for chunk in aio_stream(**call_input):
-            accumulated.append(chunk)
+    # dc 없는 경우 → 공유 캐시 없어서 standby 불필요
+    if prep.dc is None:
+        async for chunk in _do_llm_stream(prep, database):
             yield chunk
-    except Exception as e:
-        # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        # (이미 일부 yield됐으면 부분 응답이 사용자에게 간 상태라 복구 시 중복)
-        if _is_gemini_404(e) and prep.file_metas and not accumulated:
-            logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
-            resolved = await resolve_files_after_404(
-                prep.file_metas, prep.llm_input,
-                model=prep.llm_input.get("model"),
-                system_instruction=prep.llm_input.get("system"),
-                context_cache_ttl=prep.context_cache_ttl,
-            )
-            call_input = _apply_resolved(prep.llm_input, resolved)
-            async for chunk in aio_stream(**call_input):
-                accumulated.append(chunk)
+        return
+
+    # cache miss — agent_llm standby 선점 시도
+    cache_key = prep.dc.cache_key
+    acquired = await dedup.try_acquire_standby(
+        "agent_llm", cache_key, standby_ttl_seconds,
+    )
+    if acquired:
+        try:
+            async for chunk in _do_llm_stream(prep, database):
                 yield chunk
-        else:
-            raise
-    _finalize_stream(prep, accumulated, database=database)
+        finally:
+            await dedup.release_standby("agent_llm", cache_key)
+        return
+
+    # 다른 요청이 처리 중 → 대기
+    cached = await dedup.wait_for_standby_release(
+        "agent_llm", cache_key, standby_ttl_seconds,
+        find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
+    )
+    if cached:
+        response, _meta = cached
+        yield _to_stream_chunk(response)
+        return
+
+    # timeout → 자기가 stream (Y' Hybrid)
+    logger.warning(
+        "agent_llm standby timeout → 자기가 stream 시작 (중복 가능): cache_key=%s",
+        cache_key[:16],
+    )
+    async for chunk in _do_llm_stream(prep, database):
+        yield chunk
 
 
 def llm_request_stream(
@@ -475,6 +606,7 @@ def llm_request_stream(
     debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
+    standby_ttl_seconds: int = 600,
 ) -> Iterator[StreamChunk]:
     """스트리밍 LLM 요청 (sync)."""
     import asyncio
@@ -487,6 +619,7 @@ def llm_request_stream(
             cache_mode=cache_mode, save_mode=save_mode,
             ttl_seconds=ttl_seconds, debug=debug, database=database,
             context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
         ):
             results.append(chunk)
         return results

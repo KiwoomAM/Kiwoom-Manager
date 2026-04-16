@@ -320,22 +320,22 @@ else:
 
 ### Phase 1 — 기본 구현
 
-- [ ] `service/app/logic/file_handler/dedup.py` 신설
-- [ ] `try_acquire_standby(prefix, key, ttl_seconds)` 구현 (Redis SETNX + EX)
-- [ ] `wait_for_standby_release(prefix, key, timeout, find_cache_fn)` 구현 (exponential backoff)
-- [ ] `release_standby(prefix, key)` 구현 (DEL)
-- [ ] `resolver.py` `_process_files_api`에 files_api standby 적용
-- [ ] `resolver.py` `_process_files_api`에 context_cache standby 적용
-- [ ] `runner.py` `llm_request_async` / `llm_request_stream_async`에 agent_llm standby 적용
-- [ ] `llm_request_async` / `llm_request_stream_async` 인자에 `standby_ttl_seconds: int = 600` 추가
-- [ ] SDK `_client.py` body에 `standby_ttl_seconds` 전달
-- [ ] SDK `__init__.py` public API에 `standby_ttl_seconds` 인자 추가
-- [ ] DTO `LLMRequestBody`에 `standby_ttl_seconds: int = 600` 필드 추가
-- [ ] 라우터 `handle_request` / `handle_request_stream`에서 `standby_ttl_seconds` 전달
-- [ ] `configure_handlers()`에 Redis startup health check 추가 (`init_redis()` False → `RuntimeError` raise)
-- [ ] `configure_handlers()`에 startup standby flush 추가 (`get_client().keys(pattern)` → `delete`)
-- [ ] `docs/single-flight-dedup.md` 삭제 (기존 초안 폐기)
-- [ ] README에 동시 호출 한계 섹션 추가
+- [x] `service/app/logic/file_handler/dedup.py` 신설
+- [x] `try_acquire_standby(prefix, key, ttl_seconds)` 구현 (Redis SETNX + EX)
+- [x] `wait_for_standby_release(prefix, key, timeout, find_cache_fn)` 구현 (exponential backoff)
+- [x] `release_standby(prefix, key)` 구현 (DEL)
+- [x] `resolver.py` `_process_files_api`에 files_api standby 적용
+- [x] `resolver.py` `_process_files_api`에 context_cache standby 적용
+- [x] `runner.py` `llm_request_async` / `llm_request_stream_async`에 agent_llm standby 적용
+- [x] `llm_request_async` / `llm_request_stream_async` 인자에 `standby_ttl_seconds: int = 600` 추가
+- [x] SDK `_client.py` body에 `standby_ttl_seconds` 전달
+- [x] SDK `__init__.py` public API에 `standby_ttl_seconds` 인자 추가
+- [x] DTO `LLMRequestBody`에 `standby_ttl_seconds: int = 600` 필드 추가
+- [x] 라우터 `handle_request` / `handle_request_stream`에서 `standby_ttl_seconds` 전달
+- [x] `configure_handlers()`에 Redis startup health check 추가 (`init_redis()` False → `RuntimeError` raise)
+- [x] `configure_handlers()`에 startup standby flush 추가 (`get_client().keys(pattern)` → `delete`)
+- [x] `docs/single-flight-dedup.md` 삭제 (기존 초안 폐기)
+- [x] README에 동시 호출 한계 섹션 추가
 - [ ] 테스트: standby 선점/대기/timeout 각 케이스
 
 ### Phase 2 — 모니터링·정교화 (후속)
@@ -400,13 +400,13 @@ acquired = result is not None  # True면 점유 성공, None이면 이미 존재
 ```python
 # providers.py configure_handlers() 내
 # redis-handler에 delete_pattern 없음 → get_client()로 raw 클라이언트 직접 사용
+# KEYS는 운영 Redis에서 차단(O(N) 부하)되는 경우가 많아 SCAN 사용
 from redis_handler import get_client
 client = get_client()
 if client:
     for pattern in ("file_cache:*_standby:*", "agent_llm_standby:*"):
-        keys = client.keys(pattern)
-        if keys:
-            client.delete(*keys)
+        for key in client.scan_iter(match=pattern, count=100):
+            client.delete(key)
 ```
 
 > **주의**: 멀티 인스턴스 환경(K8s 등)으로 확장 시 전체 flush 대신 인스턴스 ID 기반 selective flush로 전환 필요.

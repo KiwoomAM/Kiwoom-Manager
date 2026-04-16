@@ -39,6 +39,7 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
         debug=body.debug,
         database=body.database,
         context_cache_ttl=body.context_cache_ttl,
+        standby_ttl_seconds=body.standby_ttl_seconds,
     )
     return LLMRequestResponse(result=llm_result.model_dump(), meta=meta)
 
@@ -59,6 +60,7 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
             debug=body.debug,
             database=body.database,
             context_cache_ttl=body.context_cache_ttl,
+            standby_ttl_seconds=body.standby_ttl_seconds,
         ):
             event = {
                 "type": "chunk",

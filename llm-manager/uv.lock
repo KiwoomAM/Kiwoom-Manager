@@ -160,6 +160,26 @@ wheels = [
 ]
 
 [[package]]
+name = "kiwoom-file-manager"
+version = "0.1.0"
+source = { editable = "../file-manager/sdk" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "kiwoom-llm-handler"
 version = "0.1.0"
 source = { editable = "../llm-handler/sdk" }
@@ -191,6 +211,7 @@ source = { editable = "sdk" }
 dependencies = [
     { name = "filetype" },
     { name = "httpx" },
+    { name = "kiwoom-file-manager" },
     { name = "kiwoom-redis-handler" },
 ]
 
@@ -206,6 +227,7 @@ dev = [
 requires-dist = [
     { name = "filetype", specifier = ">=1.2.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "kiwoom-file-manager", editable = "../file-manager/sdk" },
     { name = "kiwoom-redis-handler", editable = "../redis-handler" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -221,6 +243,7 @@ source = { editable = "service" }
 dependencies = [
     { name = "fastapi" },
     { name = "filetype" },
+    { name = "kiwoom-file-manager" },
     { name = "kiwoom-llm-handler" },
     { name = "kiwoom-mdb-handler" },
     { name = "kiwoom-redis-handler" },
@@ -244,6 +267,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "filetype", specifier = ">=1.2.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "kiwoom-file-manager", editable = "../file-manager/sdk" },
     { name = "kiwoom-llm-handler", editable = "../llm-handler/sdk" },
     { name = "kiwoom-mdb-handler", editable = "../mdb-handler/sdk" },
     { name = "kiwoom-redis-handler", editable = "../redis-handler" },
