@@ -39,10 +39,15 @@ from llm_handler import (
     configure,
     create_cache,
     delete_cache,
+    delete_file,
     embed,
+    get_cache,
+    get_file,
     list_caches,
+    list_files,
     session,
     stream,
+    update_cache,
     upload_file,
 )
 
