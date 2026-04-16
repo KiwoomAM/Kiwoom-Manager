@@ -181,7 +181,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "kiwoom-llm-handler"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "../llm-handler/sdk" }
 dependencies = [
     { name = "filetype" },

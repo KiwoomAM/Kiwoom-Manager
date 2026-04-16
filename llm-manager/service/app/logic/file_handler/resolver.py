@@ -198,15 +198,20 @@ async def _upload_and_cache_file(
             pass
 
     uris = [r.uri for r in refs]
+    dynamic_ttl = cache_store.compute_files_api_ttl(refs)
     try:
-        cache_store.save_files_api(checksum, {
-            "file_checksum": checksum,
-            "file_name": meta.file_name,
-            "file_size": meta.file_size,
-            "mime_type": meta.mime_type,
-            "uris": uris,
-            "split": len(refs) > 1,
-        })
+        cache_store.save_files_api(
+            checksum,
+            {
+                "file_checksum": checksum,
+                "file_name": meta.file_name,
+                "file_size": meta.file_size,
+                "mime_type": meta.mime_type,
+                "uris": uris,
+                "split": len(refs) > 1,
+            },
+            ttl=dynamic_ttl,
+        )
     except Exception as e:
         logger.exception("Redis files_api 저장 실패: checksum=%s", checksum[:16])
         raise CacheError(f"Redis files_api 저장 실패: {e}") from e

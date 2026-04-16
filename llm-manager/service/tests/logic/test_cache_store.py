@@ -5,7 +5,16 @@ Redis 미연결 시 메모리 fallback으로 동작한다.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+from llm_handler.models import FileRef
+
 from app.logic.file_handler import cache_store
+from app.logic.file_handler.cache_store import (
+    FILES_API_TTL,
+    FILES_API_TTL_FLOOR,
+    compute_files_api_ttl,
+)
 
 
 class TestFilesApi:
@@ -139,3 +148,84 @@ class TestMakeContextCacheKey:
         key = cache_store.make_context_cache_key(["sha256:abc"])
         assert len(key) == 64
         assert all(c in "0123456789abcdef" for c in key)
+
+
+class TestComputeFilesApiTtl:
+    """compute_files_api_ttl 동적 TTL 계산 테스트."""
+
+    def _ref(self, expiration: datetime | None = None) -> FileRef:
+        return FileRef(
+            name="files/test",
+            uri="https://example.com/test",
+            mime_type="application/pdf",
+            state="ACTIVE",
+            expiration_time=expiration.isoformat() if expiration else None,
+        )
+
+    def test_all_refs_have_expiration(self):
+        """정상 케이스 — 48h 미래 만료, 1h buffer → 약 47h."""
+        future = datetime.now(UTC) + timedelta(hours=48)
+        refs = [self._ref(future)]
+        ttl = compute_files_api_ttl(refs)
+        # 47h 근처, 실행 시간 오차 허용
+        assert abs(ttl - FILES_API_TTL) < 10
+
+    def test_fallback_when_missing_expiration(self):
+        """expiration_time 없으면 FILES_API_TTL 폴백."""
+        refs = [self._ref(None)]
+        ttl = compute_files_api_ttl(refs)
+        assert ttl == FILES_API_TTL
+
+    def test_fallback_when_partial_missing(self):
+        """일부라도 expiration_time 없으면 폴백."""
+        future = datetime.now(UTC) + timedelta(hours=48)
+        refs = [self._ref(future), self._ref(None)]
+        ttl = compute_files_api_ttl(refs)
+        assert ttl == FILES_API_TTL
+
+    def test_floor_when_remaining_under_1h(self):
+        """만료 30분 전이면 1h floor 적용 (30분 - 1h buffer = 음수)."""
+        future = datetime.now(UTC) + timedelta(minutes=30)
+        refs = [self._ref(future)]
+        ttl = compute_files_api_ttl(refs)
+        assert ttl == FILES_API_TTL_FLOOR
+
+    def test_floor_when_already_expired(self):
+        """이미 만료 → 1h floor."""
+        past = datetime.now(UTC) - timedelta(hours=1)
+        refs = [self._ref(past)]
+        ttl = compute_files_api_ttl(refs)
+        assert ttl == FILES_API_TTL_FLOOR
+
+    def test_split_pdf_uses_earliest_expiration(self):
+        """여러 파트 중 가장 이른 만료 채택."""
+        early = datetime.now(UTC) + timedelta(hours=10)
+        late = datetime.now(UTC) + timedelta(hours=48)
+        refs = [self._ref(late), self._ref(early)]
+        ttl = compute_files_api_ttl(refs)
+        # 10h - 1h buffer = 9h
+        expected = int(timedelta(hours=9).total_seconds())
+        assert abs(ttl - expected) < 10
+
+    def test_invalid_iso_string_fallback(self):
+        """ISO 파싱 실패 → 폴백."""
+        ref = FileRef(
+            name="files/x", uri="u", mime_type="application/pdf", state="ACTIVE",
+            expiration_time="not-iso",
+        )
+        ttl = compute_files_api_ttl([ref])
+        assert ttl == FILES_API_TTL
+
+    def test_empty_refs_fallback(self):
+        """빈 리스트 → 폴백 (방어)."""
+        ttl = compute_files_api_ttl([])
+        assert ttl == FILES_API_TTL
+
+    def test_custom_buffer_seconds(self):
+        """buffer_seconds 커스텀 — 3h buffer."""
+        future = datetime.now(UTC) + timedelta(hours=48)
+        refs = [self._ref(future)]
+        ttl = compute_files_api_ttl(refs, buffer_seconds=3 * 3600)
+        # 48h - 3h = 45h
+        expected = int(timedelta(hours=45).total_seconds())
+        assert abs(ttl - expected) < 10
