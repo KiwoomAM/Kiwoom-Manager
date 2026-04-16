@@ -27,12 +27,20 @@ pip install -e packages/mdb-handler/sdk
 
 ```
 mdb_handler/
-├── __init__.py            # 공개 API
+├── __init__.py            # 공개 API (sync + aio 노출)
 ├── _client.py             # httpx 기반 SyncClient (내부용)
-├── handler.py             # MongoDBHandler (Singleton 진입점)
+├── _async_client.py       # httpx 기반 AsyncClient (내부용)
+├── _paths.py              # REST 경로/바디 빌더 (sync/async 공용)
+├── _transport.py          # SyncTransport/AsyncTransport Protocol (DIP 경계)
+├── handler.py             # MongoDBHandler (Singleton 동기 진입점)
 ├── exceptions.py          # MDBError, MDBConnectionError, MDBHandlerError
-└── collections/
-    └── blocks.py          # BlocksCollection (컬렉션 CRUD/집계)
+├── collections/
+│   └── blocks.py          # BlocksCollection (동기 CRUD/집계)
+└── aio/                   # 비동기 인터페이스
+    ├── __init__.py        # AsyncMongoDBHandler 등 공개
+    ├── handler.py         # AsyncMongoDBHandler (비-Singleton, 명시적 lifecycle)
+    └── collections/
+        └── blocks.py      # AsyncBlocksCollection (비동기 CRUD/집계)
 ```
 
 ## Quick Start
@@ -213,3 +221,76 @@ result = mdb.aggregate([
 | 환경변수 | `MONGODB_URI` 등 | `MDB_HANDLER_URL` |
 
 기존 코드에서 `uri` 인자만 제거하면 대부분의 호출이 그대로 동작합니다.
+
+## 비동기 사용법 (Async)
+
+FastAPI, LangGraph 등 async 환경에서는 `mdb_handler.aio`를 사용하세요.
+동기 인터페이스(`MongoDBHandler`)는 그대로 유지되며, 비동기 인터페이스는 별도 경로로 제공됩니다.
+
+### 기본 사용 (context manager 권장)
+
+```python
+from mdb_handler.aio import AsyncMongoDBHandler
+
+async def handler():
+    async with AsyncMongoDBHandler(database="kw_rag", collection="kw_gp") as mdb:
+        docs = await mdb.find({"type": "table"}, limit=10)
+        return docs
+```
+
+### FastAPI lifespan 통합
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from mdb_handler.aio import AsyncMongoDBHandler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.mdb = AsyncMongoDBHandler()
+    try:
+        yield
+    finally:
+        await app.state.mdb.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/docs")
+async def list_docs(request: Request):
+    return await request.app.state.mdb.find({}, limit=20)
+```
+
+### 병렬 쿼리 (성능 이득의 핵심 사용처)
+
+```python
+import asyncio
+from mdb_handler.aio import AsyncMongoDBHandler
+
+async def fan_out():
+    async with AsyncMongoDBHandler() as mdb:
+        tables, figures, count = await asyncio.gather(
+            mdb.find({"type": "table"}, limit=10),
+            mdb.find({"type": "figure"}, limit=10),
+            mdb.count({"type": "text"}),
+        )
+        return tables, figures, count
+```
+
+### 동기 ↔ 비동기 비교
+
+| 기능 | 동기 | 비동기 |
+|------|------|--------|
+| import | `from mdb_handler import MongoDBHandler` | `from mdb_handler.aio import AsyncMongoDBHandler` |
+| 인스턴스 | Singleton (`MongoDBHandler()`) | 명시적 인스턴스 (매 호출 새 인스턴스 가능) |
+| 호출 | `mdb.find(...)` | `await mdb.find(...)` |
+| 종료 | `mdb.close()` / `MongoDBHandler.reset()` | `await mdb.aclose()` 또는 `async with` |
+| 공개 메서드 | 동일 | 동일 (반환 타입 일치) |
+
+### 주의사항
+
+- 비동기 핸들러는 **Singleton이 아닙니다.** FastAPI lifespan, LangGraph 워크플로처럼 생명주기가 명확한 곳에서 인스턴스를 직접 관리하세요.
+- `aclose()` 호출 후 메서드를 호출하면 `RuntimeError`가 발생합니다.
+- 동기 코드와 혼용해도 안전합니다. 두 인터페이스는 **같은 Service API**를 사용하고 상태를 공유하지 않습니다.
