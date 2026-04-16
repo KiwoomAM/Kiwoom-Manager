@@ -50,7 +50,7 @@ class DenseClient:
         collection_name: str,
         top_k: int = 20,
         score_threshold: Optional[float] = None,
-        block_type_filter: Optional[str] = None,
+        payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense 벡터 단독 검색"""
         resp = self._client.post(
@@ -60,7 +60,7 @@ class DenseClient:
                 "collection_name": collection_name,
                 "top_k": top_k,
                 "score_threshold": score_threshold,
-                "block_type_filter": block_type_filter,
+                "payload_filter": payload_filter,
             },
         )
         return resp["results"]

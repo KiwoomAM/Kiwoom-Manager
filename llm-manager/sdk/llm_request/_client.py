@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from llm_request._file_meta import FileMeta
+from file_manager import FileMeta
 from llm_request.exceptions import ServiceConnectionError, ServiceError
 from llm_request.models import DoneCheckResult, RequestResult
 

@@ -17,12 +17,11 @@ import os
 import tempfile
 from dataclasses import dataclass
 
-from file_manager import FileMeta  # TODO: SDK 배포 전까지 없음. ② Phase A 검증 시 stub/실물 준비
+from file_manager import FileMeta, aget_file
 from llm_handler.aio import upload_file
 from llm_handler.models import FileRef, Part
 
 from app.core.errors import CacheError, FileUploadError
-from app.core.file_manager_client import fetch_file_bytes
 from app.logic.file_handler import cache_store
 from app.logic.file_handler.uploader import create_context_cache, upload_pdf_parts
 from app.logic.keying import make_file_checksum
@@ -131,7 +130,7 @@ async def _process_inline(inline_pool: list[FileMeta]) -> list[Part]:
     """
     inline_parts: list[Part] = []
     for m in inline_pool:
-        bytes_data = await fetch_file_bytes(m.file_path)
+        bytes_data = await aget_file(m.file_path)
         inline_parts.append(
             Part.from_bytes(data=bytes_data, mime_type=m.mime_type)
         )

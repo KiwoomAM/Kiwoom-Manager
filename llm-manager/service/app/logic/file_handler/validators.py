@@ -9,7 +9,7 @@ runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast�
 from __future__ import annotations
 
 from app.core.errors import FileTooLargeError, UnsupportedFileTypeError
-from file_manager import FileMeta  # TODO: SDK 배포 전까지 없음. ② Phase A 검증 시 stub/실물 준비
+from file_manager import FileMeta
 
 
 # ── mime 화이트리스트 ────────────────────────────────────────

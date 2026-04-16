@@ -47,7 +47,7 @@ from llm_handler import (
 
 from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
 from llm_request._client import AsyncClient
-from llm_request._file_meta import FileMeta
+from file_manager import FileMeta
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
 from llm_request.models import DoneCheckResult, RequestResult
 

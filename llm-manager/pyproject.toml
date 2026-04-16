@@ -18,6 +18,7 @@ kiwoom-llm-request-service = { workspace = true }
 kiwoom-llm-handler = { path = "../llm-handler/sdk", editable = true }
 kiwoom-mdb-handler = { path = "../mdb-handler/sdk", editable = true }
 kiwoom-redis-handler = { path = "../redis-handler", editable = true }
+kiwoom-file-manager = { path = "../file-manager/sdk", editable = true }
 
 [build-system]
 requires = ["hatchling"]

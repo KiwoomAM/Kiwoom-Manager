@@ -198,7 +198,13 @@ def classify_files(
 
 ### 4.4 context_cache와 부분 섞기의 관계
 
-Context Cache는 **Files API URI 기반**이라 inline Part에는 적용되지 않는다. 부분 섞기 하에선 같은 호출에서 일부 파일만 Files API를 타는 상황이 자연스럽게 발생한다.
+Context Cache는 **inline data Part도 받을 수 있으나** (Gemini API 스펙상 가능), **inline 경로엔 cache 적용 안 함**. 이유:
+
+- **저장 비용 비효율**: inline data를 cache 안에 넣으면 base64 1.33배 데이터가 그대로 cache 토큰으로 저장 → 시간당 저장 비용 ↑
+- **손익분기점 어려움**: inline 후보는 작은 파일이라 한 번에 inline 보내도 토큰 비용 작음 → 시간당 4회 이상 호출 손익분기점 도달 가능성 낮음
+- **운영 단순성**: inline 파일에 대한 cache 매핑·관리 키 추가 → 복잡도 ↑
+
+→ 부분 섞기 하에선 같은 호출에서 일부 파일만 Files API를 타는 상황이 자연스럽게 발생한다.
 
 **정책**
 

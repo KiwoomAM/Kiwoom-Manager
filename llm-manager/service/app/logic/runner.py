@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from file_manager import FileMeta  # TODO: SDK 배포 전까지 없음. ② Phase A 검증 시 stub/실물 준비
+from file_manager import FileMeta
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
 from llm_handler.models import LLMResponse, StreamChunk
