@@ -54,7 +54,6 @@ packages/llm-request/
 │   │   │   ├── requests.py    # 요청 스키마
 │   │   │   └── responses.py   # 응답 스키마
 │   │   └── logic/
-│   │       ├── orchestrator.py # 전체 흐름 조율
 │   │       ├── runner.py       # LLM 호출
 │   │       ├── keying.py       # 캐시 키 생성
 │   │       ├── done_check.py   # 캐시 조회
@@ -107,7 +106,10 @@ Service는 `.env` 또는 환경변수로 설정한다. 기본값이 내부 서�
 
 ## file-manager 실행
 
-file-manager는 추후 별도 서버로 배포될 예정이다. 현재는 직접 띄워서 사용한다.
+`packages/file-manager`는 llm-request 개발·테스트용으로 간단히 구현한 임시 버전이다.
+추후 file-manager 전담 담당자가 완성하면 해당 서비스로 대체·연결할 예정이다.
+
+현재는 직접 띄워서 사용한다.
 
 ```bash
 cd packages/file-manager/service
@@ -735,7 +737,7 @@ except ServiceError as e:
 
 `request_id`는 서버 로그와 대조하여 원인을 추적할 수 있다.
 
-> 서비스 로그 포맷 및 `route_reason` 값 목록은 [docs/14.observability-backlog.md](docs/14.observability-backlog.md) 참고.
+> **오류 발생 시**: 서버 로그 포맷, `[route]` / `[dedup]` 로그 패턴, `route_reason` 값 목록을 담은 디버깅 가이드 → [docs/14.observability-backlog.md](docs/14.observability-backlog.md)
 
 ## LLM 오류는 MDB에 저장되지 않음
 
@@ -897,6 +899,7 @@ Gemini Files API는 계정당 20GB 저장 한도가 있다.
 여러 에이전트가 동시에 실행될 때 특정 에이전트가 LLM 호출을 독점하지 않도록
 에이전트 단위의 quota / rate limit을 두는 방식을 검토 중이다.
 Service 레이어에서 Semaphore 기반으로 동시 호출 수를 제한하여 에이전트 간 공정한 리소스 배분을 목표로 한다.
+
 
 
 

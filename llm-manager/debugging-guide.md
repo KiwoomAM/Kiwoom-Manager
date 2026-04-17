@@ -52,8 +52,6 @@ llm_request_async()
                 └──response──→ SDK
 ```
 
-배치/스트림은 [orchestrator.py](service/app/logic/orchestrator.py)의 `run_many`, `run_many_stream`을 통해 각 요청을 병렬 실행.
-
 ---
 
 ## 2. 단계별 상세
@@ -153,25 +151,7 @@ llm_request_async()
 
 ---
 
-### 2.3 라우터 → 오케스트레이터
-
-**역할**: [routers/request.py](service/app/routers/request.py)는 DTO ↔ 로직 변환만. [orchestrator.py](service/app/logic/orchestrator.py)가 배치/스트림의 병렬 fan-out을 담당.
-
-#### 🔴 배치 state 누락
-
-> `orchestrator.py:39-42, 93-96` [RAISE] `_worker()`
-> ```python
-> raise ValueError(f"run_many: state[{idx}]에 'llm_input' 키가 없습니다. state keys: {list(state.keys())}")
-> raise ValueError(f"run_many_stream: state[{idx}]에 'llm_input' 키가 없습니다. state keys: {list(state.keys())}")
-> ```
-
-- **언제**: 배치/스트림 호출 시 state dict의 인덱스 idx 항목에 `llm_input` 키가 없음
-- **의미**: 호출부 버그. state 구성 실수
-- **확인할 것**: SDK 쪽 state 생성 로직, idx 번째 요소의 실제 키들
-
----
-
-### 2.4 캐시 키 생성 (keying.py)
+### 2.3 캐시 키 생성 (keying.py)
 
 **역할**: `llm_input`과 부속 파라미터를 결정적 JSON으로 정규화 → sha256으로 키 산출.
 **관련 파일**: [keying.py](service/app/logic/keying.py)
@@ -215,7 +195,7 @@ llm_request_async()
 
 ---
 
-### 2.5 dedup / standby
+### 2.4 dedup / standby
 
 **역할**: 동일 키로 동시 요청이 몰릴 때 leader 하나만 실제 작업, 나머지는 대기 (Cache Stampede 방지).
 **관련 파일**: [dedup.py](service/app/logic/file_handler/dedup.py), [runner.py](service/app/logic/runner.py)
@@ -264,7 +244,7 @@ llm_request_async()
 
 ---
 
-### 2.6 파일 검증 (validators.py)
+### 2.5 파일 검증 (validators.py)
 
 **역할**: 업로드 가능 여부 사전 검증.
 **관련 파일**: [validators.py](service/app/logic/file_handler/validators.py)
@@ -294,7 +274,7 @@ llm_request_async()
 
 ---
 
-### 2.7 파일 처리 — Files API / Context Cache
+### 2.6 파일 처리 — Files API / Context Cache
 
 **역할**: 파일 크기/개수에 따라 inline / Files API / split / context cache 분기.
 **관련 파일**: [resolver.py](service/app/logic/file_handler/resolver.py), [uploader.py](service/app/logic/file_handler/uploader.py), [splitter.py](service/app/logic/file_handler/splitter.py), [cache_store.py](service/app/logic/file_handler/cache_store.py)
@@ -455,7 +435,7 @@ llm_request_async()
 
 ---
 
-### 2.8 Provider / Redis 기동 (providers.py)
+### 2.7 Provider / Redis 기동 (providers.py)
 
 **관련 파일**: [providers.py](service/app/core/providers.py)
 
@@ -484,7 +464,7 @@ llm_request_async()
 
 ---
 
-### 2.9 LLM 호출 (runner.py)
+### 2.8 LLM 호출 (runner.py)
 
 **역할**: prepare → files → call → finalize의 실제 실행.
 **관련 파일**: [runner.py](service/app/logic/runner.py)
@@ -576,7 +556,7 @@ llm_request_async()
 
 ---
 
-### 2.10 결과 저장 (store.py)
+### 2.9 결과 저장 (store.py)
 
 **관련 파일**: [store.py](service/app/logic/store.py)
 
@@ -617,7 +597,7 @@ llm_request_async()
 
 ---
 
-### 2.11 캐시 조회 (done_check.py)
+### 2.10 캐시 조회 (done_check.py)
 
 **관련 파일**: [done_check.py](service/app/logic/done_check.py)
 
@@ -658,7 +638,7 @@ llm_request_async()
 
 | 예외 | 위치 | 의미 |
 |------|------|------|
-| `ValueError` | keying.py:195, orchestrator.py:39/93, store.py:56/140 | 입력/상태 검증 실패 |
+| `ValueError` | keying.py:195, store.py:56/140 | 입력/상태 검증 실패 |
 | `RuntimeError` | providers.py:25, dedup.py:70/104 | Redis 미연결 |
 | `KeyError` | store.py:130 | 캐시 문서 없음 |
 
