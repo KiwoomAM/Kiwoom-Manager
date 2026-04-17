@@ -1,7 +1,8 @@
 """파일 처리 진입점.
 
-file_manager 분리 후 새 설계 — file_metas + llm_input 받아서
-(inline_parts, uri_parts, cached_content)를 반환하는 부분 섞기 흐름.
+files + llm_input 받아서 (inline_parts, uri_parts, cached_content)를 반환하는
+부분 섞기 흐름. 각 원소는 FileInput (meta + bytes)로, 에이전트가 준 bytes를
+그대로 LLM 호출 payload에 사용한다.
 
 cache stampede dedup (docs/cache-stampede-dedup.md):
 - files_api 업로드, context_cache 생성 시점에 Redis standby 선점
@@ -9,6 +10,7 @@ cache stampede dedup (docs/cache-stampede-dedup.md):
 
 상세 설계: docs/inline-vs-files-api-strategy.md §4, §5, §6, §7
              docs/cache-stampede-dedup.md §6
+             docs/file-manager-bytes-passthrough.md
 """
 
 from __future__ import annotations
@@ -18,9 +20,9 @@ import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 
-from file_manager import FileMeta, aget_file
 from llm_handler.aio import upload_file
 from llm_handler.models import FileRef, Part
 
@@ -28,6 +30,7 @@ from app.core.errors import CacheError, FileUploadError
 from app.logic.file_handler import cache_store, dedup
 from app.logic.file_handler.uploader import create_context_cache, upload_pdf_parts
 from app.logic.keying import make_file_checksum
+from app.models.requests import FileInput
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +44,14 @@ _INLINE_LIMIT_PDF_OR_TEXT_ONLY = 50 * 1024 * 1024  # 50 MB
 _PDF_SPLIT_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 
-def _inline_total_limit(pool: list[FileMeta]) -> int:
+def _inline_total_limit(pool: list[FileInput]) -> int:
     """inline 후보 합계 한도 — image/audio 포함 여부에 따라 결정.
 
     image 또는 audio가 하나라도 inline 후보에 있으면 엄격한 20MB,
     PDF/텍스트만 있으면 완화된 50MB.
     """
     has_image_or_audio = any(
-        m.mime_type.startswith(("image/", "audio/")) for m in pool
+        fi.mime_type.startswith(("image/", "audio/")) for fi in pool
     )
     return _INLINE_LIMIT_WITH_IMAGE_AUDIO if has_image_or_audio else _INLINE_LIMIT_PDF_OR_TEXT_ONLY
 
@@ -72,10 +75,10 @@ def _estimate_non_file_bytes(llm_input: dict) -> int:
 
 
 def classify_files(
-    file_metas: list[FileMeta],
+    files: list[FileInput],
     llm_input: dict,
-) -> tuple[list[FileMeta], list[FileMeta]]:
-    """파일 메타를 inline_pool / files_api_pool로 분류 (부분 섞기).
+) -> tuple[list[FileInput], list[FileInput]]:
+    """FileInput 리스트를 inline_pool / files_api_pool로 분류 (부분 섞기).
 
     Step 1: 비디오만 선제 분리 (Gemini inline 자체 불가).
             나머지 개별 한도(PDF 50MB, image/audio/text 20MB)는 Step 2의
@@ -88,33 +91,30 @@ def classify_files(
 
     Step 3: 작은 것부터 정렬 + 한 번 순회 (재평가 없음 — Q2 보수).
             큰 파일을 Files API로 보내 Redis HIT 이점 극대화.
-
-    Returns:
-        (inline_pool, files_api_pool) 튜플.
     """
-    inline_pool: list[FileMeta] = []
-    files_api_pool: list[FileMeta] = []
+    inline_pool: list[FileInput] = []
+    files_api_pool: list[FileInput] = []
 
     # Step 1: 비디오만 강제 분리
-    for m in file_metas:
-        if m.mime_type.startswith("video/"):
-            files_api_pool.append(m)
+    for fi in files:
+        if fi.mime_type.startswith("video/"):
+            files_api_pool.append(fi)
         else:
-            inline_pool.append(m)
+            inline_pool.append(fi)
 
     # Step 2: 합계 한도 결정 (모달리티 인지)
     limit = _inline_total_limit(inline_pool)
 
     # Step 3: 작은 것부터 정렬 + 한 번 순회 (재평가 없음)
-    inline_pool.sort(key=lambda m: m.file_size)
+    inline_pool.sort(key=lambda fi: fi.file_size)
     total = _estimate_non_file_bytes(llm_input)
-    kept: list[FileMeta] = []
-    for m in inline_pool:
-        if total + m.file_size <= limit:
-            kept.append(m)
-            total += m.file_size
+    kept: list[FileInput] = []
+    for fi in inline_pool:
+        if total + fi.file_size <= limit:
+            kept.append(fi)
+            total += fi.file_size
         else:
-            files_api_pool.append(m)
+            files_api_pool.append(fi)
 
     return kept, files_api_pool
 
@@ -122,21 +122,20 @@ def classify_files(
 # ── inline 분류 처리 (§6.1) ──────────────────────────────────
 
 
-async def _process_inline(inline_pool: list[FileMeta]) -> list[Part]:
-    """inline 분류 파일을 file_manager에서 bytes로 받아 Part.from_bytes 구성.
+async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
+    """inline 분류 파일을 bytes로 Part.from_bytes 구성.
 
     Redis 전혀 접근 안 함 (inline은 Files API URI/context_cache 와 무관).
-    매 호출마다 file_manager에서 bytes 수급 — 제한 내 작은 파일이라 부담 낮음.
     tempfile 불필요 — Part.from_bytes는 메모리 bytes 직접 수용.
 
     상세: docs/inline-vs-files-api-strategy.md §6.1
     """
     inline_parts: list[Part] = []
-    for m in inline_pool:
-        bytes_data = await aget_file(m.file_path)
+    for fi in inline_pool:
         inline_parts.append(
-            Part.from_bytes(data=bytes_data, mime_type=m.mime_type)
+            Part.from_bytes(data=fi.data, mime_type=fi.mime_type)
         )
+        logger.info("[route] file=%s mode=inline", fi.file_name)
     return inline_parts
 
 
@@ -144,52 +143,57 @@ async def _process_inline(inline_pool: list[FileMeta]) -> list[Part]:
 
 
 def _reuse_files_api_uris(
-    meta: FileMeta,
+    fi: FileInput,
     existing: dict,
     uri_parts: list[Part],
     file_refs: list[FileRef],
 ) -> None:
     """기존 Redis URI 재사용 (분기 B) — uri_parts/file_refs에 append."""
     for uri in existing["uris"]:
-        uri_parts.append(Part.from_uri(uri, mime_type=meta.mime_type))
+        uri_parts.append(Part.from_uri(uri, mime_type=fi.mime_type))
         file_refs.append(
-            FileRef(name="", uri=uri, mime_type=meta.mime_type, state="ACTIVE")
+            FileRef(name="", uri=uri, mime_type=fi.mime_type, state="ACTIVE")
         )
     logger.info(
-        "files_api cache hit: uris=%d",
-        len(existing["uris"]),
+        "[route] file=%s mode=files_api source=cached uris=%d",
+        fi.file_name, len(existing["uris"]),
     )
 
 
 async def _upload_and_cache_file(
-    meta: FileMeta,
+    fi: FileInput,
     checksum: str,
     uri_parts: list[Part],
     file_refs: list[FileRef],
 ) -> None:
-    """file_manager에서 bytes 받아 Files API 업로드 + Redis 저장 (분기 C).
+    """에이전트가 준 bytes로 Files API 업로드 + Redis 저장 (분기 C).
 
     standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
     양쪽에서 호출된다.
     """
-    bytes_data = await aget_file(meta.file_path)
-    suffix = f".{meta.extension}" if meta.extension else ""
+    if not fi.extension:
+        logger.warning(
+            "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",
+            fi.file_name,
+        )
+    suffix = f".{fi.extension}" if fi.extension else ""
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    t0 = time.monotonic()
     try:
-        tmp.write(bytes_data)
+        tmp.write(fi.data)
         tmp.close()
         try:
-            if meta.mime_type == "application/pdf" and meta.file_size > _PDF_SPLIT_LIMIT:
+            if fi.mime_type == "application/pdf" and fi.file_size > _PDF_SPLIT_LIMIT:
                 refs = await upload_pdf_parts(tmp.name)
             else:
-                refs = [await upload_file(tmp.name, meta.mime_type)]
+                refs = [await upload_file(tmp.name, mime_type=fi.mime_type)]
         except Exception as e:
             logger.exception(
                 "Files API 업로드 실패: file_name=%s, mime=%s",
-                meta.file_name, meta.mime_type,
+                fi.file_name, fi.mime_type,
             )
             raise FileUploadError(
-                f"Files API 업로드 실패: file_name={meta.file_name}, {e}"
+                f"Files API 업로드 실패: file_name={fi.file_name}, {e}"
             ) from e
     finally:
         try:
@@ -197,6 +201,7 @@ async def _upload_and_cache_file(
         except OSError:
             pass
 
+    duration_ms = int((time.monotonic() - t0) * 1000)
     uris = [r.uri for r in refs]
     dynamic_ttl = cache_store.compute_files_api_ttl(refs)
     try:
@@ -204,9 +209,9 @@ async def _upload_and_cache_file(
             checksum,
             {
                 "file_checksum": checksum,
-                "file_name": meta.file_name,
-                "file_size": meta.file_size,
-                "mime_type": meta.mime_type,
+                "file_name": fi.file_name,
+                "file_size": fi.file_size,
+                "mime_type": fi.mime_type,
                 "uris": uris,
                 "split": len(refs) > 1,
             },
@@ -220,8 +225,8 @@ async def _upload_and_cache_file(
         uri_parts.append(Part.from_uri(r.uri, mime_type=r.mime_type))
         file_refs.append(r)
     logger.info(
-        "files_api 신규 업로드: checksum=%s, uris=%d, split=%s",
-        checksum[:16], len(refs), len(refs) > 1,
+        "[route] file=%s mode=files_api source=live parts=%d duration_ms=%d",
+        fi.file_name, len(refs), duration_ms,
     )
 
 
@@ -269,7 +274,7 @@ async def _create_and_save_context_cache(
         logger.exception("Redis context_cache 저장 실패: hash_key=%s", hash_key[:16])
         raise CacheError(f"Redis context_cache 저장 실패: {e}") from e
 
-    logger.info("context cache 생성: %s", cache_ref.name)
+    logger.info("[route] mode=context_cache source=live name=%s", cache_ref.name)
     return cache_ref.name
 
 
@@ -277,7 +282,7 @@ async def _create_and_save_context_cache(
 
 
 async def _process_files_api(
-    files_api_pool: list[FileMeta],
+    files_api_pool: list[FileInput],
     *,
     checksums: list[str],
     model: str | None,
@@ -313,14 +318,14 @@ async def _process_files_api(
         raise CacheError(f"Redis context_cache 조회 실패: {e}") from e
 
     if cached:
-        logger.info("context cache hit: %s", cached["cached_content_name"])
+        logger.info("[route] mode=context_cache source=cached name=%s", cached["cached_content_name"])
         return [], cached["cached_content_name"]
 
     # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 standby → 업로드 ──
     uri_parts: list[Part] = []
     file_refs: list[FileRef] = []  # context_cache 생성용
 
-    for meta, checksum in zip(files_api_pool, checksums):
+    for fi, checksum in zip(files_api_pool, checksums):
         try:
             existing = cache_store.find_files_api(checksum)
         except Exception as e:
@@ -328,7 +333,7 @@ async def _process_files_api(
             raise CacheError(f"Redis files_api 조회 실패: {e}") from e
 
         if existing:
-            _reuse_files_api_uris(meta, existing, uri_parts, file_refs)
+            _reuse_files_api_uris(fi, existing, uri_parts, file_refs)
             continue
 
         # MISS — standby 선점 시도
@@ -337,7 +342,7 @@ async def _process_files_api(
         )
         if acquired:
             try:
-                await _upload_and_cache_file(meta, checksum, uri_parts, file_refs)
+                await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
             finally:
                 await dedup.release_standby("files_api", checksum)
         else:
@@ -347,17 +352,19 @@ async def _process_files_api(
                 find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
             )
             if cached_file:
-                _reuse_files_api_uris(meta, cached_file, uri_parts, file_refs)
+                _reuse_files_api_uris(fi, cached_file, uri_parts, file_refs)
             else:
                 # timeout → 자기가 업로드 (Y' Hybrid)
                 logger.warning(
                     "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
                     checksum[:16],
                 )
-                await _upload_and_cache_file(meta, checksum, uri_parts, file_refs)
+                await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
 
     # ── ④ context_cache_ttl 지정 시 standby로 보호된 create_cache + Redis 저장 ──
     cached_content: str | None = None
+    if context_cache_ttl and not file_refs:
+        logger.info("[route] mode=context_cache source=none reason=no_files_api_files")
     if context_cache_ttl and file_refs:
         acquired_cc = await dedup.try_acquire_standby(
             "context_cache", hash_key, standby_ttl_seconds,
@@ -380,7 +387,7 @@ async def _process_files_api(
             )
             if cached_cc:
                 cached_content = cached_cc["cached_content_name"]
-                logger.info("context cache hit after wait: %s", cached_content)
+                logger.info("[route] mode=context_cache source=cached name=%s", cached_content)
             else:
                 # timeout → 자기가 생성 (Y' Hybrid)
                 logger.warning(
@@ -401,7 +408,7 @@ async def _process_files_api(
 
 
 async def resolve_files_after_404(
-    file_metas: list[FileMeta],
+    files: list[FileInput],
     llm_input: dict,
     *,
     model: str | None,
@@ -421,10 +428,10 @@ async def resolve_files_after_404(
     상세: docs/inline-vs-files-api-strategy.md §9
     """
     # 영향받는 checksums 계산 — resolve_files의 분류·승급 순서 재현
-    inline_pool, files_api_pool = classify_files(file_metas, llm_input)
+    inline_pool, files_api_pool = classify_files(files, llm_input)
     if context_cache_ttl is not None and not files_api_pool and inline_pool:
         files_api_pool = inline_pool
-    checksums = [make_file_checksum(m) for m in files_api_pool]
+    checksums = [make_file_checksum(fi) for fi in files_api_pool]
 
     logger.warning(
         "Gemini 404 자동 복구: Redis invalidate 후 재업로드 (checksums=%d)",
@@ -452,7 +459,7 @@ async def resolve_files_after_404(
 
     # resolve_files 재호출 → 분류 + 재업로드 (이번 실패는 상위로 raise)
     return await resolve_files(
-        file_metas, llm_input,
+        files, llm_input,
         model=model,
         system_instruction=system_instruction,
         context_cache_ttl=context_cache_ttl,
@@ -476,7 +483,7 @@ class ResolvedFiles:
 
 
 async def resolve_files(
-    file_metas: list[FileMeta],
+    files: list[FileInput],
     llm_input: dict,
     *,
     model: str | None,
@@ -497,7 +504,7 @@ async def resolve_files(
     상세: docs/inline-vs-files-api-strategy.md §4, §5, §6
     """
     # Step 1: 분류
-    inline_pool, files_api_pool = classify_files(file_metas, llm_input)
+    inline_pool, files_api_pool = classify_files(files, llm_input)
 
     # Step 2: context_cache_ttl 승급 정책
     if context_cache_ttl is not None and not files_api_pool and inline_pool:
@@ -509,7 +516,7 @@ async def resolve_files(
         inline_pool = []
 
     # Step 3: 두 풀 병렬 처리
-    checksums = [make_file_checksum(m) for m in files_api_pool]
+    checksums = [make_file_checksum(fi) for fi in files_api_pool]
 
     inline_parts, (uri_parts, cached_content) = await asyncio.gather(
         _process_inline(inline_pool),

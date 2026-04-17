@@ -1,13 +1,22 @@
 """llm-request SDK — LLM 응답 캐싱 서비스 클라이언트.
 
 사용법:
-    from file_manager import FileMeta, resolve   # file_manager SDK 사용
-    from llm_request import llm_request_async
+    from pathlib import Path
+    import mimetypes
+    from llm_request import llm_request_async, FileInput
 
-    file_metas = [resolve("report.pdf")]   # FileMeta 리스트
+    p = Path("report.pdf")
+    file_input = FileInput(
+        file_name=p.name,
+        file_size=p.stat().st_size,
+        file_mtime=int(p.stat().st_mtime),
+        mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
+        extension=p.suffix.lstrip("."),
+        data=p.read_bytes(),
+    )
     response, meta = await llm_request_async(
         {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-        file_metas=file_metas,
+        files=[file_input],
     )
 """
 
@@ -16,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Any, TypedDict
 
 import llm_handler as llm_handler  # noqa: PLC0414  (방법 2: 모듈 접근 — llm_handler.aio.call 등)
 import llm_handler.aio  # noqa: F401  (llm_handler.aio 속성 보장)
@@ -53,9 +62,13 @@ from llm_handler import (
 
 from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
 from llm_request._client import AsyncClient
-from file_manager import FileMeta
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
-from llm_request.models import DoneCheckResult, RequestResult
+from llm_request.models import (
+    DoneCheckResult,
+    FileInput,
+    FileKeyingMeta,
+    RequestResult,
+)
 
 __all__ = [
     # llm_request 자체 API
@@ -65,7 +78,9 @@ __all__ = [
     "llm_request_stream",
     "done_check",
     "fetch_by_cache_key",
-    "FileMeta",
+    "Timings",
+    "FileInput",
+    "FileKeyingMeta",
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
@@ -104,12 +119,14 @@ __all__ = [
     "HandlerError",
 ]
 
+
+# HTTP 클라이언트를 어디에, 어떻게 만드나 설정
 _instance: AsyncClient | None = None
 
 
 def _resolve_base_url() -> str:
     """서비스 URL을 환경변수에서 읽기."""
-    return os.getenv("LLM_REQUEST_URL", "http://localhost:8101")
+    return os.getenv("LLM_REQUEST_URL", "http://192.7.9.45:8101")
 
 
 def _get_client() -> AsyncClient:
@@ -120,14 +137,41 @@ def _get_client() -> AsyncClient:
     return _instance
 
 
-def _configure(base_url: str | None = None, timeout: float = 120.0) -> None:
-    """llm-request 서비스 URL 내부 설정 (외부 미공개).
+# ── Timings ───────────────────────────────────────────────────
 
-    외부는 LLM_REQUEST_URL 환경변수로 설정. 테스트/동적 오버라이드용.
+
+class Timings(TypedDict, total=False):
+    """요청 하나의 시간 관련 설정 묶음.
+
+    모든 키는 선택 — 생략 시 `_DEFAULT_TIMINGS` 적용.
     """
-    global _instance
-    url = base_url or _resolve_base_url()
-    _instance = AsyncClient(base_url=url, timeout=timeout)
+
+    http_timeout: float
+    """SDK → llm-request 서비스 HTTP 응답 대기 시간 (초). 기본 600."""
+
+    mdb_ttl: int | None
+    """MDB 응답 캐시 수명 (초). None = 무기한. 기본 None."""
+
+    context_cache_ttl: int | None
+    """Gemini Context Cache 수명 (초). None = 생성 안 함 (opt-in). 기본 None."""
+
+    standby_ttl: int
+    """Cache stampede dedup standby TTL + waiter 대기 timeout (초). 기본 600."""
+
+
+_DEFAULT_TIMINGS: Timings = {
+    "http_timeout": 600.0,
+    "mdb_ttl": None,
+    "context_cache_ttl": None,
+    "standby_ttl": 600,
+}
+
+
+def _resolve_timings(timings: Timings | None) -> Timings:
+    """사용자 timings와 기본값 병합."""
+    if not timings:
+        return dict(_DEFAULT_TIMINGS)  # type: ignore[return-value]
+    return {**_DEFAULT_TIMINGS, **timings}  # type: ignore[return-value]
 
 
 # ── Public API ─────────────────────────────────────────────────
@@ -135,34 +179,35 @@ def _configure(base_url: str | None = None, timeout: float = 120.0) -> None:
 async def llm_request_async(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    context_cache_ttl: int | None = None,
-    standby_ttl_seconds: int = 600,
+    timings: Timings | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
 
-    file_metas는 file_manager가 제공하는 metadata 리스트.
-    SDK는 파일 bytes를 보내지 않는다 (file_manager 분리 설계).
+    files: 에이전트가 구성한 FileInput 리스트 (meta + bytes).
+    서버가 내부에서 file-manager에 등록 후 처리한다.
 
     Args:
-        standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
+        timings: 시간 관련 설정 묶음. 일부 키만 지정하면 나머지는 기본값 적용.
+                 예) timings={"http_timeout": 1200, "context_cache_ttl": 3600}
     """
+    t = _resolve_timings(timings)
     client = _get_client()
     result = await client.request(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode,
         save_mode=save_mode,
-        ttl_seconds=ttl_seconds,
+        ttl_seconds=t["mdb_ttl"],
         debug=debug,
         database=database,
-        context_cache_ttl=context_cache_ttl,
-        standby_ttl_seconds=standby_ttl_seconds,
+        context_cache_ttl=t["context_cache_ttl"],
+        standby_ttl_seconds=t["standby_ttl"],
+        http_timeout=t["http_timeout"],
     )
     return result["result"], result["meta"]
 
@@ -170,53 +215,49 @@ async def llm_request_async(
 def llm_request(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    context_cache_ttl: int | None = None,
-    standby_ttl_seconds: int = 600,
+    timings: Timings | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode,
         save_mode=save_mode,
-        ttl_seconds=ttl_seconds,
         debug=debug,
         database=database,
-        context_cache_ttl=context_cache_ttl,
-        standby_ttl_seconds=standby_ttl_seconds,
+        timings=timings,
     ))
 
 
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    context_cache_ttl: int | None = None,
-    standby_ttl_seconds: int = 600,
+    timings: Timings | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """스트리밍 LLM 요청 (async). SSE 이벤트를 파싱하여 dict로 yield."""
+    t = _resolve_timings(timings)
     client = _get_client()
     async for event in client.request_stream(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode,
         save_mode=save_mode,
-        ttl_seconds=ttl_seconds,
+        ttl_seconds=t["mdb_ttl"],
         debug=debug,
         database=database,
-        context_cache_ttl=context_cache_ttl,
-        standby_ttl_seconds=standby_ttl_seconds,
+        context_cache_ttl=t["context_cache_ttl"],
+        standby_ttl_seconds=t["standby_ttl"],
+        http_timeout=t["http_timeout"],
     ):
         yield event
 
@@ -224,28 +265,24 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    ttl_seconds: int | None = None,
     debug: bool = False,
     database: str | None = None,
-    context_cache_ttl: int | None = None,
-    standby_ttl_seconds: int = 600,
+    timings: Timings | None = None,
 ) -> Iterator[dict[str, Any]]:
     """스트리밍 LLM 요청 (sync). llm_request_stream_async의 동기 래퍼."""
     async def _collect():
         results = []
         async for event in llm_request_stream_async(
             llm_input,
-            file_metas=file_metas,
+            files=files,
             cache_mode=cache_mode,
             save_mode=save_mode,
-            ttl_seconds=ttl_seconds,
             debug=debug,
             database=database,
-            context_cache_ttl=context_cache_ttl,
-            standby_ttl_seconds=standby_ttl_seconds,
+            timings=timings,
         ):
             results.append(event)
         return results
@@ -256,14 +293,17 @@ def llm_request_stream(
 async def done_check(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileKeyingMeta] | None = None,
     database: str | None = None,
 ) -> DoneCheckResult:
-    """MDB 캐시(LLM 응답) 존재 여부 확인."""
+    """MDB 캐시(LLM 응답) 존재 여부 확인.
+
+    files: FileKeyingMeta 리스트 (hashing 3필드만). bytes 불필요.
+    """
     client = _get_client()
     return await client.done_check(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         database=database,
     )
 

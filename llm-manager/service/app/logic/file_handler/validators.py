@@ -9,7 +9,7 @@ runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast�
 from __future__ import annotations
 
 from app.core.errors import FileTooLargeError, UnsupportedFileTypeError
-from file_manager import FileMeta
+from app.models.requests import FileInput
 
 
 # ── mime 화이트리스트 ────────────────────────────────────────
@@ -30,13 +30,13 @@ SUPPORTED_MIME_TYPES: frozenset[str] = frozenset({
 })
 
 
-def validate_mime_types(file_metas: list[FileMeta]) -> None:
+def validate_mime_types(files: list[FileInput]) -> None:
     """Gemini 지원 외 mime 타입이 하나라도 있으면 UnsupportedFileTypeError."""
-    for m in file_metas:
-        if m.mime_type not in SUPPORTED_MIME_TYPES:
+    for fi in files:
+        if fi.mime_type not in SUPPORTED_MIME_TYPES:
             raise UnsupportedFileTypeError(
-                f"지원하지 않는 파일 타입: mime_type={m.mime_type}, "
-                f"file_name={m.file_name}"
+                f"지원하지 않는 파일 타입: mime_type={fi.mime_type}, "
+                f"file_name={fi.file_name}"
             )
 
 
@@ -45,11 +45,11 @@ def validate_mime_types(file_metas: list[FileMeta]) -> None:
 MAX_FILE_SIZE: int = 2 * 1024 ** 3  # 2 GB — Gemini Files API 파일당 상한
 
 
-def validate_file_sizes(file_metas: list[FileMeta]) -> None:
+def validate_file_sizes(files: list[FileInput]) -> None:
     """2GB 초과 파일은 inline·Files API 어느 경로로도 처리 불가 → FileTooLargeError."""
-    for m in file_metas:
-        if m.file_size > MAX_FILE_SIZE:
+    for fi in files:
+        if fi.file_size > MAX_FILE_SIZE:
             raise FileTooLargeError(
                 f"파일 크기가 2GB를 초과합니다: "
-                f"file_name={m.file_name}, size={m.file_size}"
+                f"file_name={fi.file_name}, size={fi.file_size}"
             )

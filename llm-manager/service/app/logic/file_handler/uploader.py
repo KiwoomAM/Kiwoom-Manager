@@ -82,23 +82,13 @@ async def create_context_cache(
     Raises:
         마지막 재시도 실패 시 원본 예외를 그대로 raise.
     """
-    contents = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "file", "file_uri": ref.uri, "mime_type": ref.mime_type}
-                for ref in file_refs
-            ],
-        }
-    ]
-
     last_error = None
     for attempt in range(_MAX_RETRIES + 1):
         try:
             return await _aio_create_cache(
+                file_refs,
                 model=model,
-                contents=contents,
-                system_instruction=system_instruction,
+                system=system_instruction,
                 ttl=ttl,
             )
         except Exception as e:

@@ -87,15 +87,24 @@ def get_file_bytes(file_path: str) -> bytes:
     return full_path.read_bytes()
 
 
-def build_metadata(file_name: str, file_mtime: str | int, file_size: int, file_path: str) -> dict:
+def build_metadata(
+    file_name: str,
+    file_mtime: str | int,
+    file_size: int,
+    file_path: str,
+    mime_type: str | None = None,
+    extension: str | None = None,
+) -> dict:
     """FM Service가 생성하는 완전한 metadata dict 구성.
 
     file_name, file_mtime, file_size: 에이전트에서 전달
     file_path: save_file이 반환한 UUID.ext
-    mime_type, extension: Service가 생성
+    mime_type, extension: 에이전트가 제공하면 그 값을 사용, 없으면 file_name에서 추론.
     """
-    ext = Path(file_name).suffix.lstrip(".")
-    mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    if extension is None:
+        extension = Path(file_name).suffix.lstrip(".")
+    if mime_type is None:
+        mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
 
     return {
         "file_name": file_name,
@@ -103,5 +112,5 @@ def build_metadata(file_name: str, file_mtime: str | int, file_size: int, file_p
         "file_size": file_size,
         "file_path": file_path,
         "mime_type": mime_type,
-        "extension": ext,
+        "extension": extension,
     }

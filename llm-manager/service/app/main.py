@@ -14,6 +14,8 @@ from app.core.providers import configure_handlers
 from app.models.responses import ErrorResponse
 from app.routers import request
 
+
+# 로그 설정. "서버에서 일어나는 일을 어떻게 기록할지" — 시간, 레벨, 이름 형식 지정.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -22,6 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger("llm_request")
 
 
+# 서버 시작/종료 시 실행할 것. 
+# yield 전 = 시작 시, yield 후 = 종료 시. 
+# configure_handlers()가 MDB/Redis/LLM 연결을 여기서 초기화
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """앱 시작 시 handler SDK 초기화."""

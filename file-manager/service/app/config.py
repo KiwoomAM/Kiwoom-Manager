@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """환경변수로부터 설정을 읽어오는 클래스."""
 
     # 외부 서비스
-    mdb_handler_url: str = "http://localhost:8300"
+    mdb_handler_url: str = "http://192.7.9.45:8300"
 
     # MongoDB
     mongodb_database: str = "kw_ai_dev"

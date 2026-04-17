@@ -8,10 +8,10 @@ from pydantic import BaseModel
 
 
 class FileMeta(BaseModel):
-    """file_manager가 제공하는 파일 metadata 번들.
+    """file_manager가 저장하는 파일 metadata 번들 (서비스 내부 참조용).
 
-    file_name, file_mtime, file_size: 에이전트에서 전달
-    file_path, mime_type, extension: FM Service가 생성
+    file_name, file_mtime, file_size, mime_type, extension: 에이전트 또는 호출자 입력
+    file_path: FM Service가 UUID로 생성하는 파일 식별자
     """
 
     file_name: str
@@ -20,10 +20,3 @@ class FileMeta(BaseModel):
     file_path: str
     mime_type: str
     extension: str
-
-
-class CacheCheckResult(BaseModel):
-    """check_cache 반환 타입."""
-
-    hit: bool
-    metadata: FileMeta | None = None

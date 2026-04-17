@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from file_manager import FileMeta
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
 from llm_handler.models import LLMResponse, StreamChunk
@@ -23,9 +23,11 @@ from app.logic.file_handler.validators import (
     validate_file_sizes,
     validate_mime_types,
 )
+from app.logic.ingest import ingest_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
 from app.logic.store import cache_get, save_result
+from app.models.requests import FileInput
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class _Prepared:
     dc: DoneCheckResult | None
     cached_output: tuple[LLMResponse, dict[str, Any]] | None
     route_reason: str | None
-    file_metas: list[FileMeta] | None
+    files: list[FileInput] | None
     context_cache_ttl: int | None
     standby_ttl_seconds: int
 
@@ -53,7 +55,7 @@ class _Prepared:
 def prepare(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -64,19 +66,18 @@ def prepare(
 ) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직.
 
-    file_metas의 checksum을 keying.make_file_checksum으로 자체 계산하여
-    cache_key 구성에 주입한다 (file_manager는 checksum 미제공).
+    files의 hashing 3필드로 checksum을 자체 계산하여 cache_key 구성에 주입한다.
     """
     meta = build_meta(llm_input)
     requested_at = datetime.now(UTC)
 
-    # ── file_metas 처리 ─────────────────────────────────────
+    # ── files 처리 ─────────────────────────────────────
     if not (cache_mode or save_mode):
-        file_metas = None
+        files = None
 
-    # keying용 입력: file_metas가 있으면 checksum 리스트로 변환 후 주입
-    if file_metas:
-        checksums = [make_file_checksum(m) for m in file_metas]
+    # keying용 입력: files가 있으면 checksum 리스트로 변환 후 주입
+    if files:
+        checksums = [make_file_checksum(fi) for fi in files]
         keying_input = {**llm_input, "file_checksums": checksums}
     else:
         keying_input = llm_input
@@ -90,7 +91,7 @@ def prepare(
             requested_at=requested_at,
             dc=None, cached_output=None,
             route_reason="cache_off_save_off" if debug else None,
-            file_metas=None,
+            files=None,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
         )
@@ -105,7 +106,7 @@ def prepare(
             requested_at=requested_at,
             dc=dc, cached_output=None,
             route_reason="cache_off_save_on" if debug else None,
-            file_metas=file_metas,
+            files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
         )
@@ -130,7 +131,7 @@ def prepare(
                 requested_at=requested_at,
                 dc=dc, cached_output=None,
                 route_reason="cache_deserialize_error" if debug else None,
-                file_metas=file_metas,
+                files=files,
                 context_cache_ttl=context_cache_ttl,
                 standby_ttl_seconds=standby_ttl_seconds,
             )
@@ -152,7 +153,7 @@ def prepare(
             requested_at=requested_at,
             dc=dc, cached_output=(cached_result, cached_meta),
             route_reason="cache_hit" if debug else None,
-            file_metas=file_metas,
+            files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
         )
@@ -166,7 +167,7 @@ def prepare(
         requested_at=requested_at,
         dc=dc, cached_output=None,
         route_reason=route_reason if debug else None,
-        file_metas=file_metas,
+        files=files,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
     )
@@ -186,21 +187,25 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
     return meta
 
 
+def _dump_files_meta(files: list[FileInput] | None) -> list[dict] | None:
+    """MDB 저장용 meta dump — FileInput의 bytes는 제외."""
+    if not files:
+        return None
+    return [fi.model_dump(exclude={"data"}) for fi in files]
+
+
 def finalize(
     prep: _Prepared, llm_result: LLMResponse, *, database: str | None = None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """LLM 응답 저장 + (LLMResponse, meta) 튜플 반환."""
     if prep.save_mode and prep.dc is not None:
         try:
-            file_metas_dump = (
-                [m.model_dump() for m in prep.file_metas] if prep.file_metas else None
-            )
             save_result(
                 prep.dc.cache_key, prep.dc.canonical_json,
                 llm_result, prep.meta, prep.dc.collection,
                 database=database, ttl_seconds=prep.ttl_seconds,
                 requested_at=prep.requested_at,
-                file_metas=file_metas_dump,
+                file_metas=_dump_files_meta(prep.files),
             )
             logger.info(
                 "MDB 저장 완료: database=%s, collection=%s, cache_key=%s",
@@ -254,15 +259,12 @@ def _finalize_stream(
         assembled["function_calls"] = [fc.model_dump() for fc in function_calls]
 
     try:
-        file_metas_dump = (
-            [m.model_dump() for m in prep.file_metas] if prep.file_metas else None
-        )
         save_result(
             prep.dc.cache_key, prep.dc.canonical_json,
             assembled, prep.meta, prep.dc.collection,
             database=database, ttl_seconds=prep.ttl_seconds,
             requested_at=prep.requested_at,
-            file_metas=file_metas_dump,
+            file_metas=_dump_files_meta(prep.files),
         )
     except Exception:
         logger.exception(
@@ -281,13 +283,13 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
     )
 
 
-# ── 파일 처리 (② Phase A 구현) ──────────────────────────────
+# ── 파일 처리 ────────────────────────────────────────────────
 
 def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
     """ResolvedFiles를 llm_input에 녹여 call_input 완성.
 
     - inline_parts + uri_parts → contents 앞에 삽입
-    - cached_content → 별도 필드로 세팅
+    - cached_content → 있으면 별도 필드로 세팅
     - file_checksums → 제거 (Gemini에 전달되면 안 되는 cache_key 계산용 필드)
     """
     call_input = dict(llm_input)
@@ -312,16 +314,16 @@ def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
 async def _build_server_call_input(prep: _Prepared) -> dict:
     """파일 처리 후 call_input 구성.
 
-    file_metas 없으면 llm_input 그대로. 있으면 resolve_files 호출하여
+    files 없으면 llm_input 그대로. 있으면 resolve_files 호출하여
     inline/Files API 경로 처리 후 contents 조합.
 
     상세: docs/inline-vs-files-api-strategy.md §5, §7.2
     """
-    if not prep.file_metas:
+    if not prep.files:
         return dict(prep.llm_input)
 
     resolved = await resolve_files(
-        prep.file_metas,
+        prep.files,
         prep.llm_input,
         model=prep.llm_input.get("model"),
         system_instruction=prep.llm_input.get("system"),
@@ -385,10 +387,10 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if _is_gemini_404(e) and prep.file_metas:
+        if _is_gemini_404(e) and prep.files:
             logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
-                prep.file_metas, prep.llm_input,
+                prep.files, prep.llm_input,
                 model=prep.llm_input.get("model"),
                 system_instruction=prep.llm_input.get("system"),
                 context_cache_ttl=prep.context_cache_ttl,
@@ -406,7 +408,7 @@ async def _do_llm_call(
 async def llm_request_async(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -417,19 +419,24 @@ async def llm_request_async(
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
 
-    진입 직후 fail-fast 검증 (mime 화이트리스트 + 2GB 초과) → prepare → call → finalize.
-    cache miss 시 agent_llm standby로 중복 호출 방지 (docs/cache-stampede-dedup.md).
+    files (FileInput 리스트)를 받으면 file-manager에 등록한 뒤 그대로 파이프라인에 전달.
+    cache/save 모두 off면 파일 자체를 처리하지 않는다.
 
     Args:
         standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
     """
-    if file_metas:
-        validate_mime_types(file_metas)
-        validate_file_sizes(file_metas)
+    # 둘 다 off면 파일 처리 전체 스킵 (file-manager 호출도 안 함)
+    if not (cache_mode or save_mode):
+        files = None
+
+    if files:
+        await ingest_files(files)
+        validate_mime_types(files)
+        validate_file_sizes(files)
 
     prep = prepare(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
@@ -448,30 +455,31 @@ async def llm_request_async(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
     if acquired:
+        logger.info("[dedup] role=leader key=%s", cache_key[:16])
         try:
             return await _do_llm_call(prep, database)
         finally:
             await dedup.release_standby("agent_llm", cache_key)
 
     # 다른 요청이 처리 중 → 대기
+    t_wait = time.monotonic()
     cached = await dedup.wait_for_standby_release(
         "agent_llm", cache_key, standby_ttl_seconds,
         find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
     )
+    wait_ms = int((time.monotonic() - t_wait) * 1000)
     if cached:
+        logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
         return cached
     # timeout → 자기가 LLM 호출 (Y' Hybrid)
-    logger.warning(
-        "agent_llm standby timeout → 자기가 LLM 호출 (중복 가능): cache_key=%s",
-        cache_key[:16],
-    )
+    logger.warning("[dedup] role=standby_timeout wait_ms=%d", wait_ms)
     return await _do_llm_call(prep, database)
 
 
 def llm_request(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -484,7 +492,7 @@ def llm_request(
     import asyncio
     return asyncio.run(llm_request_async(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
@@ -504,10 +512,10 @@ async def _do_llm_stream(
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if _is_gemini_404(e) and prep.file_metas and not accumulated:
+        if _is_gemini_404(e) and prep.files and not accumulated:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
-                prep.file_metas, prep.llm_input,
+                prep.files, prep.llm_input,
                 model=prep.llm_input.get("model"),
                 system_instruction=prep.llm_input.get("system"),
                 context_cache_ttl=prep.context_cache_ttl,
@@ -525,7 +533,7 @@ async def _do_llm_stream(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -540,13 +548,17 @@ async def llm_request_stream_async(
     standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield.
     스트림 완료 후 MDB에 결과 자동 저장.
     """
-    if file_metas:
-        validate_mime_types(file_metas)
-        validate_file_sizes(file_metas)
+    if not (cache_mode or save_mode):
+        files = None
+
+    if files:
+        await ingest_files(files)
+        validate_mime_types(files)
+        validate_file_sizes(files)
 
     prep = prepare(
         llm_input,
-        file_metas=file_metas,
+        files=files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, debug=debug, database=database,
         context_cache_ttl=context_cache_ttl,
@@ -570,6 +582,7 @@ async def llm_request_stream_async(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
     if acquired:
+        logger.info("[dedup] role=leader key=%s", cache_key[:16])
         try:
             async for chunk in _do_llm_stream(prep, database):
                 yield chunk
@@ -578,20 +591,20 @@ async def llm_request_stream_async(
         return
 
     # 다른 요청이 처리 중 → 대기
+    t_wait = time.monotonic()
     cached = await dedup.wait_for_standby_release(
         "agent_llm", cache_key, standby_ttl_seconds,
         find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
     )
+    wait_ms = int((time.monotonic() - t_wait) * 1000)
     if cached:
+        logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
         response, _meta = cached
         yield _to_stream_chunk(response)
         return
 
     # timeout → 자기가 stream (Y' Hybrid)
-    logger.warning(
-        "agent_llm standby timeout → 자기가 stream 시작 (중복 가능): cache_key=%s",
-        cache_key[:16],
-    )
+    logger.warning("[dedup] role=standby_timeout wait_ms=%d", wait_ms)
     async for chunk in _do_llm_stream(prep, database):
         yield chunk
 
@@ -599,7 +612,7 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    file_metas: list[FileMeta] | None = None,
+    files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
@@ -615,7 +628,7 @@ def llm_request_stream(
         results = []
         async for chunk in llm_request_stream_async(
             llm_input,
-            file_metas=file_metas,
+            files=files,
             cache_mode=cache_mode, save_mode=save_mode,
             ttl_seconds=ttl_seconds, debug=debug, database=database,
             context_cache_ttl=context_cache_ttl,

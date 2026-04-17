@@ -156,7 +156,7 @@ class TestCreateContextCache:
         """503 에러 시 재시도."""
         call_count = 0
 
-        async def _flaky(**kwargs):
+        async def _flaky(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count < 3:

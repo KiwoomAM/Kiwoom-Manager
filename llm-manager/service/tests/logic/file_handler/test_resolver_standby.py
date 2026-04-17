@@ -4,7 +4,6 @@ files_api + context_cache 2계층의 standby 경로(선점/대기→HIT/timeout)
 실제 asyncio 동시성으로 검증.
 
 Mock:
-- resolver.aget_file: dummy bytes 반환
 - resolver.upload_file: 카운터 + FileRef 반환
 - resolver.create_context_cache: 카운터 + CacheRef 반환
 - dedup.get_client: FakeRedisClient (conftest fake_redis fixture)
@@ -18,26 +17,26 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from file_manager import FileMeta
 from llm_handler.models import CacheRef, FileRef
 
 from app.logic.file_handler import cache_store
 from app.logic.file_handler.resolver import _process_files_api
 from app.logic.keying import make_file_checksum
+from app.models.requests import FileInput
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
 
-def _pdf_meta(name: str, size: int = 30_000_000) -> FileMeta:
-    """Files API 경로로 가도록 >20MB PDF 메타 생성."""
-    return FileMeta(
+def _pdf_input(name: str, size: int = 30_000_000) -> FileInput:
+    """Files API 경로로 가도록 >20MB PDF FileInput 생성."""
+    return FileInput(
         file_name=name,
         file_mtime=0,
         file_size=size,
-        file_path=f"/fake/{name}",
         mime_type="application/pdf",
         extension="pdf",
+        data=b"dummy pdf bytes",
     )
 
 
@@ -64,12 +63,8 @@ class TestFilesApiStandby:
         self, fake_redis, fast_backoff, monkeypatch,
     ):
         """같은 checksum 동시 요청 시 upload_file은 1회만 호출."""
-        meta = _pdf_meta("concurrent_same.pdf")
-        checksum = make_file_checksum(meta)
-
-        async def slow_aget_file(path):
-            await asyncio.sleep(0.05)  # standby 잡고 있을 시간 확보
-            return b"dummy pdf bytes"
+        fi = _pdf_input("concurrent_same.pdf")
+        checksum = make_file_checksum(fi)
 
         upload_count = 0
 
@@ -80,15 +75,12 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/concurrent-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.aget_file", slow_aget_file,
-        )
-        monkeypatch.setattr(
             "app.logic.file_handler.resolver.upload_file", fake_upload_file,
         )
 
         async def _run():
             return await _process_files_api(
-                [meta], checksums=[checksum],
+                [fi], checksums=[checksum],
                 model="gemini-2.5-flash", system_instruction=None,
                 context_cache_ttl=None, standby_ttl_seconds=10,
             )
@@ -106,11 +98,8 @@ class TestFilesApiStandby:
         self, fake_redis, fast_backoff, monkeypatch,
     ):
         """A가 standby를 오래 잡으면 B는 timeout 후 자기가 upload (Y' Hybrid)."""
-        meta = _pdf_meta("slow_upload.pdf")
-        checksum = make_file_checksum(meta)
-
-        async def fast_aget_file(path):
-            return b"dummy"
+        fi = _pdf_input("slow_upload.pdf")
+        checksum = make_file_checksum(fi)
 
         upload_count = 0
 
@@ -121,15 +110,12 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/slow-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.aget_file", fast_aget_file,
-        )
-        monkeypatch.setattr(
             "app.logic.file_handler.resolver.upload_file", very_slow_upload,
         )
 
         async def _run():
             return await _process_files_api(
-                [meta], checksums=[checksum],
+                [fi], checksums=[checksum],
                 model="gemini-2.5-flash", system_instruction=None,
                 context_cache_ttl=None, standby_ttl_seconds=1,
             )
@@ -142,14 +128,11 @@ class TestFilesApiStandby:
         self, fake_redis, fast_backoff, monkeypatch,
     ):
         """다른 checksum 2개 → 둘 다 선점 → 병렬 upload (standby 충돌 없음)."""
-        meta_a = _pdf_meta("parallel_a.pdf", size=30_000_000)
-        meta_b = _pdf_meta("parallel_b.pdf", size=40_000_000)
-        cs_a = make_file_checksum(meta_a)
-        cs_b = make_file_checksum(meta_b)
+        fi_a = _pdf_input("parallel_a.pdf", size=30_000_000)
+        fi_b = _pdf_input("parallel_b.pdf", size=40_000_000)
+        cs_a = make_file_checksum(fi_a)
+        cs_b = make_file_checksum(fi_b)
         assert cs_a != cs_b
-
-        async def fast_aget_file(path):
-            return b"dummy"
 
         upload_count = 0
 
@@ -160,20 +143,17 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/parallel-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.aget_file", fast_aget_file,
-        )
-        monkeypatch.setattr(
             "app.logic.file_handler.resolver.upload_file", fake_upload_file,
         )
 
-        async def _run(meta, cs):
+        async def _run(fi, cs):
             return await _process_files_api(
-                [meta], checksums=[cs],
+                [fi], checksums=[cs],
                 model="gemini-2.5-flash", system_instruction=None,
                 context_cache_ttl=None, standby_ttl_seconds=10,
             )
 
-        await asyncio.gather(_run(meta_a, cs_a), _run(meta_b, cs_b))
+        await asyncio.gather(_run(fi_a, cs_a), _run(fi_b, cs_b))
         assert upload_count == 2
 
 
@@ -190,21 +170,18 @@ class TestContextCacheStandby:
         self, fake_redis, fast_backoff, monkeypatch,
     ):
         """같은 files + model/system → 같은 hash_key → create_context_cache 1회만."""
-        meta = _pdf_meta("ctx_concurrent.pdf")
-        checksum = make_file_checksum(meta)
+        fi = _pdf_input("ctx_concurrent.pdf")
+        checksum = make_file_checksum(fi)
 
         # files_api 사전 저장 — 미리 업로드된 상태로 만들어 context_cache만 테스트
         cache_store.save_files_api(checksum, {
             "file_checksum": checksum,
-            "file_name": meta.file_name,
-            "file_size": meta.file_size,
-            "mime_type": meta.mime_type,
+            "file_name": fi.file_name,
+            "file_size": fi.file_size,
+            "mime_type": fi.mime_type,
             "uris": ["https://example.com/ctx-preloaded"],
             "split": False,
         })
-
-        async def fast_aget_file(path):
-            return b"dummy"
 
         create_count = 0
 
@@ -215,16 +192,13 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/ctx-{create_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.aget_file", fast_aget_file,
-        )
-        monkeypatch.setattr(
             "app.logic.file_handler.resolver.create_context_cache",
             fake_create_context_cache,
         )
 
         async def _run():
             return await _process_files_api(
-                [meta], checksums=[checksum],
+                [fi], checksums=[checksum],
                 model="gemini-2.5-flash", system_instruction="ctx test",
                 context_cache_ttl=3600, standby_ttl_seconds=10,
             )
@@ -239,20 +213,17 @@ class TestContextCacheStandby:
         self, fake_redis, fast_backoff, monkeypatch,
     ):
         """A가 create를 오래 잡으면 B는 timeout 후 자기가 create (Y' Hybrid)."""
-        meta = _pdf_meta("ctx_slow.pdf")
-        checksum = make_file_checksum(meta)
+        fi = _pdf_input("ctx_slow.pdf")
+        checksum = make_file_checksum(fi)
 
         cache_store.save_files_api(checksum, {
             "file_checksum": checksum,
-            "file_name": meta.file_name,
-            "file_size": meta.file_size,
-            "mime_type": meta.mime_type,
+            "file_name": fi.file_name,
+            "file_size": fi.file_size,
+            "mime_type": fi.mime_type,
             "uris": ["https://example.com/ctx-slow-preloaded"],
             "split": False,
         })
-
-        async def fast_aget_file(path):
-            return b"dummy"
 
         create_count = 0
 
@@ -263,16 +234,13 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/slow-{create_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.aget_file", fast_aget_file,
-        )
-        monkeypatch.setattr(
             "app.logic.file_handler.resolver.create_context_cache",
             very_slow_create,
         )
 
         async def _run():
             return await _process_files_api(
-                [meta], checksums=[checksum],
+                [fi], checksums=[checksum],
                 model="gemini-2.5-flash", system_instruction=None,
                 context_cache_ttl=3600, standby_ttl_seconds=1,
             )

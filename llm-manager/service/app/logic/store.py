@@ -75,8 +75,8 @@ def save_result(
 
     llm_result가 Pydantic 모델(LLMResponse 등)이면 자동으로 dict 변환 후 저장한다.
 
-    file_metas: FileMeta.model_dump() 리스트. 저장 스키마 호환을 위해
-    문서엔 기존 키 이름 "file_meta"로 저장한다.
+    file_metas: FileInput의 meta 필드 dump 리스트 (data 제외). 저장 스키마
+    호환을 위해 문서엔 기존 키 이름 "file_meta"로 저장한다.
     """
     result_dict = llm_result.model_dump() if hasattr(llm_result, "model_dump") else llm_result
 

@@ -601,6 +601,259 @@ llm-request의 Files API 용량 관리가 이 경우: **Redis SCAN + TTL 기반 
 
 ---
 
+## 싱글톤 패턴 — `_get_client()` 왜 매번 안 만드나
+
+HTTP 클라이언트(`httpx.AsyncClient`)를 요청마다 새로 만들지 않고 하나만 유지하는 패턴.
+
+```python
+_instance: AsyncClient | None = None
+
+def _get_client() -> AsyncClient:
+    global _instance
+    if _instance is None:
+        _instance = AsyncClient(base_url=_resolve_base_url())
+    return _instance
+```
+
+### 왜 매번 새로 만들면 안 되는가
+
+**1. TCP 연결 비용 (커넥션 풀)**
+
+`httpx.AsyncClient`는 내부에 **커넥션 풀**을 들고 있다. 한 번 연결해두면 다음 요청은 그 연결을 재사용.
+
+매번 새로 만들면 → 매 요청마다 TCP 3-way handshake부터 다시 시작 → 느려짐.
+
+```
+커넥션 풀 있음:  요청 1 → [연결 생성] → 응답 / 요청 2 → [기존 연결 재사용] → 응답
+커넥션 풀 없음:  요청 1 → [연결 생성] → 응답 / 요청 2 → [연결 생성] → 응답
+```
+
+**2. 리소스 누수**
+
+`AsyncClient`는 명시적으로 `close()` 해줘야 소켓이 닫힌다. 매번 새로 만들고 닫지 않으면 닫히지 않은 소켓이 쌓임.
+
+### 참고: 환경변수로 URL 변경
+
+`_resolve_base_url()`은 환경변수를 우선한다. 코드 수정 없이 배포 환경 전환 가능:
+
+```bash
+export LLM_REQUEST_URL="http://192.7.9.45:8101"
+```
+
+### 이 3개는 SDK 보일러플레이트
+
+`_instance` + `_get_client()` + `_resolve_base_url()`은 **서버화하는 모든 SDK에 필수로 들어가는 설정 묶음**. "HTTP 클라이언트를 어디에, 어떻게 만드나"를 담당하며, 사용자 인자와는 무관하다. 사용자 인자(`llm_input` 등)는 `client.request()` 호출 시 별도로 전달된다.
+
+---
+
+## `# noqa` — 린터 경고 무시 주석
+
+린터(ruff, pylint 등)가 "이 줄은 경고 건너뛰어" 처리하는 주석. `# noqa: <규칙코드>` 형식.
+
+```python
+import llm_handler as llm_handler  # noqa: PLC0414
+import llm_handler.aio              # noqa: F401
+from llm_request import aio as aio  # noqa: PLC0414
+```
+
+### 자주 나오는 규칙 코드
+
+| 코드 | 의미 | 왜 무시하는가 |
+|------|------|--------------|
+| `F401` | "import했는데 코드에서 안 씀" | 서브모듈 로드 보장용 (`import llm_handler.aio`는 `llm_handler.aio`가 메모리에 로드되도록 보장하는 목적) |
+| `PLC0414` | "같은 이름으로 re-import (의미 없음)" | `as same_name` 형태는 **외부에 모듈 객체를 노출**하는 의도. `import x as x`는 `__all__`에 없어도 re-export 의미 |
+
+### 핵심 원칙
+
+`# noqa`가 붙어 있다 = 린터가 뭔가 수상하다고 생각했지만, **의도적으로 한 것**이므로 무시해달라는 표시. 주석이 설명을 함께 달아주는 게 관례.
+
+---
+
+## HTTP body
+
+HTTP 요청을 편지에 비유하면:
+- 받는 주소 = URL
+- 보내는 방식 = method (GET/POST 등)
+- **편지 내용 = body**
+
+API 서버끼리 통신할 때는 body를 JSON으로 변환해서 보내는 게 사실상 표준. `httpx`에서 `json=body`로 넘기면 자동 변환 + `Content-Type: application/json` 헤더도 자동으로 붙음.
+
+---
+
+## 엔드포인트 (Endpoint)
+
+서버에 요청 보낼 때 **"어느 창구로 갈지"** 정하는 URL 경로.
+
+```
+http://192.7.9.45:8101  /v1/request
+└─── 서버 주소 ──────┘  └─ 엔드포인트 ─┘
+```
+
+- 엔드포인트는 **서버가 정해서 열어놓는** 것
+- SDK는 그 주소를 "알고 있는" 것뿐 (하드코딩)
+- 서버가 주소를 바꾸면 SDK도 따라서 바꿔야 함
+
+---
+
+## `global` 키워드 (Python)
+
+함수 안에서 **모듈 전역 변수를 수정**할 때 필요한 선언.
+
+```python
+_instance = None  # 모듈 전역 변수
+
+def _get_client():
+    global _instance       # "전역 변수를 건드릴 거야" 선언
+    if _instance is None:
+        _instance = AsyncClient(...)  # 전역 변수 수정
+```
+
+`global` 없이 함수 안에서 `_instance = ...` 하면 파이썬이 새 지역 변수를 만들어버려서 전역 변수가 바뀌지 않음.
+
+읽기만 할 때는 `global` 불필요. **쓸 때만** 필요.
+
+---
+
+## TypedDict
+
+dict인데 "어떤 키가 있고 타입이 뭔지" 명시하는 파이썬 타입.
+
+```python
+class RequestResult(TypedDict):
+    result: dict[str, Any]
+    meta: dict[str, Any]
+```
+
+- 런타임엔 그냥 dict. 타입 검사는 IDE/린터가 함
+- SDK의 `models.py`에서 서버 응답 JSON 형태를 정의할 때 사용
+
+---
+
+## SDK 파일 구조 역할 분리
+
+서버화된 SDK의 전형적인 파일 구조와 역할:
+
+| 파일 | 역할 | 언제 열어보나 |
+|------|------|--------------|
+| `__init__.py` | 사용자 공개 API (입출력 시그니처) | 새 API 추가/수정 |
+| `_client.py` | HTTP 전송 + 에러 처리 | HTTP 로직 수정 |
+| `models.py` | 서버 응답 JSON 형태 정의 (내부용) | 응답 형식 바뀔 때 |
+| `exceptions.py` | 에러 계층 구조 | 새 에러 타입 필요할 때 |
+| `aio.py` | 다른 패키지 re-export (편의용) | 거의 안 열음 |
+
+`__init__.py` vs `_client.py` 분리 이유: "사용자 인터페이스"와 "HTTP 인터페이스"를 분리해서 둘 중 하나가 바뀌어도 다른 쪽을 건드리지 않아도 됨.
+
+---
+
+## 에러 계층 구조 (Exception Hierarchy)
+
+SDK에서 에러를 종류별로 계층화하는 패턴.
+
+```
+SDKError (기본)
+  ├─ ServiceConnectionError  ← 통로 문제 (서버에 못 닿음, status_code=0)
+  └─ ServiceError            ← 서버 내부 문제 (400/500 응답)
+```
+
+**왜 나누나**: 대응 방법이 다르기 때문.
+- `ServiceConnectionError` → 재시도 가능 (서버가 잠깐 꺼진 것일 수 있음)
+- `ServiceError(400)` → 재시도 무의미 (내가 잘못 보낸 것)
+- `ServiceError(500)` → 잠시 후 재시도
+
+계층화하면 호출하는 쪽에서 `except SDKError`로 한꺼번에 잡거나, 종류별로 나눠서 잡을 수 있음.
+
+---
+
+## JSON ↔ 파이썬 객체 변환 — 왜 JSON인가
+
+HTTP는 **텍스트만 전송 가능**. 파이썬 객체는 네트워크로 못 보냄.
+
+```
+SDK (파이썬)                  네트워크           서버 (파이썬)
+dict 객체
+  → JSON 문자열  ──────────────────────→  FastAPI 자동 변환
+                                           → LLMRequestBody 객체
+                                           → 로직 처리
+                                           → LLMRequestResponse 객체
+  ← JSON 문자열  ←──────────────────────  FastAPI 자동 변환
+dict 객체
+  ← resp.json()
+```
+
+- **JSON** = 어느 언어든 읽을 수 있는 공통 텍스트 형식
+- **파이썬 객체** = 해당 프로세스 안에서만 존재
+- 네트워크 경계를 넘을 때 반드시 JSON으로 변환, 받는 쪽에서 다시 객체로 변환
+- FastAPI가 이 변환을 자동으로 해줘서 코드에서 안 보이는 것뿐
+
+---
+
+## FastAPI 앱 구조 — main.py 역할
+
+서버 시작할 때 **딱 한 번** 실행되는 설정 모음. 오케스트레이터가 아니라 **서버 부팅 스크립트**.
+
+```
+logging 설정 → FastAPI 앱 생성 → 라우터 등록 → 에러 핸들러 등록 → 미들웨어 등록
+```
+
+| 구성 요소 | 역할 |
+|----------|------|
+| `lifespan` | 서버 시작/종료 시 실행 (DB 연결 초기화 등) |
+| `app.include_router(...)` | 라우터 등록 — 이 줄 없으면 엔드포인트 존재 안 함 |
+| `@app.exception_handler` | 에러 발생 시 정해진 JSON 형태로 응답 |
+| `@app.middleware("http")` | 모든 요청/응답 통과하는 공통 처리 |
+
+### API 경로 버전 (`v1`)
+
+`/v1/request`의 `v1`은 FastAPI 자동이 아니라 **개발자가 직접 정한 관례**. 나중에 v2 만들어도 v1 유지 가능. 경로는 `routers/request.py`에서 정의하고, `app.include_router()`로 한꺼번에 등록.
+
+---
+
+## 미들웨어 (Middleware)
+
+"사이에 끼어있다"는 공통 개념. 맥락마다 의미가 다름.
+
+### 1. 웹 프레임워크 미들웨어
+
+모든 요청이 실제 처리되기 전/후에 **무조건 통과하는 공통 처리**.
+
+```
+요청 → [미들웨어] → 라우터 → 로직 → [미들웨어] → 응답
+```
+
+양파껍질 구조 — 안쪽으로 들어갔다가 역순으로 나옴. **네트워크 비용 없음** (같은 프로세스 안).
+
+추가 방법 두 가지:
+
+```python
+# 1. 데코레이터 — 커스텀 로직 (request_id 생성, 로깅 등)
+@app.middleware("http")
+async def my_middleware(request, call_next):
+    response = await call_next(request)
+    return response
+
+# 2. add_middleware — 남이 만든 범용 미들웨어 (CORS, GZip 등)
+app.add_middleware(CORSMiddleware, allow_origins=["*"])
+```
+
+### 2. 기업용 미들웨어
+
+시스템들 사이를 연결해주는 **별도 서버/소프트웨어**. Oracle Middleware, IBM MQ, Apache Kafka 등. **네트워크 비용 발생**. 사내 시스템 간 프로시저 호출 얘기가 나오면 이 의미일 가능성 높음.
+
+### 3. OS 미들웨어
+
+앱과 하드웨어 사이 레이어 (드라이버 등).
+
+### `app.mount()`는 미들웨어가 아님
+
+특정 경로에 별도 앱 자체를 붙이는 것. 이름이 비슷해서 헷갈리지만 다른 개념:
+
+```python
+app.mount("/static", StaticFiles(directory="static"))
+# /static/* 요청은 라우터 안 거치고 파일 서버로 직접 감
+```
+
+---
+
 ## Dockerfile vs docker-compose.yml vs requirements.txt
 
 Docker로 서비스를 배포할 때 사용하는 세 파일의 역할.
@@ -908,5 +1161,52 @@ Python 진영에선 **직접 구현**이 관용적. 20줄 패턴이면 충분하
 
 상사 등에게 설명할 땐:
 > "동시성 상황에서 **single-flight 패턴** (= request coalescing)을 적용해 **cache stampede**를 방지합니다. Go 표준 `singleflight` 가 그 방식이고, Python은 20줄 관용 구현으로 대체합니다."
+
+---
+
+## 비동기(async)와 이벤트 루프 — sync I/O가 전체를 멈추는 이유
+
+FastAPI 서비스는 async 기반이다. 이 환경에서 **sync I/O 한 번이 의외로 비싸다**.
+
+### 이벤트 루프의 실체
+
+uvicorn 워커 1개 = 프로세스 1개 = **이벤트 루프 1개**. 모든 요청이 이 한 루프 위에서 돌아간다 — 요청마다 스레드/프로세스가 갈라지지 않는다.
+
+비유: 식당에 요리사 1명. 손님 10명이 와도 요리사는 1명.
+
+### `await`는 "자발적 양보"
+
+- `await aget_file()` → 요리사가 "이거 기다리는 동안 다른 주문 받을게" 하고 자리 양보
+- `get_file()` (sync) → 요리사가 기둥처럼 멈춤. 그동안 다른 주문은 아무도 못 받음
+
+즉 **async = 자동 병렬이 아님**. `await`를 만났을 때만 이벤트 루프가 다른 코루틴을 실행할 기회를 갖는다.
+
+### sync 호출이 "밀린다" 이상으로 나쁜 이유
+
+sync I/O가 100ms 걸린다면 — 그 100ms 동안:
+
+- **새로 도착한 요청**: 시작조차 못 함
+- **이미 `await`로 대기 중이던 다른 요청들**: LLM 응답이 도착해도 깨어나지 못함 (이벤트 루프가 점유당해서)
+
+즉 요청 10개 동시 도착 시:
+- async 경로: ~100ms에 10개 다 끝
+- sync 호출 끼어듬: 직렬화 — 첫 100ms, 두 번째 200ms, ... 열 번째 1000ms
+
+### 자동으로 갈라지는 경우 — 두 가지뿐
+
+1. **uvicorn `--workers N`** — 워커 N개면 이벤트 루프도 N개. 식당을 N개로 복제하는 셈
+2. **FastAPI 라우터를 `def`로 정의** (async 아님) — FastAPI가 자동으로 스레드풀에 던져줌
+
+현재 llm-request는 라우터 모두 `async def`라 2번 해당 없음. 워커를 늘리지 않는 이상 sync I/O는 그대로 이벤트 루프를 막는다.
+
+### 완화책
+
+1. **`await` 가능한 async 버전 쓰기** — 가장 표준
+2. **`asyncio.to_thread(sync_func, *args)`** — sync 함수를 별도 스레드로 빼서 이벤트 루프 보호
+3. **`uvicorn --workers N`** — 워커 여러 개로 블로킹 영향 분산
+
+### 실무 교훈
+
+file-manager 같은 외부 HTTP 호출에서 async vs sync는 **트래픽 많을 때 체감 차이가 크다**. 라이브러리가 async 버전을 제공하면 `await` 쓰는 게 기본이다.
 
 이 정도로 말하면 충분히 소통된다.

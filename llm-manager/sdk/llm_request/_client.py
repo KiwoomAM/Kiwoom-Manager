@@ -8,23 +8,36 @@ from typing import Any
 
 import httpx
 
-from file_manager import FileMeta
 from llm_request.exceptions import ServiceConnectionError, ServiceError
-from llm_request.models import DoneCheckResult, RequestResult
+from llm_request.models import (
+    DoneCheckResult,
+    FileInput,
+    FileKeyingMeta,
+    RequestResult,
+)
 
 
 class AsyncClient:
     """llm-request Service와 통신하는 비동기 클라이언트."""
 
-    def __init__(self, base_url: str, timeout: float = 120.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 600.0) -> None:
         self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout)
 
     async def close(self) -> None:
         """HTTP 클라이언트 종료."""
         await self._http.aclose()
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """공통 HTTP 요청 처리."""
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        http_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """공통 HTTP 요청 처리. http_timeout 지정 시 해당 값으로 per-request 오버라이드."""
+        if http_timeout is not None:
+            kwargs["timeout"] = http_timeout
         try:
             response = await self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:
@@ -48,7 +61,7 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        file_metas: list[FileMeta] | None = None,
+        files: list[FileInput] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -56,6 +69,7 @@ class AsyncClient:
         database: str | None = None,
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
+        http_timeout: float | None = None,
     ) -> RequestResult:
         """POST /v1/request — LLM 요청."""
         body: dict[str, Any] = {
@@ -64,8 +78,9 @@ class AsyncClient:
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
         }
-        if file_metas:
-            body["file_metas"] = [m.model_dump() for m in file_metas]
+        if files:
+            # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
+            body["files"] = [f.model_dump(mode="json") for f in files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if debug:
@@ -75,14 +90,14 @@ class AsyncClient:
         if context_cache_ttl is not None:
             body["context_cache_ttl"] = context_cache_ttl
 
-        resp = await self._request("POST", "/v1/request", json=body)
+        resp = await self._request("POST", "/v1/request", json=body, http_timeout=http_timeout)
         return resp.json()
 
     async def request_stream(
         self,
         llm_input: dict,
         *,
-        file_metas: list[FileMeta] | None = None,
+        files: list[FileInput] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -90,6 +105,7 @@ class AsyncClient:
         database: str | None = None,
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
+        http_timeout: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """POST /v1/request/stream — SSE 스트리밍 요청."""
         body: dict[str, Any] = {
@@ -98,8 +114,8 @@ class AsyncClient:
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
         }
-        if file_metas:
-            body["file_metas"] = [m.model_dump() for m in file_metas]
+        if files:
+            body["files"] = [f.model_dump(mode="json") for f in files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if debug:
@@ -109,8 +125,12 @@ class AsyncClient:
         if context_cache_ttl is not None:
             body["context_cache_ttl"] = context_cache_ttl
 
+        stream_kwargs: dict[str, Any] = {"json": body}
+        if http_timeout is not None:
+            stream_kwargs["timeout"] = http_timeout
+
         try:
-            async with self._http.stream("POST", "/v1/request/stream", json=body) as resp:
+            async with self._http.stream("POST", "/v1/request/stream", **stream_kwargs) as resp:
                 if resp.status_code >= 400:
                     await resp.aread()
                     try:
@@ -140,13 +160,13 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        file_metas: list[FileMeta] | None = None,
+        files: list[FileKeyingMeta] | None = None,
         database: str | None = None,
     ) -> DoneCheckResult:
         """POST /v1/done-check — MDB 캐시(LLM 응답) 존재 확인."""
         body: dict[str, Any] = {"llm_input": llm_input}
-        if file_metas:
-            body["file_metas"] = [m.model_dump() for m in file_metas]
+        if files:
+            body["files"] = [f.model_dump(mode="json") for f in files]
         if database is not None:
             body["database"] = database
 

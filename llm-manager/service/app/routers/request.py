@@ -32,7 +32,7 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
     """LLM 요청 (MDB 캐시 조회 → 호출 → 저장)."""
     llm_result, meta = await llm_request_async(
         body.llm_input,
-        file_metas=body.file_metas,
+        files=body.files,
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
         ttl_seconds=body.ttl_seconds,
@@ -53,7 +53,7 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
     async def _sse():
         async for chunk in llm_request_stream_async(
             body.llm_input,
-            file_metas=body.file_metas,
+            files=body.files,
             cache_mode=body.cache_mode,
             save_mode=body.save_mode,
             ttl_seconds=body.ttl_seconds,
@@ -82,10 +82,10 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
 async def handle_done_check(body: DoneCheckBody) -> DoneCheckResponse:
     """MDB 캐시(LLM 응답) 존재 여부 확인."""
     llm_input = body.llm_input
-    if body.file_metas:
-        # FileMeta → checksum 리스트로 변환 후 cache_key 계산용으로 주입
+    if body.files:
+        # FileKeyingMeta → checksum 리스트로 변환 후 cache_key 계산용으로 주입
         # (실제 LLM 호출엔 들어가지 않고 keying.canonicalize에서만 사용)
-        checksums = [make_file_checksum(m) for m in body.file_metas]
+        checksums = [make_file_checksum(m) for m in body.files]
         llm_input = {**llm_input, "file_checksums": checksums}
 
     result = done_check(llm_input, lookup_cache=True, database=body.database)

@@ -77,7 +77,7 @@ llm-request Service는 파일 바이트를 직접 보관하지 않고, file_mana
 
 ## 2. 변경 흐름 (시간순)
 
-이 PR의 커밋들은 크게 **5단계**로 나뉩니다.
+이 PR의 커밋들은 크게 **6단계**로 나뉩니다.
 
 ### Stage 1: 라이브러리 기반 다듬기
 
@@ -211,6 +211,56 @@ Service가 중앙에서 모든 백엔드 로직을 처리.
 - Service: 파일 바이트가 필요할 때 `file_manager` 서비스에 HTTP 요청으로 가져옴 (lazy fetch)
 - `file_manager_client.py` 추가 — file_manager 서비스와의 HTTP 통신 담당
 
+### Stage 6: Cache Stampede Dedup + Observability + 버그 수정
+
+| 변경 | 내용 |
+|------|------|
+| `dedup.py` 신설 | Redis SETNX standby 패턴 — 3계층(files_api/context_cache/agent_llm) 동시 적용 |
+| runner.py 통합 | leader/waiter 분기, exponential backoff 대기, Y' Hybrid timeout 정책 |
+| `[route]`/`[dedup]` 로깅 | resolver.py + runner.py에 `logger.info` 추가 — meta 스키마 변경 없이 분기 추적 |
+| `meta.route_reason` | debug=True 시 응답에 라우팅 이유 포함 |
+| SDK `Timings` TypedDict | 흩어진 ttl 인자 4종을 단일 `timings=` 인자로 통합. private `_configure` 삭제 |
+| `create_cache` 인자명 수정 | llm-handler v0.1.1 Breaking Change 대응 — `system_instruction=` → `system=` |
+
+**왜?** Phase A 구현 후 운영 관점에서 드러난 문제 해결.
+- 동시성으로 인한 비용 폭증(stampede) → SETNX standby로 해결
+- 분기/캐시 동작이 meta로 안 보이는 문제 → grep 가능한 `key=value` 로그로 노출
+- ttl 인자가 함수마다 흩어져 사용 어려움 → 단일 dict로 통합
+
+### Stage 7: File-manager bytes passthrough — 왕복 제거
+
+| 변경 | 내용 |
+|------|------|
+| 에이전트 DTO 교체 | `file_metas: list[FileMeta]` → `files: list[FileInput]` (meta + bytes) |
+| `ingest.py` 신설 | 서비스 진입점에서 file-manager 호출 흡수 (`acheck_cache` + `aupload_file`) |
+| `aget_file` 제거 | resolver가 에이전트가 준 bytes를 그대로 LLM payload에 사용. file-manager 왕복 삭제 |
+| file-manager SDK 단순화 | `acheck_cache` → `bool`, `aupload_file` → `None`. `CacheCheckResult` 타입 제거 |
+| file-manager 엔드포인트 축소 | `/files/check-cache` → `{hit: bool}`, `/files/upload` → `{ok: true}` |
+| `UploadRequest` 확장 | `mime_type`, `extension` 필드 추가 (agent 제공, 없으면 서버 추론 fallback) |
+| `FileInput`/`FileKeyingMeta` 신규 | 파이프라인은 FileInput이 그대로 관통. 별도 내부 타입 없음 |
+| `/v1/done-check` 경량화 | `FileKeyingMeta`(hashing 3필드만) 수신 |
+
+**왜?** Stage 5에서 file-manager를 분리한 뒤 운영해 보니 왕복 I/O 문제가 드러남 — 에이전트는 이미 파일 bytes를 갖고 있는데, 에이전트가 file-manager에 업로드하고 받은 `file_path`로 llm-request가 다시 bytes를 `aget_file()` 한다. 매 요청마다 왕복이 한 번씩 끼는 구조.
+
+**근본 판단**:
+- file-manager의 목적은 **사후 로깅 저장소** (문제 발생 시 감사용). LLM 응답 경로에 끼어들 이유가 없음.
+- 에이전트 개발자가 file-manager SDK까지 숙지해야 하는 부담 → 책임 축소 필요.
+
+**권한 경계 재정의**:
+
+| 주체 | 제공/소유 |
+|---|---|
+| 에이전트 | `file_name`, `file_size`, `file_mtime`, `mime_type`, `extension`, `data(bytes)` |
+| file-manager | `file_path` 등 내부 식별자 (외부 비노출) |
+
+hashing 3필드 (name + size + mtime)만 cache key 계산에 사용. 나머지 meta는 LLM payload/로깅에 사용.
+
+**명시적 비-목표**:
+- 파일 무결성 검증 (checksum 대조) 안 함 — 방침 결정 사항
+- mime_type/extension 내용 검증 안 함 — 에이전트 값 신뢰
+
+상세 설계: [file-manager-bytes-passthrough.md](file-manager-bytes-passthrough.md)
+
 ---
 
 ## 3. 최종 아키텍처
@@ -219,20 +269,25 @@ Service가 중앙에서 모든 백엔드 로직을 처리.
 ┌──────────────────────────────────────────────────────────────┐
 │  Agent (에이전트 머신)                                        │
 │                                                              │
-│  from llm_request import llm_request_async                   │
+│  from llm_request import llm_request_async, FileInput        │
 │  result, meta = await llm_request_async(                     │
-│      llm_input, file_metas=[FileMeta(...)]                   │
+│      llm_input, files=[FileInput(..., data=bytes)]           │
 │  )                                                           │
 │                                                              │
 │  SDK 역할: HTTP 전송만 (httpx → Service)                      │
 └──────────────────────┬───────────────────────────────────────┘
-                       │ HTTP POST /v1/request
+                       │ HTTP POST /v1/request (JSON + base64)
                        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │  llm-request Service (FastAPI, port 8101)                    │
 │                                                              │
+│  ┌─ ingest_files() ─────────────────────────────────────┐    │
+│  │  0. 각 FileInput: acheck_cache → 미스면 aupload_file   │    │
+│  │     (file-manager 등록, side-effect 전용)             │    │
+│  └───────────────────────────────────────────────────────┘    │
+│                                                              │
 │  ┌─ prepare() ──────────────────────────────────────────┐    │
-│  │  1. file_metas → checksum 계산                        │    │
+│  │  1. files → checksum 계산 (hashing 3필드)             │    │
 │  │  2. llm_input + checksums → canonicalize → SHA-256    │    │
 │  │  3. MDB 캐시 조회 (done_check)                        │    │
 │  │     └── HIT → 즉시 반환                               │    │
@@ -240,9 +295,9 @@ Service가 중앙에서 모든 백엔드 로직을 처리.
 │                       │ MISS                                  │
 │  ┌─ file_handler ────────────────────────────────────────┐    │
 │  │  4. classify_files() → inline_pool / files_api_pool   │    │
-│  │  5. inline: file_manager에서 bytes → Part.from_bytes  │    │
+│  │  5. inline: fi.data 직접 사용 → Part.from_bytes       │    │
 │  │  6. files_api: Redis 조회 → HIT면 URI 재사용           │    │
-│  │               → MISS면 upload → Redis 저장             │    │
+│  │               → MISS면 fi.data 로 upload → Redis 저장  │    │
 │  │               → PDF>50MB면 split → 파트별 업로드       │    │
 │  └───────────────────────────────────────────────────────┘    │
 │                       │                                       │
@@ -406,6 +461,107 @@ resolve_files_after_404()
 5. 또 404 → 에러 raise
 ```
 
+### 4.7 Cache Stampede Dedup (dedup.py)
+
+**문제**: 동시 요청 N개가 동일한 cache miss를 만나면 N번 중복으로 업로드/context_cache 생성/LLM 호출이 발생.
+
+```
+t=0ms   req A, B, C 동시 도착
+t=1ms   각자 done_check → MDB miss
+t=2ms   각자 Redis files_api 조회 → miss
+t=3ms   각자 upload_file() → Gemini 업로드 3회  ⚠️
+t=11s   각자 LLM 호출 3회 → 토큰 비용 3배  ⚠️
+```
+
+**해결**: Redis SETNX로 "처리 중" standby 레코드를 먼저 선점.
+
+```python
+# service/app/logic/file_handler/dedup.py
+async def try_acquire_standby(prefix, key, ttl_seconds) -> bool:
+    # SETNX: 한 명만 성공, 나머지는 False
+    return client.set(standby_key, value, nx=True, ex=ttl_seconds) is not None
+```
+
+**3계층 적용** — files_api, context_cache, agent_llm 모두 동일 패턴:
+
+```
+요청 도착
+  ├── leader (SETNX 성공)  → 작업 수행 → finally: release_standby()
+  └── waiter (SETNX 실패)  → wait_for_standby_release()
+                              ├── 본 캐시 polling (HIT → 즉시 종료)
+                              ├── standby 사라짐 → 자기가 작업 시작
+                              └── timeout(기본 600s) → 자기가 작업 시작 (Y' Hybrid)
+```
+
+**Exponential backoff**: 0.5 → 1 → 2 → 4 → 8 → 10s (cap), 전체 timeout = `standby_ttl_seconds`.
+
+**Y' Hybrid 정책**: timeout 시 에러 raise 대신 자기가 작업 시작 (caller에 영향 없음, warning 로그만).
+
+**구현 노트**: `redis_handler`에 SETNX 미노출 → `redis_handler.get_client()`로 raw redis-py 클라이언트 직접 사용.
+
+**레디스 standby 키 구조**:
+```
+file_cache:files_api_standby:{checksum}
+file_cache:context_cache_standby:{hash_key}
+agent_llm_standby:{cache_key}
+```
+
+상세 설계: [cache-stampede-dedup.md](cache-stampede-dedup.md)
+
+### 4.8 Observability 로깅
+
+`meta` 응답 스키마는 고정한 채, 서비스 로그(uvicorn stdout)만 보고 내부 분기를 추적할 수 있도록 `logger.info` 추가.
+
+**통일 원칙**: `source=live` (신규 처리) / `source=cached` (Redis 재사용) / `source=none` (조건 미충족)
+
+**[route] — 파일별 경로 결정** (resolver.py)
+```
+[route] file=image.png mode=inline
+[route] file=medium.pdf mode=files_api source=cached uris=1
+[route] file=large.pdf mode=files_api source=live parts=2 duration_ms=12000
+[route] mode=context_cache source=cached name=cachedContents/abc
+[route] mode=context_cache source=live name=cachedContents/abc
+[route] mode=context_cache source=none reason=no_files_api_files
+```
+
+**[dedup] — Standby 역할** (runner.py)
+```
+[dedup] role=leader key=abc12345
+[dedup] role=waiter wait_ms=2134 leader_completed=true
+[dedup] role=standby_timeout wait_ms=10000
+```
+
+**meta.route_reason** (debug=True 시 응답에 포함)
+- `cache_miss`, `cache_hit`, `cache_off_save_off`, `cache_off_save_on`
+- `cache_error_fallback`, `cache_deserialize_error`, `standby_wait_hit`
+
+상세: [observability-backlog.md](observability-backlog.md)
+
+### 4.9 SDK Timings TypedDict
+
+기존: `mdb_ttl`, `context_cache_ttl`, `standby_ttl_seconds`, HTTP timeout이 공개 함수 시그니처에 흩어져 있고
+HTTP timeout은 private `_configure(timeout=...)`로만 설정 가능했음.
+
+변경: `Timings` TypedDict로 4개 키를 단일 인자로 통합. 기본 `http_timeout=600`으로 상향.
+
+```python
+# sdk/llm_request/__init__.py
+class Timings(TypedDict, total=False):
+    http_timeout: float          # SDK → Service HTTP 응답 대기 (기본 600)
+    mdb_ttl: int | None          # MDB 응답 캐시 수명 (None=무기한, 기본 None)
+    context_cache_ttl: int | None  # Gemini Context Cache 수명 (None=opt-out, 기본 None)
+    standby_ttl: int             # Cache stampede dedup standby TTL (기본 600)
+
+# 사용
+result, meta = await llm_request_async(
+    llm_input,
+    file_metas=[...],
+    timings={"http_timeout": 1200, "context_cache_ttl": 3600},
+)
+```
+
+`_configure()` private 함수는 삭제됨.
+
 ---
 
 ## 5. 파일 변경 요약
@@ -414,7 +570,7 @@ resolve_files_after_404()
 
 | 경로 | 역할 |
 |------|------|
-| `sdk/llm_request/__init__.py` | SDK 공개 API (llm_request_async, done_check 등) |
+| `sdk/llm_request/__init__.py` | SDK 공개 API + `Timings` TypedDict (http_timeout/mdb_ttl/context_cache_ttl/standby_ttl 통합) |
 | `sdk/llm_request/_client.py` | httpx AsyncClient 래퍼 |
 | `sdk/llm_request/_file_meta.py` | FileMeta 모델 (임시 stub) |
 | `sdk/llm_request/aio.py` | llm_handler.aio 재수출 |
@@ -432,11 +588,12 @@ resolve_files_after_404()
 | `service/app/logic/store.py` | MDB 결과 저장 |
 | `service/app/logic/orchestrator.py` | 배치 처리 (run_many) |
 | `service/app/logic/types.py` | FileChecksum 타입 |
-| `service/app/logic/file_handler/resolver.py` | 파일 크기별 분기 로직 |
+| `service/app/logic/file_handler/resolver.py` | 파일 크기별 분기 로직 + [route] 로깅 |
 | `service/app/logic/file_handler/cache_store.py` | Redis 파일 캐시 CRUD |
 | `service/app/logic/file_handler/uploader.py` | Files API 업로드 + context cache |
 | `service/app/logic/file_handler/splitter.py` | PDF 분할 |
 | `service/app/logic/file_handler/validators.py` | MIME/크기 검증 |
+| `service/app/logic/file_handler/dedup.py` | Cache stampede dedup (Redis SETNX standby + backoff) |
 | `service/app/models/requests.py` | Request DTO |
 | `service/app/models/responses.py` | Response DTO |
 | `service/app/models/file_meta.py` | FileMeta 서버 모델 |
@@ -550,25 +707,6 @@ REDIS_URL 미설정 또는 연결 불가 → Service startup 실패
 
 ## 8. 이 PR에 포함되지 않은 작업 (다음 단계)
 
-### Cache Stampede Dedup (설계 완료, 미구현)
-
-동시 요청 N개가 동일한 cache miss를 만났을 때 N번 중복으로 업로드/LLM 호출이 발생하는 문제.
-
-```
-t=0ms   req A, B, C 동시 도착
-t=1ms   각자 done_check → MDB miss
-t=2ms   각자 Redis files_api 조회 → miss
-t=3ms   각자 upload_file() → Gemini 업로드 3회  ⚠️
-t=11s   각자 LLM 호출 3회 → 토큰 비용 3배  ⚠️
-```
-
-**설계 방향**: Redis SETNX로 "처리 중" standby 레코드를 먼저 선점.
-후속 요청은 exponential backoff(0.5→1→2→4→8s, cap 10s)로 대기 후 결과 재사용.
-3개 캐시 계층(files_api, context_cache, agent_llm) 모두 적용 예정.
-
-상세 설계: [cache-stampede-dedup.md](cache-stampede-dedup.md)
-구현 예정 모듈: `service/app/logic/dedup.py`
-
 ### Phase B: Files API 용량 관리 (20GB 한도)
 
 Gemini Files API 계정당 20GB 저장 한도 초과 시 자동 삭제 로직.
@@ -672,5 +810,6 @@ cache = await create_cache(...)
 | [file-handler-phase3-implementation.md](file-handler-phase3-implementation.md) | 서버화 구현 상세 |
 | [file-manager-separation.md](file-manager-separation.md) | file_manager 분리 설계 |
 | [inline-vs-files-api-strategy.md](inline-vs-files-api-strategy.md) | inline/Files API 분기 전략 |
-| [cache-stampede-dedup.md](cache-stampede-dedup.md) | 동시 요청 중복 방지 설계 |
+| [cache-stampede-dedup.md](cache-stampede-dedup.md) | 동시 요청 중복 방지 설계 (Redis SETNX standby) |
+| [observability-backlog.md](observability-backlog.md) | 로깅 항목 백로그 + 구현 현황 |
 | [concepts.md](concepts.md) | 개념 정리 (학습 기록) |

@@ -15,8 +15,6 @@ from typing import Any
 
 from llm_handler.models import FileRef, Part
 
-from file_manager import FileMeta
-
 logger = logging.getLogger(__name__)
 
 # ── 상수 / 설정 ──────────────────────────────────────────────
@@ -238,14 +236,16 @@ def make_cache_key(canonical_json: str, *, debug: bool = False) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
-# ── FileMeta → checksum ─────────────────────────────────────
+# ── 파일 checksum ────────────────────────────────────────────
 
 
-def make_file_checksum(meta: FileMeta) -> str:
-    """FileMeta의 (file_name, file_mtime, file_size) 3필드로 sha256 hex 생성.
+def make_file_checksum(meta: Any) -> str:
+    """(file_name, file_mtime, file_size) 3필드를 가진 객체로부터 sha256 hex 생성.
 
-    file_manager는 checksum을 제공하지 않고 metadata만 준다. llm-request가
-    `keying.py`의 canonicalize + sha256 로직을 재사용하여 자체 계산.
+    FileInput(/v1/request), FileKeyingMeta(/v1/done-check) 모두 수용 —
+    3필드 속성을 duck-typing으로 접근한다.
+
+    llm-request가 `keying.py`의 canonicalize + sha256 로직을 재사용하여 자체 계산.
 
     이 checksum은:
       - Redis `files_api:{checksum}` 키
