@@ -36,7 +36,6 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
         ttl_seconds=body.ttl_seconds,
-        debug=body.debug,
         database=body.database,
         context_cache_ttl=body.context_cache_ttl,
         standby_ttl_seconds=body.standby_ttl_seconds,
@@ -57,7 +56,6 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
             cache_mode=body.cache_mode,
             save_mode=body.save_mode,
             ttl_seconds=body.ttl_seconds,
-            debug=body.debug,
             database=body.database,
             context_cache_ttl=body.context_cache_ttl,
             standby_ttl_seconds=body.standby_ttl_seconds,
@@ -108,9 +106,5 @@ async def handle_fetch(body: FetchBody) -> FetchResponse:
     response, meta = fetch_by_cache_key(
         body.cache_key,
         database=body.database,
-        as_stream=body.as_stream,
     )
-
-    result_dict = response.model_dump() if hasattr(response, "model_dump") else {"text": "stream"}
-
-    return FetchResponse(result=result_dict, meta=meta)
+    return FetchResponse(result=response.model_dump(), meta=meta)

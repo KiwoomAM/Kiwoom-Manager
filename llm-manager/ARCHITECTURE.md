@@ -322,7 +322,7 @@ Service (별도 서버)
 | `def` | `cache_get(cache_key, collection, database) -> dict \| None` | cache_key로 MDB 문서 조회 |
 | `def` | `cache_set(doc, collection, database) -> None` | MDB에 문서 upsert |
 | `def` | `save_result(cache_key, canonical_json, llm_result, meta, collection, *, database, ttl_seconds, requested_at, file_meta) -> None` | LLM 결과 → MDB 문서 구성 + 저장 |
-| `def` | `fetch_by_cache_key(cache_key, *, database, as_stream) -> tuple` | cache_key로 캐시 결과 조회 (LLMResponse 또는 StreamChunk) |
+| `def` | `fetch_by_cache_key(cache_key, *, database) -> tuple[LLMResponse, dict]` | cache_key로 캐시 결과 직접 조회 (외부 사용자 요청 API) |
 | `_def` | `_get_collection(collection, database)` | MDB 컬렉션 객체 획득 |
 | const | `DEFAULT_HISTORY_DB` | "kw_ai" |
 

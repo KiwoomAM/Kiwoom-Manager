@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from llm_handler.models import LLMResponse, StreamChunk
+from llm_handler.models import LLMResponse
 from mdb_handler import MongoDBHandler
 
 logger = logging.getLogger(__name__)
@@ -92,7 +91,6 @@ def save_result(
         doc["file_meta"] = file_metas
     if requested_at is not None:
         doc["requested_at"] = requested_at.isoformat()
-        doc["elapsed_ms"] = round((now - requested_at).total_seconds() * 1000)
     if ttl_seconds is not None:
         doc["expires_at"] = (now + timedelta(seconds=ttl_seconds)).isoformat()
     cache_set(doc, collection, database=database)
@@ -102,17 +100,18 @@ def fetch_by_cache_key(
     cache_key: str,
     *,
     database: str | None = None,
-    as_stream: bool = False,
-) -> tuple[LLMResponse, dict[str, Any]] | tuple[Iterator[StreamChunk], dict[str, Any]]:
+) -> tuple[LLMResponse, dict[str, Any]]:
     """cache_key로 MongoDB에서 캐시된 LLM 결과를 조회하여 반환한다.
+
+    외부 사용자 요청으로 추가된 공개 API — done_check으로 얻은 cache_key를
+    들고 결과만 직접 꺼내고 싶을 때 사용한다. llm_request_async와 별개 경로.
 
     Args:
         cache_key: done_check에서 받은 SHA-256 캐시 키.
         database: DB명 (None이면 kw_ai).
-        as_stream: True면 StreamChunk Iterator로 반환.
 
     Returns:
-        (LLMResponse, meta) 또는 (Iterator[StreamChunk], meta).
+        (LLMResponse, meta)
 
     Raises:
         KeyError: cache_key에 해당하는 문서가 없을 때.
@@ -146,15 +145,5 @@ def fetch_by_cache_key(
         "metadata": doc.get("metadata", {}),
         "collection": DEFAULT_COLLECTION,
     }
-
-    if as_stream:
-        def _iter() -> Iterator[StreamChunk]:
-            yield StreamChunk(
-                text=response.text,
-                finish_reason=response.finish_reason,
-                usage=response.usage,
-                function_calls=response.function_calls,
-            )
-        return _iter(), meta
 
     return response, meta

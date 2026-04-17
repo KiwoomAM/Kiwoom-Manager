@@ -46,7 +46,6 @@ async def run_many(
                 cache_mode=state.get("cache_mode", True),
                 save_mode=state.get("save_mode", True),
                 ttl_seconds=state.get("ttl_seconds"),
-                debug=state.get("debug", False),
                 database=database,
             )
             meta["_index"] = idx
@@ -101,7 +100,6 @@ async def run_many_stream(
                     cache_mode=state.get("cache_mode", True),
                     save_mode=state.get("save_mode", True),
                     ttl_seconds=state.get("ttl_seconds"),
-                    debug=state.get("debug", False),
                     database=database,
                 ):
                     await queue.put(

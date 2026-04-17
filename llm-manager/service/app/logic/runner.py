@@ -40,7 +40,7 @@ class _Prepared:
     cache_mode: bool
     save_mode: bool
     ttl_seconds: int | None
-    debug: bool
+    debug: bool = True
     requested_at: datetime
     dc: DoneCheckResult | None
     cached_output: tuple[LLMResponse, dict[str, Any]] | None
@@ -59,7 +59,6 @@ def prepare(
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
-    debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
@@ -87,10 +86,10 @@ def prepare(
         return _Prepared(
             llm_input=llm_input, meta=meta,
             cache_mode=False, save_mode=False,
-            ttl_seconds=ttl_seconds, debug=debug,
+            ttl_seconds=ttl_seconds,
             requested_at=requested_at,
             dc=None, cached_output=None,
-            route_reason="cache_off_save_off" if debug else None,
+            route_reason="cache_off_save_off",
             files=None,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
@@ -102,10 +101,10 @@ def prepare(
         return _Prepared(
             llm_input=llm_input, meta=meta,
             cache_mode=False, save_mode=True,
-            ttl_seconds=ttl_seconds, debug=debug,
+            ttl_seconds=ttl_seconds,
             requested_at=requested_at,
             dc=dc, cached_output=None,
-            route_reason="cache_off_save_on" if debug else None,
+            route_reason="cache_off_save_on",
             files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
@@ -127,10 +126,10 @@ def prepare(
             return _Prepared(
                 llm_input=llm_input, meta=meta,
                 cache_mode=True, save_mode=save_mode,
-                ttl_seconds=ttl_seconds, debug=debug,
+                ttl_seconds=ttl_seconds,
                 requested_at=requested_at,
                 dc=dc, cached_output=None,
-                route_reason="cache_deserialize_error" if debug else None,
+                route_reason="cache_deserialize_error",
                 files=files,
                 context_cache_ttl=context_cache_ttl,
                 standby_ttl_seconds=standby_ttl_seconds,
@@ -143,16 +142,15 @@ def prepare(
             "metadata": dc.cached.get("metadata", {}),
             "collection": dc.collection,
         }
-        if debug:
             cached_meta["route_reason"] = "cache_hit"
 
         return _Prepared(
             llm_input=llm_input, meta=meta,
             cache_mode=True, save_mode=save_mode,
-            ttl_seconds=ttl_seconds, debug=debug,
+            ttl_seconds=ttl_seconds,
             requested_at=requested_at,
             dc=dc, cached_output=(cached_result, cached_meta),
-            route_reason="cache_hit" if debug else None,
+            route_reason="cache_hit",
             files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
@@ -163,10 +161,10 @@ def prepare(
     return _Prepared(
         llm_input=llm_input, meta=meta,
         cache_mode=True, save_mode=save_mode,
-        ttl_seconds=ttl_seconds, debug=debug,
+        ttl_seconds=ttl_seconds,
         requested_at=requested_at,
         dc=dc, cached_output=None,
-        route_reason=route_reason if debug else None,
+        route_reason=route_reason,
         files=files,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
@@ -374,8 +372,7 @@ def _recheck_agent_llm_cache(
         "metadata": doc.get("metadata", {}),
         "collection": prep.dc.collection,
     }
-    if prep.debug:
-        meta["route_reason"] = "standby_wait_hit"
+    meta["route_reason"] = "standby_wait_hit"
     return response, meta
 
 
@@ -412,7 +409,6 @@ async def llm_request_async(
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
-    debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
@@ -438,7 +434,7 @@ async def llm_request_async(
         llm_input,
         files=files,
         cache_mode=cache_mode, save_mode=save_mode,
-        ttl_seconds=ttl_seconds, debug=debug, database=database,
+        ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
     )
@@ -483,7 +479,6 @@ def llm_request(
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
-    debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
@@ -494,7 +489,7 @@ def llm_request(
         llm_input,
         files=files,
         cache_mode=cache_mode, save_mode=save_mode,
-        ttl_seconds=ttl_seconds, debug=debug, database=database,
+        ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
     ))
@@ -537,7 +532,6 @@ async def llm_request_stream_async(
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
-    debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
@@ -560,7 +554,7 @@ async def llm_request_stream_async(
         llm_input,
         files=files,
         cache_mode=cache_mode, save_mode=save_mode,
-        ttl_seconds=ttl_seconds, debug=debug, database=database,
+        ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
     )
@@ -616,7 +610,6 @@ def llm_request_stream(
     cache_mode: bool = True,
     save_mode: bool = True,
     ttl_seconds: int | None = None,
-    debug: bool = False,
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
@@ -630,7 +623,7 @@ def llm_request_stream(
             llm_input,
             files=files,
             cache_mode=cache_mode, save_mode=save_mode,
-            ttl_seconds=ttl_seconds, debug=debug, database=database,
+            ttl_seconds=ttl_seconds, database=database,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
         ):

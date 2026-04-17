@@ -51,7 +51,6 @@ class LLMRequestBody(BaseModel):
     cache_mode: bool = True
     save_mode: bool = True
     ttl_seconds: int | None = None
-    debug: bool = False
     database: str | None = None
     context_cache_ttl: int | None = None
     standby_ttl_seconds: int = 600
@@ -70,4 +69,3 @@ class FetchBody(BaseModel):
 
     cache_key: str
     database: str | None = None
-    as_stream: bool = False

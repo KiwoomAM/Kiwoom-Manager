@@ -65,7 +65,6 @@ class AsyncClient:
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
-        debug: bool = False,
         database: str | None = None,
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
@@ -77,14 +76,13 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
+            "debug": True,
         }
         if files:
             # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
             body["files"] = [f.model_dump(mode="json") for f in files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
-        if debug:
-            body["debug"] = debug
         if database is not None:
             body["database"] = database
         if context_cache_ttl is not None:
@@ -101,7 +99,6 @@ class AsyncClient:
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
-        debug: bool = False,
         database: str | None = None,
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
@@ -113,13 +110,12 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
+            "debug": True,
         }
         if files:
             body["files"] = [f.model_dump(mode="json") for f in files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
-        if debug:
-            body["debug"] = debug
         if database is not None:
             body["database"] = database
         if context_cache_ttl is not None:

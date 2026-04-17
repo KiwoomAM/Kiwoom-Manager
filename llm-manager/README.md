@@ -306,11 +306,10 @@ else:
 
 > 이미 `done_check`으로 받은 `cache_key`를 가지고 있을 때, `llm_input` 재구성 없이 **cache_key만으로** 캐시 결과를 조회하여 `llm_request`와 동일한 형식으로 반환
 
-`fetch_by_cache_key(cache_key, *, database=None, as_stream=False)`
+`fetch_by_cache_key(cache_key, *, database=None)`
 
 - `database`: DB명 (기본 `kw_ai`)
-- `as_stream=False`: `(LLMResponse, meta)` 반환 — `llm_request`와 동일
-- `as_stream=True`: `(Iterator[StreamChunk], meta)` 반환 — `llm_request_stream`과 동일
+- 반환: `(LLMResponse, meta)` — `llm_request`와 동일
 - 캐시 키에 해당하는 문서가 없으면 `KeyError` 발생
 
 ```python
@@ -323,15 +322,10 @@ dc = done_check(
 )
 cache_key = dc.cache_key  # 이 키를 클라이언트가 보관
 
-# ② 나중에 cache_key만으로 결과 조회 (일반)
+# ② 나중에 cache_key만으로 결과 조회
 response, meta = fetch_by_cache_key(cache_key)
 print(response.text)
 print(meta["source"])  # "cache"
-
-# ③ 스트리밍 형식으로 조회
-stream_iter, meta = fetch_by_cache_key(cache_key, as_stream=True)
-for chunk in stream_iter:
-    print(chunk.text)
 ```
 
 ### Hashing(내부 함수로 외부에서 사용할 수 없음)

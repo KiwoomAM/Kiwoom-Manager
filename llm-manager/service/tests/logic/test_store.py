@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from llm_handler.models import LLMResponse, StreamChunk
+from llm_handler.models import LLMResponse
 from app.logic.store import cache_get, fetch_by_cache_key, save_result
 
 from conftest import SAMPLE_LLM_INPUT, SAMPLE_RESPONSE
@@ -24,7 +24,7 @@ class TestSaveResult:
         assert doc["result"]["text"] == "응답입니다"
         assert doc["canonical_json"] == CANONICAL
 
-    def test_saved_doc_has_elapsed_ms(self, mock_collection):
+    def test_saved_doc_has_requested_at(self, mock_collection):
         from datetime import UTC, datetime
 
         requested_at = datetime.now(UTC)
@@ -33,8 +33,8 @@ class TestSaveResult:
             requested_at=requested_at,
         )
         doc = mock_collection[CACHE_KEY]
-        assert "elapsed_ms" in doc
         assert "requested_at" in doc
+        assert "elapsed_ms" not in doc
 
 
     def test_saved_doc_with_file_meta(self, mock_collection):
@@ -64,7 +64,7 @@ class TestCacheGet:
 
 
 class TestFetchByCacheKey:
-    """fetch_by_cache_key: cache_key로 직접 조회 + LLMResponse/StreamChunk 변환."""
+    """fetch_by_cache_key: cache_key로 직접 조회."""
 
     def test_returns_llm_response(self, mock_collection):
         save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
@@ -76,16 +76,6 @@ class TestFetchByCacheKey:
         assert meta["cache_hit"] is True
         assert meta["cache_key"] == CACHE_KEY
         assert meta["collection"] == "agent_llm"
-
-    def test_returns_stream_chunk(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
-        stream_iter, meta = fetch_by_cache_key(CACHE_KEY, as_stream=True)
-
-        chunks = list(stream_iter)
-        assert len(chunks) == 1
-        assert isinstance(chunks[0], StreamChunk)
-        assert chunks[0].text == "응답입니다"
-        assert meta["source"] == "cache"
 
     def test_raises_key_error_when_missing(self, mock_collection):
         with pytest.raises(KeyError):

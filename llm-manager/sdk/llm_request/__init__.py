@@ -67,6 +67,7 @@ from llm_request.models import (
     DoneCheckResult,
     FileInput,
     FileKeyingMeta,
+    RequestMeta,
     RequestResult,
 )
 
@@ -81,6 +82,7 @@ __all__ = [
     "Timings",
     "FileInput",
     "FileKeyingMeta",
+    "RequestMeta",
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
@@ -182,10 +184,9 @@ async def llm_request_async(
     files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    debug: bool = False,
     database: str | None = None,
     timings: Timings | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[LLMResponse, RequestMeta]:
     """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
 
     files: 에이전트가 구성한 FileInput 리스트 (meta + bytes).
@@ -203,13 +204,12 @@ async def llm_request_async(
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
-        debug=debug,
         database=database,
         context_cache_ttl=t["context_cache_ttl"],
         standby_ttl_seconds=t["standby_ttl"],
         http_timeout=t["http_timeout"],
     )
-    return result["result"], result["meta"]
+    return LLMResponse(**result["result"]), RequestMeta(**result["meta"])
 
 
 def llm_request(
@@ -218,17 +218,15 @@ def llm_request(
     files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    debug: bool = False,
     database: str | None = None,
     timings: Timings | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[LLMResponse, RequestMeta]:
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
         files=files,
         cache_mode=cache_mode,
         save_mode=save_mode,
-        debug=debug,
         database=database,
         timings=timings,
     ))
@@ -240,7 +238,6 @@ async def llm_request_stream_async(
     files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    debug: bool = False,
     database: str | None = None,
     timings: Timings | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -253,7 +250,6 @@ async def llm_request_stream_async(
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
-        debug=debug,
         database=database,
         context_cache_ttl=t["context_cache_ttl"],
         standby_ttl_seconds=t["standby_ttl"],
@@ -268,7 +264,6 @@ def llm_request_stream(
     files: list[FileInput] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
-    debug: bool = False,
     database: str | None = None,
     timings: Timings | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -280,7 +275,6 @@ def llm_request_stream(
             files=files,
             cache_mode=cache_mode,
             save_mode=save_mode,
-            debug=debug,
             database=database,
             timings=timings,
         ):
@@ -312,8 +306,8 @@ async def fetch_by_cache_key(
     cache_key: str,
     *,
     database: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[LLMResponse, RequestMeta]:
     """캐시 키로 결과 직접 조회."""
     client = _get_client()
     result = await client.fetch(cache_key, database=database)
-    return result["result"], result["meta"]
+    return LLMResponse(**result["result"]), RequestMeta(**result["meta"])

@@ -10,6 +10,7 @@ from pydantic import BaseModel, BeforeValidator, PlainSerializer
 __all__ = [
     "FileInput",
     "FileKeyingMeta",
+    "RequestMeta",
     "RequestResult",
     "DoneCheckResult",
 ]
@@ -47,8 +48,19 @@ class FileKeyingMeta(BaseModel):
     file_mtime: Union[str, int]
 
 
+class RequestMeta(BaseModel):
+    """llm_request_async 반환 meta 객체."""
+
+    source: str
+    cache_hit: bool
+    cache_key: str | None = None
+    metadata: dict[str, Any] = {}
+    collection: str | None = None
+    route_reason: str | None = None
+
+
 class RequestResult(TypedDict):
-    """llm_request_async 서버 응답."""
+    """llm_request_async 서버 응답 (raw)."""
 
     result: dict[str, Any]
     meta: dict[str, Any]

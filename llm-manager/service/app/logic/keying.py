@@ -217,7 +217,7 @@ def canonicalize_input(llm_input: dict, **kwargs: Any) -> str:
 _WARN_CANONICAL_VALUES = (None, "", "{}")
 
 
-def make_cache_key(canonical_json: str, *, debug: bool = False) -> str:
+def make_cache_key(canonical_json: str) -> str:
     """canonical JSON 문자열로부터 SHA-256 해시 기반 캐시 키를 생성한다.
 
     Args:
@@ -230,7 +230,7 @@ def make_cache_key(canonical_json: str, *, debug: bool = False) -> str:
     if not isinstance(canonical_json, str):
         canonical_json = str(canonical_json)
 
-    if debug and canonical_json in _WARN_CANONICAL_VALUES:
+    if canonical_json in _WARN_CANONICAL_VALUES:
         logger.warning("캐시 키 생성: 값이 비어있거나 유효하지 않습니다. len=%d", len(canonical_json))
 
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
