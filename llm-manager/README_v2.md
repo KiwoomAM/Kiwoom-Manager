@@ -60,7 +60,7 @@ packages/llm-request/
 │   │       ├── store.py        # MongoDB 캐시 저장
 │   │       ├── meta.py         # 저장용 메타 생성
 │   │       ├── types.py        # 내부 타입 정의
-│   │       ├── ingest.py       # file-manager 파일 등록
+│   │       ├── ingest.py       # file-manager에 파일 등록 (Service 진입 시점)
 │   │       └── file_handler/
 │   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
 │   │           ├── uploader.py    # Files API 업로드
@@ -203,7 +203,7 @@ print(meta.source)
 
 ## llm_input 구조
 
-`llm_request_async`의 첫 번째 인자. `llm_handler.call()`에 그대로 전달된다.
+`llm_request_async`의 첫 번째 인자. **`llm_handler.call()`의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `files=[FileInput]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 `FileInput`으로 메타와 bytes를 구성해 `files=`로 넘기면 Service가 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
 
 ```python
 response, meta = await llm_request_async(
@@ -221,7 +221,7 @@ response, meta = await llm_request_async(
     cache_mode=True,       # 기본 True
     save_mode=True,        # 기본 True
     timings={"mdb_ttl": 3600},  # 선택. Timings TypedDict
-    debug=False,           # 기본 False
+    debug=False,           # 기본 False. True면 meta.route_reason 포함
     database=None,         # 기본 None → env MONGODB_DATABASE 또는 kw_ai
 )
 ```
@@ -279,7 +279,7 @@ response, meta = await llm_request_async(
 
 ## debug
 
-`debug=True` 설정 시 `meta.route_reason`에 요청이 어떤 경로로 처리됐는지 기록된다.
+`debug=True` 설정 시 `meta.route_reason`에 해당 요청이 어떤 경로로 처리됐는지가 기록된다(기본 `False`). 값의 의미는 다음과 같다.
 
 ```
 "cache_hit"              # 캐시 히트
@@ -353,7 +353,7 @@ FileInput 리스트
   ↓
 ① 유효성 검사 (validators)
   ↓
-② file-manager 등록 (ingest)
+② file-manager에 파일 등록
   ↓
 ③ 파일 분류 (resolver.classify_files)
      inline_pool / files_api_pool 분리
@@ -596,10 +596,10 @@ LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 {
   "result": { /* LLMResponse.model_dump() */ },
   "meta": {
-    "source": "cache | llm",
+    "source": "live | cache",
     "cache_hit": true,
     "cache_key": "sha256...",
-    "collection": "kw_ai.llm_responses",
+    "collection": "agent_llm",
     "route_reason": "...",
     "metadata": {}
   }
@@ -638,7 +638,7 @@ MDB에 해당 입력의 응답이 이미 저장되어 있는지 확인. LLM 호�
   "canonical_json": "{...}",
   "cached": { /* 저장된 문서 또는 null */ },
   "cache_hit": true,
-  "collection": "kw_ai.llm_responses"
+  "collection": "agent_llm"
 }
 ```
 
@@ -759,7 +759,6 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | 초기화 코드 | `llm_handler.configure()`, `MongoDBHandler.reset()` 필요 | 불필요 |
 | ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `files=[FileInput(...)]` |
 | ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `RequestMeta` (`meta.source`) |
-| `debug` 파라미터 | 있음 | **제거** — `route_reason` 항상 포함 |
 
 ## 초기화 코드 제거
 
@@ -856,6 +855,20 @@ base64 인코딩은 원본 대비 약 33% 크기가 증가하므로, 20MB 파일
 
 파일의 캐시 키는 `file_name + file_mtime + file_size` 체크섬 기반이다.
 같은 내용의 파일이면 이름이 달라도 캐시 히트가 발생한다.
+
+---
+
+### 브라우저 업로드 파일은 mtime 추출에 주의
+
+로컬 경로가 없는 경우(프론트엔드에서 업로드되는 에이전트 등) Python `Path.stat().st_mtime`을 쓸 수 없으므로, **프론트엔드에서 `File.lastModified` 값을 백엔드로 함께 전달**해야 한다. JavaScript `File` 객체의 `lastModified`는 밀리초 단위이므로 초 단위로 변환해서 넘긴다.
+
+```js
+// frontend (JS)
+const mtime = Math.floor(file.lastModified / 1000);
+// 업로드 폼 / JSON 등에 file_mtime 필드로 같이 전달
+```
+
+서버 수신 시점의 현재 시각(`time.time()` 등)을 `file_mtime`으로 대신 쓰면, 동일 파일을 다시 업로드할 때마다 `file_mtime`이 달라져 **cache miss가 반복**된다.
 
 ---
 

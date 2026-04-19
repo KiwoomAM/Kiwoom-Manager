@@ -69,6 +69,7 @@ class AsyncClient:
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
         http_timeout: float | None = None,
+        debug: bool = False,
     ) -> RequestResult:
         """POST /v1/request — LLM 요청."""
         body: dict[str, Any] = {
@@ -76,7 +77,7 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
-            "debug": True,
+            "debug": debug,
         }
         if files:
             # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
@@ -103,6 +104,7 @@ class AsyncClient:
         context_cache_ttl: int | None = None,
         standby_ttl_seconds: int = 600,
         http_timeout: float | None = None,
+        debug: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """POST /v1/request/stream — SSE 스트리밍 요청."""
         body: dict[str, Any] = {
@@ -110,7 +112,7 @@ class AsyncClient:
             "cache_mode": cache_mode,
             "save_mode": save_mode,
             "standby_ttl_seconds": standby_ttl_seconds,
-            "debug": True,
+            "debug": debug,
         }
         if files:
             body["files"] = [f.model_dump(mode="json") for f in files]

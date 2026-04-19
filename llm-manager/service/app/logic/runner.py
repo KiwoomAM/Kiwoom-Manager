@@ -40,7 +40,6 @@ class _Prepared:
     cache_mode: bool
     save_mode: bool
     ttl_seconds: int | None
-    debug: bool = True
     requested_at: datetime
     dc: DoneCheckResult | None
     cached_output: tuple[LLMResponse, dict[str, Any]] | None
@@ -48,6 +47,7 @@ class _Prepared:
     files: list[FileInput] | None
     context_cache_ttl: int | None
     standby_ttl_seconds: int
+    debug: bool = False
 
 
 # ── prepare / finalize ─────────────────────────────────────────
@@ -62,6 +62,7 @@ def prepare(
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
+    debug: bool = False,
 ) -> _Prepared:
     """캐시 조회 + 메타 준비. LLM 호출 전까지의 모든 로직.
 
@@ -93,6 +94,7 @@ def prepare(
             files=None,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
+            debug=debug,
         )
 
     # ── ② cache_mode=F, save_mode=T → 키만 생성 ─────────────
@@ -108,6 +110,7 @@ def prepare(
             files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
+            debug=debug,
         )
 
     # ── ③④ cache_mode=T → 조회 → hit/miss ───────────────────
@@ -133,6 +136,7 @@ def prepare(
                 files=files,
                 context_cache_ttl=context_cache_ttl,
                 standby_ttl_seconds=standby_ttl_seconds,
+                debug=debug,
             )
 
         cached_meta: dict[str, Any] = {
@@ -142,6 +146,7 @@ def prepare(
             "metadata": dc.cached.get("metadata", {}),
             "collection": dc.collection,
         }
+        if debug:
             cached_meta["route_reason"] = "cache_hit"
 
         return _Prepared(
@@ -154,6 +159,7 @@ def prepare(
             files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
+            debug=debug,
         )
 
     # cache miss (또는 cache error)
@@ -168,6 +174,7 @@ def prepare(
         files=files,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
+        debug=debug,
     )
 
 
@@ -180,7 +187,7 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
         "metadata": prep.meta,
         "collection": prep.dc.collection if prep.dc else None,
     }
-    if prep.route_reason:
+    if prep.debug and prep.route_reason:
         meta["route_reason"] = prep.route_reason
     return meta
 
@@ -372,7 +379,8 @@ def _recheck_agent_llm_cache(
         "metadata": doc.get("metadata", {}),
         "collection": prep.dc.collection,
     }
-    meta["route_reason"] = "standby_wait_hit"
+    if prep.debug:
+        meta["route_reason"] = "standby_wait_hit"
     return response, meta
 
 
@@ -412,6 +420,7 @@ async def llm_request_async(
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
+    debug: bool = False,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
 
@@ -420,6 +429,7 @@ async def llm_request_async(
 
     Args:
         standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
+        debug: True면 meta에 route_reason을 포함한다 (기본 False).
     """
     # 둘 다 off면 파일 처리 전체 스킵 (file-manager 호출도 안 함)
     if not (cache_mode or save_mode):
@@ -437,6 +447,7 @@ async def llm_request_async(
         ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
+        debug=debug,
     )
     if prep.cached_output:
         return prep.cached_output
@@ -482,6 +493,7 @@ def llm_request(
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
+    debug: bool = False,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (sync)."""
     import asyncio
@@ -492,6 +504,7 @@ def llm_request(
         ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
+        debug=debug,
     ))
 
 
@@ -535,6 +548,7 @@ async def llm_request_stream_async(
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
+    debug: bool = False,
 ) -> AsyncIterator[StreamChunk]:
     """스트리밍 LLM 요청 (async). StreamChunk를 yield.
 
@@ -557,6 +571,7 @@ async def llm_request_stream_async(
         ttl_seconds=ttl_seconds, database=database,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
+        debug=debug,
     )
 
     if prep.cached_output:
@@ -613,6 +628,7 @@ def llm_request_stream(
     database: str | None = None,
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
+    debug: bool = False,
 ) -> Iterator[StreamChunk]:
     """스트리밍 LLM 요청 (sync)."""
     import asyncio
@@ -626,6 +642,7 @@ def llm_request_stream(
             ttl_seconds=ttl_seconds, database=database,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
+            debug=debug,
         ):
             results.append(chunk)
         return results

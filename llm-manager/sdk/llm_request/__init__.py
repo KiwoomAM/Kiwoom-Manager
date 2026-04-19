@@ -186,6 +186,7 @@ async def llm_request_async(
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
+    debug: bool = False,
 ) -> tuple[LLMResponse, RequestMeta]:
     """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
 
@@ -195,6 +196,7 @@ async def llm_request_async(
     Args:
         timings: 시간 관련 설정 묶음. 일부 키만 지정하면 나머지는 기본값 적용.
                  예) timings={"http_timeout": 1200, "context_cache_ttl": 3600}
+        debug: True면 meta.route_reason에 요청 처리 경로가 포함된다 (기본 False).
     """
     t = _resolve_timings(timings)
     client = _get_client()
@@ -208,6 +210,7 @@ async def llm_request_async(
         context_cache_ttl=t["context_cache_ttl"],
         standby_ttl_seconds=t["standby_ttl"],
         http_timeout=t["http_timeout"],
+        debug=debug,
     )
     return LLMResponse(**result["result"]), RequestMeta(**result["meta"])
 
@@ -220,6 +223,7 @@ def llm_request(
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
+    debug: bool = False,
 ) -> tuple[LLMResponse, RequestMeta]:
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
@@ -229,6 +233,7 @@ def llm_request(
         save_mode=save_mode,
         database=database,
         timings=timings,
+        debug=debug,
     ))
 
 
@@ -240,6 +245,7 @@ async def llm_request_stream_async(
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
+    debug: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """스트리밍 LLM 요청 (async). SSE 이벤트를 파싱하여 dict로 yield."""
     t = _resolve_timings(timings)
@@ -254,6 +260,7 @@ async def llm_request_stream_async(
         context_cache_ttl=t["context_cache_ttl"],
         standby_ttl_seconds=t["standby_ttl"],
         http_timeout=t["http_timeout"],
+        debug=debug,
     ):
         yield event
 
@@ -266,6 +273,7 @@ def llm_request_stream(
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
+    debug: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """스트리밍 LLM 요청 (sync). llm_request_stream_async의 동기 래퍼."""
     async def _collect():
@@ -277,6 +285,7 @@ def llm_request_stream(
             save_mode=save_mode,
             database=database,
             timings=timings,
+            debug=debug,
         ):
             results.append(event)
         return results
