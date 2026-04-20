@@ -146,11 +146,13 @@ from llm_request import llm_request_async
 | 키 | 기본값 | 역할 |
 |-----|-------|------|
 | `http_timeout` | `600.0` | SDK → Service HTTP 응답 대기 시간(초) |
-| `mdb_ttl` | `None` | MDB 캐시 수명(초). `None` = 영구 저장 |
+| `mdb_ttl` | `None` | MDB 캐시 수명(초). 값을 지정하면 `expires_at` 필드가 기록되지만, **현재 MongoDB TTL 인덱스 미설정으로 자동 삭제 동작 안 함 — `None`이든 값을 넣든 실제로는 영구 저장** |
 | `context_cache_ttl` | `None` | Gemini Context Cache 수명(초). **`None`이면 Context Cache 기능 자체가 비활성화되고, 값이 있으면 해당 초만큼 Context Cache를 생성·유지** (Task 10) |
 | `standby_ttl` | `600` | Cache stampede dedup standby 키 수명·대기 timeout(초) (Task 11) |
 
 정의 위치: `sdk/llm_request/__init__.py:145-176`. 내부 `_resolve_timings()`가 사용자 입력과 기본값을 병합한다.
+
+> **`Timings`는 SDK 레이어 전용 개념이다.** SDK가 HTTP 요청을 보낼 때 내부적으로 Service DTO의 평면 필드로 변환된다. Service `LLMRequestBody`에는 `Timings` 객체가 아닌 `ttl_seconds` / `context_cache_ttl` / `standby_ttl_seconds` 가 직접 존재한다. `http_timeout`은 SDK가 자체적으로 소비하며 Service에 전달되지 않는다.
 
 ##### 시그니처 변화 요약
 
@@ -477,7 +479,7 @@ resp2, meta2 = await llm_request_async({"contents": "요약", ...}, files=[fi])
 
 #### 영향 범위
 
-- **Breaking 캐시 호환성**: v0.1.0 캐시와 키 호환 안 됨 (`file_checksums` 추가·`cached_content` volatile 처리로 해시 자체가 달라짐) → 배포 초기 cache miss·LLM 재호출 비율 일시 증가
+- **Breaking 캐시 호환성**: v0.1.0 캐시와 키 호환 안 됨 → 배포 초기 cache miss·LLM 재호출 비율 일시 증가. 원인: `_LLM_INPUT_FIELDS`에 `file_checksums` 필드가 추가(15→16개)돼 canonical JSON이 달라짐. **파일 없는 요청도 동일하게 cache miss 발생**
 - **FileRef / Part 혼용 호환**: 기존 스타일대로 `contents`에 `FileRef`를 섞어 넣어도 `file_checksums`가 있으면 정규화되어 캐시 키가 안정됨
 
 #### 연관 Task
@@ -593,24 +595,33 @@ v0.2.0에서는 파일 업로드·캐싱 책임이 **Service로 이전**되면�
 
 #### 코드 세부 설명
 
-`service/app/core/providers.py` 에 2단계 초기화 추가 — `configure_handlers()` 직후 차례로 호출.
+`service/app/core/providers.py`에 두 헬퍼를 추가하고, `configure_handlers()` 내부 Redis 초기화 단계에서 차례로 호출한다.
 
 ```python
 def _ensure_redis_connected() -> None:
-    """Redis 연결 확인. 실패 시 RuntimeError — Service 기동 중단."""
-    if not redis_handler.is_connected():
+    """Redis 연결 확보. 실패 시 RuntimeError raise."""
+    from redis_handler import init_redis
+    if not init_redis():
         raise RuntimeError(
-            "Redis 미연결 — llm-request Service는 Redis가 필수입니다. "
-            "REDIS_URL 환경변수와 Redis 프로세스를 확인하세요."
+            "Redis 연결 실패 — llm-request를 시작할 수 없습니다. "
+            "REDIS_URL 설정 및 Redis 서버 상태를 확인하세요."
         )
 
 
 def _flush_stale_standbys() -> None:
     """이전 crash 이후 남은 standby 키 정리 (상세 Task 11)."""
     ...
+
+
+def configure_handlers() -> None:
+    """FastAPI lifespan에서 호출. MDB/Redis/LLM handler 초기화."""
+    ...
+    _ensure_redis_connected()   # Redis fail-fast
+    _flush_stale_standbys()     # stale standby 키 정리
+    ...
 ```
 
-`service/app/main.py`의 `lifespan`이 startup 시 순서대로 호출. Redis 미연결이면 `RuntimeError`가 발생해 **uvicorn이 기동을 중단**하므로, 서비스가 잘못된 상태로 뜨지 않는다.
+`service/app/main.py`의 `lifespan`은 `configure_handlers()` 하나만 호출한다. `_ensure_redis_connected()`와 `_flush_stale_standbys()`는 `configure_handlers()` 내부 Redis 초기화 단계에서 순서대로 실행된다. Redis 미연결이면 `RuntimeError`가 발생해 **uvicorn이 기동을 중단**하므로, 서비스가 잘못된 상태로 뜨지 않는다.
 
 #### 파일 변경 목록
 
@@ -618,7 +629,7 @@ def _flush_stale_standbys() -> None:
 |------|------|------|
 | 신규 | `service/app/core/providers.py` (`_ensure_redis_connected`) | Redis 연결 fail-fast 검증 |
 | 신규 | `service/app/core/providers.py` (`_flush_stale_standbys`) | stale standby 키 정리 (상세 Task 11) |
-| 변경 | `service/app/main.py` (`lifespan`) | startup 시 위 2개 함수 호출 연결 |
+| 변경 | `service/app/main.py` (`lifespan`) | startup 시 `configure_handlers()` 호출 (두 헬퍼는 내부에서 실행) |
 
 #### 영향 범위
 
@@ -711,26 +722,25 @@ SDK 클라이언트가 `data: ` 접두를 파싱하여 JSON 또는 `[DONE]` 센�
 `service/app/logic/ingest.py` 신설. runner의 public 함수(`llm_request_async` / `llm_request_stream_async`)가 `FileInput` 유효성 검증 직전에 호출한다.
 
 ```python
-async def ingest_files(files: list[FileInput]) -> None:
+async def ingest_files(inputs: list[FileInput]) -> list[FileInput]:
     """Service 진입 시 file-manager에 파일 존재 확인 + 필요 시 업로드.
 
-    side-effect 전용 — 반환값 없음. file-manager가 부여하는 file_path 등
-    내부 식별자는 일체 사용하지 않는다.
+    side-effect 전용 — 입력 리스트를 그대로 반환한다. file-manager가 부여하는
+    file_path 등 내부 식별자는 일체 사용하지 않는다.
     """
-    for fi in files:
-        hit = await file_manager.check_cache(
-            file_name=fi.file_name,
-            file_size=fi.file_size,
-            file_mtime=fi.file_mtime,
-        )
-        if not hit:
-            await file_manager.upload_file(
-                data=fi.data,
-                file_name=fi.file_name, ...
-            )
+    for fi in inputs:
+        hash_meta = {
+            "file_name": fi.file_name,
+            "file_size": fi.file_size,
+            "file_mtime": fi.file_mtime,
+        }
+        exists = await acheck_cache(hash_meta)   # 단일 dict 인자
+        if not exists:
+            await aupload_file(fi.data, {**hash_meta, "mime_type": fi.mime_type, "extension": fi.extension})
+    return inputs
 ```
 
-file-manager가 일시 장애를 겪어도 예외를 격리하고 LLM 호출은 계속 진행한다.
+file-manager 조회·업로드 실패 시 `CacheError` / `FileUploadError`를 raise하고 **502로 요청을 중단**한다.
 
 > **주의사항**
 > - **llm-request 테스트·개발 목적으로 동일 로직의 간이 file-manager를 구축해 실험을 진행**했다. 정식 file-manager 담당자가 완성한 버전으로 **나중에 교체 예정**
@@ -747,7 +757,7 @@ file-manager가 일시 장애를 겪어도 예외를 격리하고 LLM 호출은 
 #### 영향 범위
 
 - **에이전트는 file-manager를 몰라도 됨** — `FileInput` 5필드만 구성하면 llm-request가 내부적으로 등록
-- **file-manager 장애 격리**: 로깅 저장소가 내려가도 LLM 호출 경로는 계속 동작
+- **file-manager 장애 시 요청 중단**: `CacheError` / `FileUploadError` raise → 502 반환. 로깅 저장소 장애가 곧 LLM 요청 실패로 이어짐
 - **무결성 검증은 비-목표**: 에이전트가 준 bytes와 file-manager 저장본의 일치 여부는 검증하지 않음 (로깅 조회 빈도가 낮음)
 
 #### 연관 Task
@@ -792,7 +802,9 @@ Gemini가 `404 / not found`로 응답하면 (message 기반 판정):
 1. `_is_gemini_404(exc)` 로 감지
 2. `resolve_files_after_404(...)` 호출 — 해당 checksum의 `file_cache:files_api:{checksum}` 및 `file_cache:context_cache:{hash_key}`(Task 10) 키 삭제
 3. `resolver.resolve_files` 재호출 (Redis MISS 경로로 자연 유입 → 재업로드)
-4. `aio_call` / `aio_stream` 재시도 **1회만** — 두 번째 404는 실제 오류이므로 그대로 raise
+4. 재시도 **1회만** — 두 번째 404는 실제 오류이므로 그대로 raise
+   - `aio_call`: 조건 없이 복구 시도 (응답 반환 전이므로)
+   - `aio_stream`: **`not accumulated`(한 청크도 yield 안 된 상태)일 때만** 복구 시도. 이미 스트리밍이 시작된 경우는 복구 불가 — 그대로 raise
 
 #### 파일 변경 목록
 
@@ -842,7 +854,7 @@ Task 3에서 파일 입력 패러다임이 전환되면서 파일 관리 주체�
 
 ##### Redis 키·TTL
 
-- **키**: `file_cache:context_cache:{hash_key}` (hash_key = SHA-256(`file_checksums` + `model` + `system_instruction`))
+- **키**: `file_cache:context_cache:{hash_key}` (hash_key = SHA-256(canonicalize(`{"file_checksums": sorted(file_checksums), "model": model, "system_instruction": system_instruction}`)))
 - **값**: Gemini가 반환한 Context Cache name
 - **TTL**: 사용자가 준 `context_cache_ttl` (초). `None`이면 **기능 자체 비활성**
 
@@ -860,7 +872,7 @@ Context Cache는 **Files API URI 기반** 파일만 참조 가능. 모든 파일
 ##### 비용 주의
 
 - Context Cache는 **시간당 과금** (저장 시간에 비례해 비용 발생)
-- 같은 파일 조합으로 **시간당 4회 이상 재사용해야** 저장 비용 대비 90% 입력 토큰 할인이 이득 — 반복 호출이 드문 파일에는 opt-in하지 말 것
+- 호출 빈도가 충분히 높아야 저장 비용 대비 이득 (모델·파일 크기에 따라 손익분기 달라짐) — 반복 호출이 드문 파일에는 opt-in하지 말 것
 - `model` / `system_instruction`이 바뀌면 `hash_key`가 달라져 cache miss — 새 캐시가 만들어지므로 같은 파일이라도 모델 교체 시 비용 재발생
 
 #### 파일 변경 목록
@@ -945,9 +957,9 @@ else:  # waiter
         find_cache_fn=lambda: <해당 계층 캐시 조회>,
     )
     # exponential backoff: 0.5s → 1s → 2s → 4s → 최대 10s cap
-    # 주기적으로 find_cache_fn() 호출 — HIT이면 즉시 복귀
-    # standby 키 삭제 감지 시에도 즉시 복귀
-    # timeout 초과 시 waiter가 직접 작업 수행 (Y' Hybrid)
+    # 주기적으로 find_cache_fn() 호출 — HIT이면 캐시 dict 반환
+    # standby 키 삭제 감지 시 None 반환 → waiter가 직접 LLM 호출 (에이전트에 투명, timeout 경로와 동일)
+    # timeout 초과 시에도 None 반환 → waiter가 직접 LLM 호출 (Y' Hybrid)
 ```
 
 ##### lifespan과의 연결 (Task 1 참조)
@@ -1001,14 +1013,14 @@ v0.2.0에서 SDK + Service로 분리되면서(Task 1) **HTTP 경계**가 새로 
 
 | 예외 | HTTP status | `error_type` | 발생 조건 |
 |------|-------------|--------------|-----------|
-| `LLMRequestServiceError` (베이스) | — | — | subclass의 공통 부모 |
+| `LLMRequestServiceError` (베이스) | 500 | `handler` | 직접 raise 시 기본값. LLM 호출 실패·내부 오류 등 |
 | `ValidationError` | 422 | `validation` | 요청 스키마 검증 실패 |
 | `UnsupportedFileTypeError` | 422 | `unsupported_file_type` | Gemini 지원 외 MIME 타입 |
 | `FileTooLargeError` | 422 | `file_too_large` | 단일 파일 2GB 초과 |
 | `FileUploadError` | 502 | `file` | Files API 업로드 실패 |
 | `CacheError` | 502 | `cache` | MDB 조회·저장 실패 |
 
-`main.py`의 FastAPI `exception_handler`가 이 예외들을 잡아 `ErrorResponse` JSON으로 변환해 내려준다.
+`main.py`의 FastAPI `exception_handler`가 이 예외들을 잡아 `ErrorResponse` JSON으로 변환해 내려준다. `LLMRequestServiceError`에 속하지 않는 미처리 예외는 middleware catch-all이 잡아 동일하게 500 / `handler`로 반환한다.
 
 ##### HTTP 에러 응답 형식 (`ErrorResponse`)
 
@@ -1278,7 +1290,7 @@ v0.1.0 에이전트 코드를 v0.2.0으로 옮길 때 확인해야 할 항목.
 - [ ] **meta 접근 방식**: `meta["source"]` → `meta.source` (dict → `RequestMeta` BaseModel) (Task 2)
 - [ ] **파일 인자**: `contents=[..., FileRef]` → `files=[FileInput]` (Task 3)
 - [ ] **MDB 직접 조회**: `doc["meta"]` → `doc["metadata"]`, `doc["elapsed_ms"]` 제거 (Task 5)
-- [ ] **v0.1.0 캐시 문서는 재사용 불가**: 배포 초기 cache miss·LLM 재호출 비용 증가 예상 (Task 4)
+- [ ] **v0.1.0 캐시 키 재사용 불가 (파일 유무 무관)**: `file_checksums` 필드 추가로 canonical JSON 구조가 달라짐 → 배포 초기 cache miss·LLM 재호출 비용 일시 증가 (Task 4)
 
 ### 최소 Before / After
 
@@ -1324,3 +1336,31 @@ response, meta = await llm_request_async(
 )
 print(meta.source)
 ```
+
+---
+
+## 신규 모듈 목록
+
+이번 PR에서 새로 추가된 모듈만 정리합니다. 기존 파일 이동·수정은 각 Task 내 파일 변경 목록 참고.
+
+| 신규 모듈 | 역할 |
+|-----------|------|
+| `sdk/llm_request/_client.py` | httpx `AsyncClient` 싱글톤 — Service 호출 공통 클라이언트 |
+| `sdk/llm_request/aio.py` | `llm_handler.aio` 재수출 (Task 13) |
+| `sdk/llm_request/models.py` | `FileInput` · `RequestMeta` · `Timings` 등 공개 모델 |
+| `sdk/llm_request/exceptions.py` | SDK 예외 계층 (Task 12) |
+| `service/app/main.py` | FastAPI 앱 + lifespan 초기화 |
+| `service/app/config.py` | Pydantic Settings (환경변수) |
+| `service/app/core/providers.py` | MDB / Redis / LLM handler 초기화 + Redis fail-fast |
+| `service/app/core/errors.py` | `LLMRequestServiceError` 계층 (Task 12) |
+| `service/app/routers/request.py` | 4개 엔드포인트 (Task 7) |
+| `service/app/models/requests.py` | HTTP 요청 DTO |
+| `service/app/models/responses.py` | HTTP 응답 DTO |
+| `service/app/logic/file_handler/resolver.py` | inline / Files API 분류 + PDF split 여부 판단 (Task 8) |
+| `service/app/logic/file_handler/uploader.py` | Gemini Files API 업로드 + Context Cache 생성 (Task 10) |
+| `service/app/logic/file_handler/cache_store.py` | Redis URI · Context Cache CRUD (Task 9·10) |
+| `service/app/logic/file_handler/dedup.py` | 3계층 SETNX standby (Task 11) |
+| `service/app/logic/file_handler/splitter.py` | PDF 50 MB 초과 분할 (Task 8) |
+| `service/app/logic/file_handler/validators.py` | MIME · 크기 검증 (Task 8) |
+| `service/app/logic/ingest.py` | file-manager 등록 side-effect (Task 9) |
+| `service/app/logic/types.py` | 서비스 내부 타입 정의 |
