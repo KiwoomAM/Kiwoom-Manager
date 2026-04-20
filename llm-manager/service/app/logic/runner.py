@@ -13,17 +13,17 @@ from llm_handler.aio import stream as aio_stream
 from llm_handler.models import LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
-from app.logic.file_handler import (
+from app.logic.file_processing import (
     ResolvedFiles,
     dedup,
     resolve_files,
     resolve_files_after_404,
 )
-from app.logic.file_handler.validators import (
+from app.logic.file_processing.validators import (
     validate_file_sizes,
     validate_mime_types,
 )
-from app.logic.ingest import ingest_files
+from app.logic.file_register import register_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
 from app.logic.store import cache_get, save_result
@@ -436,7 +436,7 @@ async def llm_request_async(
         files = None
 
     if files:
-        await ingest_files(files)
+        await register_files(files)
         validate_mime_types(files)
         validate_file_sizes(files)
 
@@ -560,7 +560,7 @@ async def llm_request_stream_async(
         files = None
 
     if files:
-        await ingest_files(files)
+        await register_files(files)
         validate_mime_types(files)
         validate_file_sizes(files)
 

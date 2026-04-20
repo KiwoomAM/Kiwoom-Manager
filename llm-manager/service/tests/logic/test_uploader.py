@@ -1,4 +1,4 @@
-"""file_handler/uploader.py 테스트.
+"""file_processing/uploader.py 테스트.
 
 llm-handler SDK 호출을 mock으로 검증한다.
 """
@@ -13,7 +13,7 @@ import pytest
 
 from llm_handler.models import CacheRef, FileRef
 
-from app.logic.file_handler.uploader import (
+from app.logic.file_processing.uploader import (
     create_context_cache,
     upload_pdf_parts,
 )
@@ -52,7 +52,7 @@ class TestUploadPdfParts:
         _create_pdf(pdf_path, num_pages=5)
 
         with patch(
-            "app.logic.file_handler.uploader.upload_file",
+            "app.logic.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -77,10 +77,10 @@ class TestUploadPdfParts:
             return _fake_file_ref(uri=f"https://example.com/files/part{call_count}")
 
         with patch(
-            "app.logic.file_handler.uploader.upload_file",
+            "app.logic.file_processing.uploader.upload_file",
             side_effect=_mock_upload,
         ), patch(
-            "app.logic.file_handler.splitter._MERGE_LIMIT_MB", 0,
+            "app.logic.file_processing.splitter._MERGE_LIMIT_MB", 0,
         ):
             refs = await upload_pdf_parts(pdf_path, target_mb=target_mb)
             assert len(refs) >= 2
@@ -96,7 +96,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "app.logic.file_handler.uploader.upload_file",
+            "app.logic.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -117,7 +117,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "app.logic.file_handler.uploader.upload_file",
+            "app.logic.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             side_effect=RuntimeError("업로드 실패"),
         ):
@@ -137,7 +137,7 @@ class TestCreateContextCache:
     @pytest.mark.asyncio
     async def test_success(self):
         with patch(
-            "app.logic.file_handler.uploader._aio_create_cache",
+            "app.logic.file_processing.uploader._aio_create_cache",
             new_callable=AsyncMock,
             return_value=_fake_cache_ref(),
         ) as mock:
@@ -164,7 +164,7 @@ class TestCreateContextCache:
             return _fake_cache_ref()
 
         with patch(
-            "app.logic.file_handler.uploader._aio_create_cache",
+            "app.logic.file_processing.uploader._aio_create_cache",
             side_effect=_flaky,
         ):
             ref = await create_context_cache(
@@ -177,7 +177,7 @@ class TestCreateContextCache:
     async def test_no_retry_on_non_retryable(self):
         """retryable이 아닌 에러는 즉시 raise."""
         with patch(
-            "app.logic.file_handler.uploader._aio_create_cache",
+            "app.logic.file_processing.uploader._aio_create_cache",
             new_callable=AsyncMock,
             side_effect=ValueError("잘못된 입력"),
         ):

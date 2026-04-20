@@ -1,4 +1,4 @@
-"""file_handler/cache_store.py 테스트.
+"""file_processing/cache_store.py 테스트.
 
 Redis 미연결 시 메모리 fallback으로 동작한다.
 """
@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 
 from llm_handler.models import FileRef
 
-from app.logic.file_handler import cache_store
-from app.logic.file_handler.cache_store import (
+from app.logic.file_processing import cache_store
+from app.logic.file_processing.cache_store import (
     FILES_API_TTL,
     FILES_API_TTL_FLOOR,
     compute_files_api_ttl,

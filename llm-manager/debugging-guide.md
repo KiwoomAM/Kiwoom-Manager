@@ -43,7 +43,7 @@ llm_request_async()
                 │ 1) prepare()                 → keying.py (cache_key 생성)
                 │                              → done_check.py (MDB 조회)
                 │                              → standby 획득 (dedup.py)
-                │ 2) resolve_files()           → file_handler/resolver.py
+                │ 2) resolve_files()           → file_processing/resolver.py
                 │                               ├ validators.py
                 │                               ├ uploader.py + splitter.py
                 │                               └ cache_store.py (Redis)
@@ -198,7 +198,7 @@ llm_request_async()
 ### 2.4 dedup / standby
 
 **역할**: 동일 키로 동시 요청이 몰릴 때 leader 하나만 실제 작업, 나머지는 대기 (Cache Stampede 방지).
-**관련 파일**: [dedup.py](service/app/logic/file_handler/dedup.py), [runner.py](service/app/logic/runner.py)
+**관련 파일**: [dedup.py](service/app/logic/file_processing/dedup.py), [runner.py](service/app/logic/runner.py)
 
 #### 🔴 Redis 미연결
 
@@ -229,7 +229,7 @@ llm_request_async()
 > ```
 
 - **언제**: leader가 TTL 안에 끝내지 못해 waiter가 대기 포기
-- **의미**: waiter가 직접 작업 수행 (중복 작업 가능). 동일 현상의 상위 버전이 [runner.py:464, 591](service/app/logic/runner.py#L464), [resolver.py:353, 386](service/app/logic/file_handler/resolver.py#L353)에서 재등장
+- **의미**: waiter가 직접 작업 수행 (중복 작업 가능). 동일 현상의 상위 버전이 [runner.py:464, 591](service/app/logic/runner.py#L464), [resolver.py:353, 386](service/app/logic/file_processing/resolver.py#L353)에서 재등장
 - **확인할 것**: 빈도 많으면 `standby_ttl_seconds` 상향, LLM/업로드 실제 지연 여부
 
 #### 🟡 release 실패 (무시)
@@ -247,7 +247,7 @@ llm_request_async()
 ### 2.5 파일 검증 (validators.py)
 
 **역할**: 업로드 가능 여부 사전 검증.
-**관련 파일**: [validators.py](service/app/logic/file_handler/validators.py)
+**관련 파일**: [validators.py](service/app/logic/file_processing/validators.py)
 
 #### 🔴 지원하지 않는 mime 타입
 
@@ -277,7 +277,7 @@ llm_request_async()
 ### 2.6 파일 처리 — Files API / Context Cache
 
 **역할**: 파일 크기/개수에 따라 inline / Files API / split / context cache 분기.
-**관련 파일**: [resolver.py](service/app/logic/file_handler/resolver.py), [uploader.py](service/app/logic/file_handler/uploader.py), [splitter.py](service/app/logic/file_handler/splitter.py), [cache_store.py](service/app/logic/file_handler/cache_store.py)
+**관련 파일**: [resolver.py](service/app/logic/file_processing/resolver.py), [uploader.py](service/app/logic/file_processing/uploader.py), [splitter.py](service/app/logic/file_processing/splitter.py), [cache_store.py](service/app/logic/file_processing/cache_store.py)
 
 #### 🟢 파일별 경로 결정 로그
 
@@ -648,17 +648,17 @@ llm_request_async()
 
 ### "Gemini 404가 나와요"
 - 흐름: 대용량 파일의 Files API URI가 Gemini에서 만료 (Redis TTL < Gemini TTL)
-- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:389, 508](service/app/logic/runner.py#L389)) → `Gemini 404 자동 복구` ([resolver.py:429](service/app/logic/file_handler/resolver.py#L429))
+- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:389, 508](service/app/logic/runner.py#L389)) → `Gemini 404 자동 복구` ([resolver.py:429](service/app/logic/file_processing/resolver.py#L429))
 - 자동 복구: Redis invalidate + 재업로드 (1회 시도)
-- 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:101](service/app/logic/file_handler/cache_store.py#L101) 경고 체크
+- 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:101](service/app/logic/file_processing/cache_store.py#L101) 경고 체크
 
 ### "SDK에서 ServiceError error_type=file"
-- Service 쪽 선행 로그: [resolver.py:187 Files API 업로드 실패](service/app/logic/file_handler/resolver.py#L187) 또는 [resolver.py:253 Context cache 생성 실패](service/app/logic/file_handler/resolver.py#L253)
-- 더 앞: [uploader.py:100 create_cache 재시도](service/app/logic/file_handler/uploader.py#L100)
+- Service 쪽 선행 로그: [resolver.py:187 Files API 업로드 실패](service/app/logic/file_processing/resolver.py#L187) 또는 [resolver.py:253 Context cache 생성 실패](service/app/logic/file_processing/resolver.py#L253)
+- 더 앞: [uploader.py:100 create_cache 재시도](service/app/logic/file_processing/uploader.py#L100)
 - 실제 원인: llm-handler traceback 또는 provider 쪽 상태
 
 ### "SDK에서 ServiceError error_type=cache"
-- Service 쪽 선행 로그: [resolver.py:216/269/312/327](service/app/logic/file_handler/resolver.py#L216) Redis CRUD 실패
+- Service 쪽 선행 로그: [resolver.py:216/269/312/327](service/app/logic/file_processing/resolver.py#L216) Redis CRUD 실패
 - 원인: Redis 장애. `redis-cli ping` 확인
 - 기동 차단도 같이 뜰 수 있음: [providers.py:25 Redis 연결 실패](service/app/core/providers.py#L25)
 
@@ -675,7 +675,7 @@ llm_request_async()
 
 ### "같은 요청이 동시에 들어왔는데 둘 다 LLM 호출됨"
 - 기대: leader/waiter 구조로 한 번만 호출
-- 의심 로그: `standby timeout` 계열 ([dedup.py:130](service/app/logic/file_handler/dedup.py#L130), [runner.py:464/591](service/app/logic/runner.py#L464), [resolver.py:353/386](service/app/logic/file_handler/resolver.py#L353))
+- 의심 로그: `standby timeout` 계열 ([dedup.py:130](service/app/logic/file_processing/dedup.py#L130), [runner.py:464/591](service/app/logic/runner.py#L464), [resolver.py:353/386](service/app/logic/file_processing/resolver.py#L353))
 - 의미: leader가 TTL 안에 끝내지 못함. `standby_ttl_seconds` 상향 검토
 
 ### "서비스가 안 뜹니다"

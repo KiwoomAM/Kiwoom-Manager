@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.logic.file_handler import dedup
+from app.logic.file_processing import dedup
 from tests.conftest import (  # noqa: F401 — re-export for `from conftest import ...`
     SAMPLE_LLM_INPUT,
     SAMPLE_RESPONSE,

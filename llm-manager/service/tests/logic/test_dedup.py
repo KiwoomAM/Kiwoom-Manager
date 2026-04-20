@@ -1,4 +1,4 @@
-"""file_handler/dedup.py 테스트.
+"""file_processing/dedup.py 테스트.
 
 get_client()를 in-memory fake Redis 클라이언트로 mock하여
 실제 Redis 없이 SETNX/GET/DEL 동작을 검증한다.
@@ -13,8 +13,8 @@ import asyncio
 
 import pytest
 
-from app.logic.file_handler import dedup
-from app.logic.file_handler.dedup import (
+from app.logic.file_processing import dedup
+from app.logic.file_processing.dedup import (
     _make_standby_key,
     release_standby,
     try_acquire_standby,

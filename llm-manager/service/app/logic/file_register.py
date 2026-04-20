@@ -1,4 +1,4 @@
-"""파일 인입 단계.
+"""파일 등록 단계.
 
 에이전트가 보낸 FileInput 리스트를 file-manager에 등록한다.
 check_cache로 존재 확인 → 없으면 upload_file. file-manager의 내부 식별자(file_path 등)는
@@ -19,7 +19,7 @@ from app.models.requests import FileInput
 logger = logging.getLogger(__name__)
 
 
-async def ingest_files(inputs: list[FileInput]) -> list[FileInput]:
+async def register_files(inputs: list[FileInput]) -> list[FileInput]:
     """각 FileInput을 file-manager에 등록. 신규 파일이면 업로드.
 
     side-effect 전용 — 입력 리스트를 그대로 반환한다. 파이프라인은 이후

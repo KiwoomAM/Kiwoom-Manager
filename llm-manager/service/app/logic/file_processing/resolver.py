@@ -27,8 +27,8 @@ from llm_handler.aio import upload_file
 from llm_handler.models import FileRef, Part
 
 from app.core.errors import CacheError, FileUploadError
-from app.logic.file_handler import cache_store, dedup
-from app.logic.file_handler.uploader import create_context_cache, upload_pdf_parts
+from app.logic.file_processing import cache_store, dedup
+from app.logic.file_processing.uploader import create_context_cache, upload_pdf_parts
 from app.logic.keying import make_file_checksum
 from app.models.requests import FileInput
 

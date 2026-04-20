@@ -71,7 +71,7 @@
 | 신규 | `service/app/routers/request.py` | 4개 엔드포인트 정의 (상세 Task 7) |
 | 신규 | `service/app/models/requests.py` · `responses.py` | HTTP 요청/응답 DTO |
 
-> `service/app/logic/file_handler/` (file-manager와 다른 **내부 파일 처리 모듈**)는 Task 8 ~ 11에서 별도로 다룬다.
+> `service/app/logic/file_processing/` (file-manager와 다른 **내부 파일 처리 모듈**)는 Task 8 ~ 11에서 별도로 다룬다.
 
 #### 변경된 코드 — 사용자 관점 Before / After
 
@@ -317,9 +317,9 @@ SDK / Service 양쪽에 동일 스키마의 Pydantic BaseModel.
 |------|------|------|
 | 신규 | `sdk/llm_request/models.py` | `FileInput`, `FileKeyingMeta` 공개 export |
 | 신규 | `service/app/models/requests.py` | `FileInput`, `FileKeyingMeta`, `LLMRequestBody.files`, `DoneCheckBody.files` |
-| 신규 | `service/app/logic/file_handler/` | 전체 모듈 (resolver / uploader / splitter / cache_store / dedup / validators — Task 7·9·10·11에서 세부) |
+| 신규 | `service/app/logic/file_processing/` | 전체 모듈 (resolver / uploader / splitter / cache_store / dedup / validators — Task 7·9·10·11에서 세부) |
 | 변경 | `sdk/llm_request/__init__.py` | `llm_request_async` 등 4개 public 함수에 `files` 인자 추가, `done_check`에 `FileKeyingMeta` 리스트 |
-| 변경 | `service/app/logic/runner.py` | `files` 받아 `prepare()` / `ingest_files()` / validators / `resolve_files()` 연결 |
+| 변경 | `service/app/logic/runner.py` | `files` 받아 `prepare()` / `register_files()` / validators / `resolve_files()` 연결 |
 
 #### 사용자 관점 Before / After
 
@@ -356,7 +356,7 @@ response, meta = await llm_request_async(
 
 #### 영향 범위
 
-- **Breaking 사용 패턴**: `contents` 안에 `FileRef` / `Part` 직접 삽입하던 기존 방식은 **비권장**. 동작 자체는 가능하지만 file_handler 파이프라인을 통과하지 않아 inline/Files API 자동 분기·URI 캐싱·PDF split 자동화 혜택을 받지 못함
+- **Breaking 사용 패턴**: `contents` 안에 `FileRef` / `Part` 직접 삽입하던 기존 방식은 **비권장**. 동작 자체는 가능하지만 file_processing 파이프라인을 통과하지 않아 inline/Files API 자동 분기·URI 캐싱·PDF split 자동화 혜택을 받지 못함
 - **에이전트 파일 처리 코드 단순화**: 크기 임계값·URI 만료·split 로직 모두 Service 책임
 - **캐시 일관성 개선**: 파일 내용 기반 checksum이라 같은 파일이면 URI가 달라도 cache hit
 - **주의**: `file_name` / `file_size` / `file_mtime` 3필드는 실제 파일에서 추출한 값과 정확히 일치해야 함 — 잘못된 값은 cache miss 반복의 원인
@@ -719,10 +719,10 @@ SDK 클라이언트가 `data: ` 접두를 파싱하여 JSON 또는 `[DONE]` 센�
 
 #### 코드 세부 설명
 
-`service/app/logic/ingest.py` 신설. runner의 public 함수(`llm_request_async` / `llm_request_stream_async`)가 `FileInput` 유효성 검증 직전에 호출한다.
+`service/app/logic/file_register.py` 신설. runner의 public 함수(`llm_request_async` / `llm_request_stream_async`)가 `FileInput` 유효성 검증 직전에 호출한다.
 
 ```python
-async def ingest_files(inputs: list[FileInput]) -> list[FileInput]:
+async def register_files(inputs: list[FileInput]) -> list[FileInput]:
     """Service 진입 시 file-manager에 파일 존재 확인 + 필요 시 업로드.
 
     side-effect 전용 — 입력 리스트를 그대로 반환한다. file-manager가 부여하는
@@ -750,8 +750,8 @@ file-manager 조회·업로드 실패 시 `CacheError` / `FileUploadError`를 ra
 
 | 유형 | 경로 | 비고 |
 |------|------|------|
-| 신규 | `service/app/logic/ingest.py` | `ingest_files(files)` — side-effect 등록 로직 |
-| 변경 | `service/app/logic/runner.py` | `llm_request_async` / `llm_request_stream_async` 진입 시 `ingest_files` 호출 |
+| 신규 | `service/app/logic/file_register.py` | `register_files(files)` — side-effect 등록 로직 |
+| 변경 | `service/app/logic/runner.py` | `llm_request_async` / `llm_request_stream_async` 진입 시 `register_files` 호출 |
 | 신규 (별도 패키지) | `packages/file-manager/` | 사후 로깅·감사용 파일 저장 서비스. **간이 구현 상태 — 참고사항 C** |
 
 #### 영향 범위
@@ -789,7 +789,7 @@ v0.1.0에는 Service가 Gemini Files API에 업로드하는 경로 자체가 없
 
 ##### 업로드 경로
 
-`file_handler/resolver.py` 의 Files API 분기:
+`file_processing/resolver.py` 의 Files API 분기:
 
 1. `file_cache:files_api:{checksum}` 조회
 2. **HIT**: 해당 URI로 Part 구성 → 업로드 생략
@@ -810,10 +810,10 @@ Gemini가 `404 / not found`로 응답하면 (message 기반 판정):
 
 | 유형 | 경로 | 비고 |
 |------|------|------|
-| 신규 | `service/app/logic/file_handler/cache_store.py` | Redis `files_api` / `context_cache` get·save·delete |
-| 신규 | `service/app/logic/file_handler/uploader.py` | `upload_file()` Gemini 업로드 + Redis 저장 |
-| 신규 | `service/app/logic/file_handler/resolver.py` | `resolve_files` / `resolve_files_after_404` — 분류 + URI 캐시 + 404 복구 orchestration |
-| 신규 | `service/app/logic/file_handler/splitter.py` | PDF >50MB 자동 분할 |
+| 신규 | `service/app/logic/file_processing/cache_store.py` | Redis `files_api` / `context_cache` get·save·delete |
+| 신규 | `service/app/logic/file_processing/uploader.py` | `upload_file()` Gemini 업로드 + Redis 저장 |
+| 신규 | `service/app/logic/file_processing/resolver.py` | `resolve_files` / `resolve_files_after_404` — 분류 + URI 캐시 + 404 복구 orchestration |
+| 신규 | `service/app/logic/file_processing/splitter.py` | PDF >50MB 자동 분할 |
 | 변경 | `service/app/logic/runner.py` | `aio_call` / `aio_stream` try/except → `_is_gemini_404` 감지 시 `resolve_files_after_404` + 1회 재시도 |
 
 #### 영향 범위
@@ -858,7 +858,7 @@ Task 3에서 파일 입력 패러다임이 전환되면서 파일 관리 주체�
 - **값**: Gemini가 반환한 Context Cache name
 - **TTL**: 사용자가 준 `context_cache_ttl` (초). `None`이면 **기능 자체 비활성**
 
-##### 동작 분기 (`file_handler/resolver.py`)
+##### 동작 분기 (`file_processing/resolver.py`)
 
 1. `context_cache_ttl`이 `None`이면 이 경로 스킵
 2. Redis `file_cache:context_cache:{hash_key}` 조회
@@ -879,9 +879,9 @@ Context Cache는 **Files API URI 기반** 파일만 참조 가능. 모든 파일
 
 | 유형 | 경로 | 비고 |
 |------|------|------|
-| 변경 | `service/app/logic/file_handler/cache_store.py` | `context_cache` get / save / delete 추가 |
-| 변경 | `service/app/logic/file_handler/uploader.py` | `create_context_cache()` Gemini 호출 래퍼 |
-| 변경 | `service/app/logic/file_handler/resolver.py` | `resolve_files`에 context_cache 분기 + `cached_content` 자동 주입 + inline→Files API 승급 |
+| 변경 | `service/app/logic/file_processing/cache_store.py` | `context_cache` get / save / delete 추가 |
+| 변경 | `service/app/logic/file_processing/uploader.py` | `create_context_cache()` Gemini 호출 래퍼 |
+| 변경 | `service/app/logic/file_processing/resolver.py` | `resolve_files`에 context_cache 분기 + `cached_content` 자동 주입 + inline→Files API 승급 |
 
 #### 영향 범위
 
@@ -926,7 +926,7 @@ v0.1.0은 라이브러리 구조라 dedup 개념 자체가 없었다. v0.2.0은 
 
 #### 코드 세부 설명
 
-##### standby 키 구조 (`service/app/logic/file_handler/dedup.py`)
+##### standby 키 구조 (`service/app/logic/file_processing/dedup.py`)
 
 각 계층이 자체 namespace의 Redis 키를 쓴다.
 
@@ -970,8 +970,8 @@ Service가 leader 작업 도중 **crash**로 종료되면 standby 키가 Redis�
 
 | 유형 | 경로 | 비고 |
 |------|------|------|
-| 신규 | `service/app/logic/file_handler/dedup.py` | `try_acquire_standby` / `release_standby` / `wait_for_standby_release` |
-| 변경 | `service/app/logic/file_handler/resolver.py` | files_api 업로드 + context_cache 생성 경로에 dedup 적용 |
+| 신규 | `service/app/logic/file_processing/dedup.py` | `try_acquire_standby` / `release_standby` / `wait_for_standby_release` |
+| 변경 | `service/app/logic/file_processing/resolver.py` | files_api 업로드 + context_cache 생성 경로에 dedup 적용 |
 | 변경 | `service/app/logic/runner.py` | agent_llm 계층 dedup — cache miss 시 leader 선점 후 LLM 호출, waiter는 MDB 조회 |
 
 #### 영향 범위
@@ -1356,11 +1356,11 @@ print(meta.source)
 | `service/app/routers/request.py` | 4개 엔드포인트 (Task 7) |
 | `service/app/models/requests.py` | HTTP 요청 DTO |
 | `service/app/models/responses.py` | HTTP 응답 DTO |
-| `service/app/logic/file_handler/resolver.py` | inline / Files API 분류 + PDF split 여부 판단 (Task 8) |
-| `service/app/logic/file_handler/uploader.py` | Gemini Files API 업로드 + Context Cache 생성 (Task 10) |
-| `service/app/logic/file_handler/cache_store.py` | Redis URI · Context Cache CRUD (Task 9·10) |
-| `service/app/logic/file_handler/dedup.py` | 3계층 SETNX standby (Task 11) |
-| `service/app/logic/file_handler/splitter.py` | PDF 50 MB 초과 분할 (Task 8) |
-| `service/app/logic/file_handler/validators.py` | MIME · 크기 검증 (Task 8) |
-| `service/app/logic/ingest.py` | file-manager 등록 side-effect (Task 9) |
+| `service/app/logic/file_processing/resolver.py` | inline / Files API 분류 + PDF split 여부 판단 (Task 8) |
+| `service/app/logic/file_processing/uploader.py` | Gemini Files API 업로드 + Context Cache 생성 (Task 10) |
+| `service/app/logic/file_processing/cache_store.py` | Redis URI · Context Cache CRUD (Task 9·10) |
+| `service/app/logic/file_processing/dedup.py` | 3계층 SETNX standby (Task 11) |
+| `service/app/logic/file_processing/splitter.py` | PDF 50 MB 초과 분할 (Task 8) |
+| `service/app/logic/file_processing/validators.py` | MIME · 크기 검증 (Task 8) |
+| `service/app/logic/file_register.py` | file-manager 등록 side-effect (Task 9) |
 | `service/app/logic/types.py` | 서비스 내부 타입 정의 |

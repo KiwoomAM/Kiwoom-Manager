@@ -19,8 +19,8 @@ import asyncio
 import pytest
 from llm_handler.models import CacheRef, FileRef
 
-from app.logic.file_handler import cache_store
-from app.logic.file_handler.resolver import _process_files_api
+from app.logic.file_processing import cache_store
+from app.logic.file_processing.resolver import _process_files_api
 from app.logic.keying import make_file_checksum
 from app.models.requests import FileInput
 
@@ -75,7 +75,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/concurrent-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.upload_file", fake_upload_file,
+            "app.logic.file_processing.resolver.upload_file", fake_upload_file,
         )
 
         async def _run():
@@ -110,7 +110,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/slow-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.upload_file", very_slow_upload,
+            "app.logic.file_processing.resolver.upload_file", very_slow_upload,
         )
 
         async def _run():
@@ -143,7 +143,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/parallel-{upload_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.upload_file", fake_upload_file,
+            "app.logic.file_processing.resolver.upload_file", fake_upload_file,
         )
 
         async def _run(fi, cs):
@@ -192,7 +192,7 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/ctx-{create_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.create_context_cache",
+            "app.logic.file_processing.resolver.create_context_cache",
             fake_create_context_cache,
         )
 
@@ -234,7 +234,7 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/slow-{create_count}")
 
         monkeypatch.setattr(
-            "app.logic.file_handler.resolver.create_context_cache",
+            "app.logic.file_processing.resolver.create_context_cache",
             very_slow_create,
         )
 

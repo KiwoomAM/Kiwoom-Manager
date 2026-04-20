@@ -1,4 +1,4 @@
-"""file_handler/splitter.py 테스트."""
+"""file_processing/splitter.py 테스트."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import fitz  # PyMuPDF
 import pytest
 
-from app.logic.file_handler.splitter import split_pdf
+from app.logic.file_processing.splitter import split_pdf
 
 
 # ── 헬퍼: 테스트용 PDF 생성 ─────────────────────────────────────
@@ -51,7 +51,7 @@ class TestSplitPdf:
         # target을 파일 크기의 절반 이하로 설정 → 최소 2파트
         target_mb = (file_size / (1024 * 1024)) / 2
 
-        with patch("app.logic.file_handler.splitter._MERGE_LIMIT_MB", merge_limit):
+        with patch("app.logic.file_processing.splitter._MERGE_LIMIT_MB", merge_limit):
             result = split_pdf(pdf_path, target_mb=max(target_mb, 0.001))
 
         assert len(result) >= 2

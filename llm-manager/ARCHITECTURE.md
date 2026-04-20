@@ -35,7 +35,7 @@ packages/llm-request/
 │   │       ├── store.py          # MDB 저장/조회
 │   │       ├── meta.py           # 메타데이터 추출
 │   │       ├── orchestrator.py   # 배치 병렬 처리
-│   │       └── file_handler/
+│   │       └── file_processing/
 │   │           ├── resolver.py   # 파일 크기별 분기
 │   │           ├── cache_store.py # Redis CRUD
 │   │           ├── uploader.py   # Files API 업로드
@@ -116,11 +116,11 @@ llm_request/
 ├── meta.py ─────────────────────→  📋 service/app/logic/meta.py (그대로)
 ├── orchestrator.py ─────────────→  📋 service/app/logic/orchestrator.py (그대로)
 │
-├── file_handler/
-│   ├── resolver.py ─────────────→  📋 service/app/logic/file_handler/resolver.py
-│   ├── cache_store.py ──────────→  📋 service/app/logic/file_handler/cache_store.py
-│   ├── uploader.py ─────────────→  📋 service/app/logic/file_handler/uploader.py
-│   └── splitter.py ─────────────→  📋 service/app/logic/file_handler/splitter.py
+├── file_processing/
+│   ├── resolver.py ─────────────→  📋 service/app/logic/file_processing/resolver.py
+│   ├── cache_store.py ──────────→  📋 service/app/logic/file_processing/cache_store.py
+│   ├── uploader.py ─────────────→  📋 service/app/logic/file_processing/uploader.py
+│   └── splitter.py ─────────────→  📋 service/app/logic/file_processing/splitter.py
 │
 └── __init__.py ─────────────────→  ✨ sdk/llm_request/__init__.py (새로 작성)
                                      (동일 인터페이스, 내부는 HTTP 호출)
@@ -343,7 +343,7 @@ Service (별도 서버)
 
 ## Service — File Handler
 
-### `file_handler/resolver.py` — 파일 처리 분기
+### `file_processing/resolver.py` — 파일 처리 분기
 
 | 종류 | 이름 | 설명 |
 |------|------|------|
@@ -354,7 +354,7 @@ Service (별도 서버)
 | const | `_INLINE_LIMIT` | 20MB |
 | const | `_PDF_SPLIT_LIMIT` | 50MB |
 
-### `file_handler/cache_store.py` — Redis CRUD
+### `file_processing/cache_store.py` — Redis CRUD
 
 | 종류 | 이름 | 설명 |
 |------|------|------|
@@ -369,7 +369,7 @@ Service (별도 서버)
 | const | `FILES_API_TTL` | 169200초 (47시간) |
 | const | `CONTEXT_CACHE_DEFAULT_TTL` | 3600초 (1시간) |
 
-### `file_handler/uploader.py` — 업로드 + Context Cache
+### `file_processing/uploader.py` — 업로드 + Context Cache
 
 | 종류 | 이름 | 설명 |
 |------|------|------|
@@ -378,7 +378,7 @@ Service (별도 서버)
 | const | `_MAX_RETRIES` | 2 |
 | const | `_RETRY_DELAY` | 5초 |
 
-### `file_handler/splitter.py` — PDF 분할
+### `file_processing/splitter.py` — PDF 분할
 
 | 종류 | 이름 | 설명 |
 |------|------|------|

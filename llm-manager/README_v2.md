@@ -60,8 +60,8 @@ packages/llm-request/
 │   │       ├── store.py        # MongoDB 캐시 저장
 │   │       ├── meta.py         # 저장용 메타 생성
 │   │       ├── types.py        # 내부 타입 정의
-│   │       ├── ingest.py       # file-manager에 파일 등록 (Service 진입 시점)
-│   │       └── file_handler/
+│   │       ├── file_register.py       # file-manager에 파일 등록 (Service 진입 시점)
+│   │       └── file_processing/
 │   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
 │   │           ├── uploader.py    # Files API 업로드
 │   │           ├── cache_store.py # URI 캐시 (Redis)
@@ -285,7 +285,10 @@ response, meta = await llm_request_async(
 "cache_hit"              # 캐시 히트
 "cache_miss"             # 캐시 미스
 "cache_error_fallback"   # 캐시 조회 오류 → LLM fallback
+"cache_deserialize_error" # 캐시 역직렬화 실패 → LLM 재호출
 "standby_wait_hit"       # Dedup standby 대기 중 다른 요청이 완료
+"cache_off_save_off"     # cache_mode=False, save_mode=False
+"cache_off_save_on"      # cache_mode=False, save_mode=True
 ```
 
 ## 반환 타입
@@ -451,7 +454,7 @@ llm_input + files
 ② 캐시 조회 (done_check → MongoDB)
      HIT  → 즉시 반환
      MISS ↓
-③ 파일 처리 (file_handler)
+③ 파일 처리 (file_processing)
   ↓
 ④ LLM 호출 (llm_handler.aio.call)
   ↓
@@ -578,6 +581,7 @@ LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 | `database` | `str \| null` | `null` | MDB database 이름 (기본 `kw_ai`) |
 | `context_cache_ttl` | `int \| null` | `null` | Gemini Context Cache 수명 (초). `null` = 생성 안 함 |
 | `standby_ttl_seconds` | `int` | `600` | Cache stampede dedup 대기 timeout (초) |
+| `debug` | `bool` | `false` | `true`면 응답 `meta.route_reason`에 처리 경로 포함 |
 
 **FileInput 구조**
 
