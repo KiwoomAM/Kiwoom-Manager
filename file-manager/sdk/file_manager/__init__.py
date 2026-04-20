@@ -7,23 +7,24 @@ File Manager Handler - 파일 저장/캐시/반환 관리 모듈
 
     fm = FileManagerHandler()
 
-    # 캐시 체크
-    result = await fm.check_cache({
-        "file_name": "report.xlsx",
-        "file_mtime": 1713000000,
-        "file_size": 524288,
-    })
+    # 1) 3개 필드에서 5개 필드 메타데이터 구성 (mime_type/extension 로컬 추출)
+    metadata = fm.build_metadata(
+        file_name="report.xlsx",
+        file_mtime=1713000000,
+        file_size=524288,
+    )
 
-    # 캐시 미스 시 업로드
-    if not result["hit"]:
-        metadata = await fm.upload_file(file_data, {
-            "file_name": "report.xlsx",
-            "file_mtime": 1713000000,
-            "file_size": 524288,
-        })
+    # 2) 캐시 체크
+    result = await fm.check_cache(metadata)
 
-    # 파일 반환
-    file_bytes = await fm.get_file("a1b2c3d4e5f6.xlsx")
+    # 3) 히트면 file_path 병합, 미스면 업로드 후 병합
+    if result["hit"]:
+        metadata["file_path"] = result["file_path"]
+    else:
+        metadata["file_path"] = await fm.upload_file(file_data, metadata)
+
+    # 4) 실제 파일이 필요할 때
+    file_bytes = await fm.get_file(metadata["file_path"])
 
     await fm.close()
 """

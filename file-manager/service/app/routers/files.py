@@ -3,25 +3,23 @@
 File Manager Service 파일 관리 라우터
 
 엔드포인트:
-  POST /v1/files/check-cache  — 캐시 체크 (메타데이터 3개로 MongoDB 조회)
-  POST /v1/files/upload        — 파일 업로드 (파일 + 메타데이터)
+  POST /v1/files/check-cache  — 캐시 체크 (캐시 키 3개로 MongoDB 조회, file_path 반환)
+  POST /v1/files/upload        — 파일 업로드 (파일 + 5개 필드 메타데이터, file_path 반환)
   GET  /v1/files/{file_path}   — 파일 반환 (File Server에서 꺼내기)
 """
 
 import logging
-import mimetypes
 import uuid
-from pathlib import PurePosixPath
 from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, File, Form, Response, UploadFile
 
 from app.config import settings
-from app.core.errors import MDBConnectionError
-from app.core import storage
+from app.core.errors import MDBConnectionError, MetadataNotFoundError
 from app.models.requests import CheckCacheRequest
-from app.models.responses import CacheCheckResponse, FileMetadataResponse
+from app.models.responses import CacheCheckResponse, UploadResponse
+from file_handler import read_file, save_file
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +96,7 @@ async def _mdb_insert_one(document: dict) -> str:
 
 @router.post("/check-cache", response_model=CacheCheckResponse)
 async def check_cache(req: CheckCacheRequest):
-    """캐시 체크: file_name + file_mtime + file_size로 MongoDB 조회"""
+    """캐시 체크: 캐시 키 3개로 MongoDB 조회 → file_path만 반환"""
 
     filter = {
         "metadata.file_name": req.file_name,
@@ -111,36 +109,34 @@ async def check_cache(req: CheckCacheRequest):
     if doc is None:
         return CacheCheckResponse(hit=False)
 
-    metadata = doc["metadata"]
     return CacheCheckResponse(
         hit=True,
-        metadata=FileMetadataResponse(**metadata),
+        file_path=doc["metadata"]["file_path"],
     )
 
 
-@router.post("/upload", response_model=FileMetadataResponse)
+@router.post("/upload", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
     file_name: str = Form(...),
     file_mtime: int = Form(...),
     file_size: int = Form(...),
+    mime_type: str = Form(...),
+    extension: str = Form(...),
 ):
-    """파일 업로드: 파일 저장 + 메타데이터 MongoDB 저장"""
+    """파일 업로드: 파일 저장 + 6개 필드 MongoDB 저장 → file_path만 반환.
 
-    # 1) UUID 생성 및 file_path 구성
-    file_ext = PurePosixPath(file_name).suffix
-    file_path = f"{uuid.uuid4().hex}{file_ext}"
+    mime_type/extension은 SDK가 추출해서 전달하며, FM Service는 재추출하지 않는다.
+    """
 
-    # 2) mime_type, extension 추출
-    mime_type, _ = mimetypes.guess_type(file_name)
-    mime_type = mime_type or "application/octet-stream"
-    extension = PurePosixPath(file_name).suffix.lstrip(".")
+    # 1) UUID 생성 및 file_path 구성 (extension은 SDK가 전달한 값 사용)
+    file_path = f"{uuid.uuid4().hex}.{extension}" if extension else uuid.uuid4().hex
 
-    # 3) File Server에 저장
+    # 2) File Server에 저장
     file_data = await file.read()
-    await storage.save_file(file_path, file_data)
+    await save_file(file_path, file_data)
 
-    # 4) 메타데이터 구성
+    # 3) 메타데이터 구성 (SDK가 준 mime_type/extension을 그대로 사용)
     metadata = {
         "file_name": file_name,
         "file_mtime": file_mtime,
@@ -150,28 +146,30 @@ async def upload_file(
         "extension": extension,
     }
 
-    # 5) MDB Handler에 메타데이터 저장
+    # 4) MDB Handler에 메타데이터 저장
     await _mdb_insert_one({"metadata": metadata})
 
     logger.info("파일 업로드 완료: %s → %s", file_name, file_path)
-    return FileMetadataResponse(**metadata)
+    return UploadResponse(file_path=file_path)
 
 
 @router.get("/{file_path:path}")
 async def get_file(file_path: str):
-    """File Server에서 파일을 꺼내 반환"""
+    """File Server에서 파일을 꺼내 반환.
 
-    file_data = await storage.read_file(file_path)
+    Content-Disposition 용 원본 파일명과 mime_type은 MongoDB에서 조회한다.
+    정상 흐름에선 반드시 MongoDB에 기록이 존재하며, 없을 경우 데이터 정합성 오류로 간주한다.
+    """
 
-    # MongoDB에서 원본 파일명 조회
+    file_data = await read_file(file_path)
+
     doc = await _mdb_find_one({"metadata.file_path": file_path})
-    if doc:
-        original_name = doc["metadata"]["file_name"]
-        mime_type = doc["metadata"].get("mime_type", "application/octet-stream")
-    else:
-        original_name = file_path
-        mime_type, _ = mimetypes.guess_type(file_path)
-        mime_type = mime_type or "application/octet-stream"
+    if doc is None:
+        raise MetadataNotFoundError(file_path)
+
+    metadata = doc["metadata"]
+    original_name = metadata["file_name"]
+    mime_type = metadata["mime_type"]
 
     encoded_name = quote(original_name)
     return Response(

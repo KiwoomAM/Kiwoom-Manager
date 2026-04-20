@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.errors import FMServiceError
 from app.routers import files
+from file_handler import FileHandlerError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +48,14 @@ app.include_router(files.router)
 
 @app.exception_handler(FMServiceError)
 async def fm_service_error_handler(request: Request, exc: FMServiceError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.message},
+    )
+
+
+@app.exception_handler(FileHandlerError)
+async def file_handler_error_handler(request: Request, exc: FileHandlerError):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": exc.message},
