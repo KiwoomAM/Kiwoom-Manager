@@ -12,12 +12,14 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 COPY packages/llm-handler/sdk/ /deps/llm-handler-sdk/
 COPY packages/mdb-handler/sdk/ /deps/mdb-handler-sdk/
 COPY packages/redis-handler/ /deps/redis-handler/
+COPY packages/file-manager/sdk/ /deps/file-manager-sdk/
 
 # handler SDK 설치
 RUN pip install --no-cache-dir \
     /deps/llm-handler-sdk \
     /deps/mdb-handler-sdk \
-    /deps/redis-handler
+    /deps/redis-handler \
+    /deps/file-manager-sdk
 
 # service 의존성 설치
 COPY packages/llm-request/service/requirements.txt .
