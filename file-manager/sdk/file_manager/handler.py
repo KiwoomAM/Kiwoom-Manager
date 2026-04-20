@@ -28,18 +28,21 @@ FM Service는 SDK가 전달한 값을 그대로 저장한다.
         # 3) 미스 시 업로드. 반환값은 file_path 문자열만
         metadata["file_path"] = await fm.upload_file(file_data, metadata)
 
-    # 4) 실제 파일이 필요할 때
-    file_bytes = await fm.get_file(metadata["file_path"])
+    # 4) 실제 파일이 필요할 때 — 바이너리 + 저장된 6개 필드 메타데이터 함께 반환
+    file_bytes, stored_metadata = await fm.get_file(metadata["file_path"])
 
     await fm.close()
 """
 
+import json
 import logging
 import mimetypes
 from pathlib import PurePosixPath
 from typing import Optional
+from urllib.parse import unquote
 
 from file_manager._client import AsyncClient
+from file_manager.exceptions import FMServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -145,16 +148,31 @@ class FileManagerHandler:
         )
         return resp["file_path"]
 
-    async def get_file(self, file_path: str) -> bytes:
-        """File Server에서 파일을 꺼내 바이너리로 반환.
+    async def get_file(self, file_path: str) -> tuple[bytes, dict]:
+        """File Server에서 파일을 꺼내 (바이너리, 메타데이터) 튜플로 반환.
+
+        FM Service는 MongoDB에 저장된 6개 필드 메타데이터를
+        `X-File-Metadata` 헤더(URL-encoded JSON)로 함께 전달한다.
 
         Args:
             file_path: FM Service가 반환한 file_path (예: "a1b2c3d4e5f6.xlsx")
 
         Returns:
-            파일 바이너리 데이터
+            (file_data, metadata)
+              - file_data: 파일 바이너리
+              - metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path} (6개)
         """
-        return await self._client.get_bytes(f"{_API_PREFIX}/{file_path}")
+        file_data, headers = await self._client.get_bytes_with_headers(
+            f"{_API_PREFIX}/{file_path}"
+        )
+        metadata_header = headers.get("x-file-metadata")
+        if not metadata_header:
+            raise FMServiceError(
+                "X-File-Metadata 헤더 누락 — FM Service 버전이 오래됐을 수 있음",
+                status_code=500,
+            )
+        metadata = json.loads(unquote(metadata_header))
+        return file_data, metadata
 
     async def health_check(self) -> dict:
         """FM Service 상태 확인."""

@@ -64,3 +64,13 @@ class AsyncClient:
         """GET 요청 → 바이너리 응답 반환."""
         resp = await self._request("GET", path, **kwargs)
         return resp.content
+
+    async def get_bytes_with_headers(
+        self, path: str, **kwargs: Any
+    ) -> tuple[bytes, "httpx.Headers"]:
+        """GET 요청 → (바이너리 응답, 응답 헤더) 반환.
+
+        파일과 함께 메타데이터를 헤더로 전달받는 엔드포인트용.
+        """
+        resp = await self._request("GET", path, **kwargs)
+        return resp.content, resp.headers

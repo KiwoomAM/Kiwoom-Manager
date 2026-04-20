@@ -8,6 +8,7 @@ File Manager Service 파일 관리 라우터
   GET  /v1/files/{file_path}   — 파일 반환 (File Server에서 꺼내기)
 """
 
+import json
 import logging
 import uuid
 from urllib.parse import quote
@@ -155,9 +156,12 @@ async def upload_file(
 
 @router.get("/{file_path:path}")
 async def get_file(file_path: str):
-    """File Server에서 파일을 꺼내 반환.
+    """File Server에서 파일을 꺼내 반환 + MongoDB의 6개 필드 메타데이터도 같이 전달.
 
-    Content-Disposition 용 원본 파일명과 mime_type은 MongoDB에서 조회한다.
+    - 응답 body: 파일 바이너리
+    - 응답 헤더 `X-File-Metadata`: URL-encoded JSON (6개 필드)
+    - 응답 헤더 `Content-Disposition`: 브라우저 다운로드 UX용 (원본 파일명)
+
     정상 흐름에선 반드시 MongoDB에 기록이 존재하며, 없을 경우 데이터 정합성 오류로 간주한다.
     """
 
@@ -167,15 +171,16 @@ async def get_file(file_path: str):
     if doc is None:
         raise MetadataNotFoundError(file_path)
 
-    metadata = doc["metadata"]
-    original_name = metadata["file_name"]
-    mime_type = metadata["mime_type"]
+    metadata = doc["metadata"]  # 6개 필드: file_name, file_mtime, file_size, mime_type, extension, file_path
 
-    encoded_name = quote(original_name)
+    encoded_name = quote(metadata["file_name"])
+    metadata_header = quote(json.dumps(metadata, ensure_ascii=False))
+
     return Response(
         content=file_data,
-        media_type=mime_type,
+        media_type=metadata["mime_type"],
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+            "X-File-Metadata": metadata_header,
         },
     )

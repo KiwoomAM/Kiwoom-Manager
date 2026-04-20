@@ -23,8 +23,8 @@ File Manager Handler - 파일 저장/캐시/반환 관리 모듈
     else:
         metadata["file_path"] = await fm.upload_file(file_data, metadata)
 
-    # 4) 실제 파일이 필요할 때
-    file_bytes = await fm.get_file(metadata["file_path"])
+    # 4) 실제 파일이 필요할 때 — 바이너리 + 6개 필드 메타데이터 반환
+    file_bytes, stored_metadata = await fm.get_file(metadata["file_path"])
 
     await fm.close()
 """
