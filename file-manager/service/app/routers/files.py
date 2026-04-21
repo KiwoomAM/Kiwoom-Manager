@@ -52,16 +52,12 @@ async def close_mdb_client() -> None:
 # ─── MDB Handler 호출 헬퍼 ────────────────────────────────────────────
 
 
-async def _mdb_find_one(filter: dict) -> dict | None:
-    """MDB Handler에서 단일 문서 조회"""
+async def _mdb_call(path: str, json: dict) -> dict:
+    """MDB Handler POST 호출 + httpx 예외를 MDBConnectionError로 번역."""
     try:
-        client = get_mdb_client()
-        resp = await client.post(
-            f"{_mdb_prefix}/find_one",
-            json={"filter": filter},
-        )
+        resp = await get_mdb_client().post(path, json=json)
         resp.raise_for_status()
-        return resp.json().get("data")
+        return resp.json()
     except httpx.ConnectError as e:
         raise MDBConnectionError(f"MDB Handler 연결 실패: {e}") from e
     except httpx.TimeoutException as e:
@@ -70,26 +66,18 @@ async def _mdb_find_one(filter: dict) -> dict | None:
         raise MDBConnectionError(
             f"MDB Handler 응답 오류 ({e.response.status_code}): {e.response.text}"
         ) from e
+
+
+async def _mdb_find_one(filter: dict) -> dict | None:
+    """MDB Handler에서 단일 문서 조회"""
+    body = await _mdb_call(f"{_mdb_prefix}/find_one", {"filter": filter})
+    return body.get("data")
 
 
 async def _mdb_insert_one(document: dict) -> str:
     """MDB Handler에 단일 문서 삽입"""
-    try:
-        client = get_mdb_client()
-        resp = await client.post(
-            f"{_mdb_prefix}/insert_one",
-            json={"document": document},
-        )
-        resp.raise_for_status()
-        return resp.json()["inserted_id"]
-    except httpx.ConnectError as e:
-        raise MDBConnectionError(f"MDB Handler 연결 실패: {e}") from e
-    except httpx.TimeoutException as e:
-        raise MDBConnectionError(f"MDB Handler 응답 타임아웃: {e}") from e
-    except httpx.HTTPStatusError as e:
-        raise MDBConnectionError(
-            f"MDB Handler 응답 오류 ({e.response.status_code}): {e.response.text}"
-        ) from e
+    body = await _mdb_call(f"{_mdb_prefix}/insert_one", {"document": document})
+    return body["inserted_id"]
 
 
 # ─── 엔드포인트 ───────────────────────────────────────────────────────
