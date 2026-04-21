@@ -1,48 +1,92 @@
-"""file_manager Service FastAPI 앱 (시연용 stub).
-
-실행:
-    cd packages/file-manager/service
-    uvicorn app.main:app --port 8102 --reload
+# -*- coding: utf-8 -*-
+"""
+File Manager Service — FastAPI 진입점
 """
 
 import logging
-import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-from app.config import settings
+from app.core.errors import FMServiceError
 from app.routers import files
+from file_handler import FileHandlerError
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("file_manager")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작 시 MDB handler 초기화."""
-    os.environ.setdefault("MDB_HANDLER_URL", settings.mdb_handler_url)
-    from mdb_handler import MongoDBHandler
-    MongoDBHandler.reset()
-    logger.info("file_manager service 시작 (db=%s, col=%s)", settings.mongodb_database, settings.mongodb_collection)
+    logger.info("File Manager Service 시작")
     yield
-    logger.info("file_manager service 종료")
+    await files.close_mdb_client()
+    logger.info("File Manager Service 종료")
 
 
 app = FastAPI(
-    title="File Manager Service (stub)",
-    description="파일 캐시 기반 저장/조회 서비스 (시연용)",
-    version="0.1.0",
+    title="File Manager Service",
+    description="파일 저장, 캐시 조회, 파일 반환을 담당하는 서비스",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
-app.include_router(files.router, tags=["files"])
+# ─── 라우터 등록 ───────────────────────────────────────────────────────
+
+app.include_router(files.router)
+
+
+# ─── 전역 예외 핸들러 ──────────────────────────────────────────────────
+
+
+@app.exception_handler(FMServiceError)
+async def fm_service_error_handler(request: Request, exc: FMServiceError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.message},
+    )
+
+
+@app.exception_handler(FileHandlerError)
+async def file_handler_error_handler(request: Request, exc: FileHandlerError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.message},
+    )
+
+
+# ─── 요청 로깅 미들웨어 ───────────────────────────────────────────────
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    request_id = uuid.uuid4().hex[:8]
+    start = time.perf_counter()
+
+    response = await call_next(request)
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "[%s] %s %s → %d (%.1fms)",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
+
+# ─── 헬스 체크 ─────────────────────────────────────────────────────────
 
 
 @app.get("/health")
-async def health_check() -> dict[str, str]:
+async def health_check():
     return {"status": "ok"}

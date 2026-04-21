@@ -1,37 +1,18 @@
 [project]
 name = "kiwoom-file-manager-service"
-version = "0.1.0"
-description = "File Manager Service - file_path → bytes 반환 (시연용 stub)"
-requires-python = ">=3.11"
+version = "1.0.0"
+description = "Kiwoom File Manager Service - 파일 저장, 캐시 조회, 파일 반환 서비스"
+requires-python = ">=3.10"
+
 dependencies = [
     "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "pydantic-settings>=2.0.0",
-    "kiwoom-mdb-handler>=2.0.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
+    "uvicorn[standard]>=0.30.0",
     "httpx>=0.27.0",
-    "ruff>=0.8.0",
-    "pyright>=1.1.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-multipart>=0.0.9",
 ]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-include = ["app*"]
-
-[tool.ruff]
-target-version = "py311"
-line-length = 120
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-
-[tool.pyright]
-pythonVersion = "3.11"
-typeCheckingMode = "standard"

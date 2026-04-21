@@ -1,28 +1,40 @@
-"""file_manager SDK.
+# -*- coding: utf-8 -*-
+"""
+File Manager Handler - 파일 저장/캐시/반환 관리 모듈
 
-Public API:
-    - FileMeta: 파일 metadata 번들
-    - check_cache / acheck_cache: 캐시 조회 (bool 반환)
-    - upload_file / aupload_file: 파일 업로드 (반환값 없음)
-    - get_file / aget_file: 파일 bytes 조회
+사용법:
+    from file_manager import FileManagerHandler
+
+    fm = FileManagerHandler()
+
+    # 1) 3개 필드에서 5개 필드 메타데이터 구성 (mime_type/extension 로컬 추출)
+    metadata = fm.build_metadata(
+        file_name="report.xlsx",
+        file_mtime=1713000000,
+        file_size=524288,
+    )
+
+    # 2) 캐시 체크
+    result = await fm.check_cache(metadata)
+
+    # 3) 히트면 file_path 병합, 미스면 업로드 후 병합
+    if result["hit"]:
+        metadata["file_path"] = result["file_path"]
+    else:
+        metadata["file_path"] = await fm.upload_file(file_data, metadata)
+
+    # 4) 실제 파일이 필요할 때 — 바이너리 + 6개 필드 메타데이터 반환
+    file_bytes, stored_metadata = await fm.get_file(metadata["file_path"])
+
+    await fm.close()
 """
 
-from file_manager.client import (
-    acheck_cache,
-    aget_file,
-    aupload_file,
-    check_cache,
-    get_file,
-    upload_file,
-)
-from file_manager.models import FileMeta
+from .handler import FileManagerHandler
+from .exceptions import FMError, FMConnectionError, FMServiceError
 
 __all__ = [
-    "FileMeta",
-    "check_cache",
-    "acheck_cache",
-    "upload_file",
-    "aupload_file",
-    "get_file",
-    "aget_file",
+    "FileManagerHandler",
+    "FMError",
+    "FMConnectionError",
+    "FMServiceError",
 ]
