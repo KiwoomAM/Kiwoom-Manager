@@ -30,10 +30,10 @@
 - **검증:** 주장 정확. 세 함수 서로 데이터 의존성 없음 (`FileInput.mime_type/file_size`만 사용, `register_files`는 입력 그대로 반환). `validators.py` docstring도 "진입 직후 fail-fast (prepare·MDB 조회 이전)" 명시
 - **수정:** [runner.py:438-441](../service/app/logic/runner.py#L438-L441) / [runner.py:562-565](../service/app/logic/runner.py#L562-L565) 두 블록 모두 `validate_mime → validate_size → register_files` 순으로 교정 완료
 
-### [ ] D. PDF splitter NamedTemporaryFile 처리 오류 @ `splitter.py:122-123, 161`
+### [x] D. PDF splitter NamedTemporaryFile 처리 오류 @ `splitter.py:122, 161`
 - **주장:** `delete=False`로 열린 상태에서 `fitz.save()` 호출 → Windows 100% 실패, Linux 손상 위험
-- **검증:** TODO
-- **남은 액션:** `tmp.close()` 후 save 패턴으로 수정 또는 `with` 문 구조 재설계
+- **검증:** 주장 정확. 이중 핸들 문제 — `tmp`가 연 fd와 `fitz.save`가 같은 경로를 여는 핸들이 공존. Windows는 공유 모드로 확정 실패, Linux는 대부분 성공하지만 이론적 위험 존재. 비동기/동시성 아닌 단일 호출 내부 문제. 상세: `docs/00.concepts.md` §NamedTemporaryFile과 이중 핸들 문제
+- **수정:** 두 블록 모두 `tempfile.NamedTemporaryFile(...)` 직후 `tmp.close()` 한 줄 추가 ([splitter.py:123](../service/app/logic/file_processing/splitter.py#L123), [splitter.py:163](../service/app/logic/file_processing/splitter.py#L163)) — `delete=False`이므로 close해도 파일 유지, 이후 `save`가 같은 경로에 덮어씀
 
 ### [ ] E. SDK 의존성 누락 @ `packages/llm-request/sdk/pyproject.toml`
 - **주장:** `kiwoom-llm-handler` 미선언 상태로 `llm_handler` re-export → 런타임 ImportError

@@ -1,13 +1,17 @@
-# Pull Request #468 v3 — Review 대응 (블로커 A·B 해소)
+# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D 해소)
 
 # 📝 개요 (Overview)
 
-PR #468 리뷰의 블로커 중 **A(Main과의 대규모 충돌)** 와 **B(Path Traversal)** 를 해소한다.
+PR #468 리뷰의 블로커 중 **A(Main과의 대규모 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)** 를 해소한다.
 
-핵심은 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
+A/B는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
+
+C/D는 이 교체와 무관한 **llm-request 코드 내부의 국소 버그 수정**. 각 수정은 기존 함수 동작을 바꾸지 않고 정상 경로의 시그니처도 건드리지 않는다.
 
 - **Fix A** — stub 폐기 + v1 흡수 + llm-request 호출부의 최소 adaptation + stub 잔재(12개 파일) 정리
 - **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소, B-2(file-handler 강화)는 후속 PR
+- **Fix C** — `runner.py`에서 `register_files` 가 validate 앞에 있던 순서를 뒤집어, 미지원 MIME·2GB 초과 파일이 file-manager에 업로드되기 전에 fail-fast로 차단
+- **Fix D** — `splitter.py`에서 `NamedTemporaryFile(delete=False)` 의 fd를 닫지 않은 채 `fitz.save` 를 호출하던 이중 핸들 패턴을 `tmp.close()` 한 줄로 교정
 
 
 # 🔗 관련 문서
@@ -264,6 +268,188 @@ Fix A의 stub 잔재 정리 스윕(§해결 내용 #4)에 포함. 취약 파일�
 
 - 🚨 **B** (Path Traversal) 해소 — 취약 경로 제거 + 안전한 대체 경로 존재 확인
 - 🚨 **B-1** (store.py 제거) 해소
+
+---
+
+## Fix C. Validation 순서 역전 — fail-fast로 교정
+
+### 배경
+
+리뷰 원 지적: `packages/llm-request/service/app/logic/runner.py` 의 `llm_request_async`(438-441)와 `llm_request_stream_async`(562-565) 두 블록에서 파일 검증 3단계의 순서가 **`register_files → validate_mime → validate_size`** 로 역전되어 있다. 설계 의도는 **`validate_mime → validate_size → register_files`** 순.
+
+수정 전 실제 코드:
+
+```python
+if files:
+    await register_files(files)      # 먼저 file-manager에 업로드
+    validate_mime_types(files)        # 그 뒤에 MIME 검증
+    validate_file_sizes(files)        # 그 뒤에 크기 검증
+```
+
+이 순서대로면:
+- **2GB 초과 파일**도 일단 file-manager로 업로드된 뒤 422 반환
+- **미지원 MIME**(화이트리스트 밖) 파일도 일단 업로드된 뒤 422 반환
+
+업로드 한 번에 드는 비용 = HTTP 대역폭 + file-manager 쪽 디스크 쓰기 + MongoDB metadata insert. 정상 경로에선 필요하지만, 어차피 거절될 파일에 대해선 전부 낭비. 특히 "2GB 파일을 네트워크로 다 받아놓고 나서 크기 초과라고 거절" 하는 최악 시나리오.
+
+더구나 `validators.py` 자체 docstring이 이미 의도를 명시하고 있었다:
+
+> runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast로 잘못된 입력을 차단한다 (prepare·MDB 조회 이전).
+
+즉 설계 문서·모듈 docstring이 "validate 먼저" 를 말하고 있는데 구현이 반대로 되어 있던 상태. 리뷰어 주장 100% 타당.
+
+### 검증 — 세 함수의 독립성
+
+순서만 뒤집는 **최소 diff** 로 충분한지 확인하기 위해 세 함수의 데이터 의존성을 점검:
+
+| 함수 | 참조하는 필드 | 반환값 | register 결과에 의존? |
+|---|---|---|---|
+| `validate_mime_types` | `fi.mime_type` (화이트리스트 대조) | `None` (raise on fail) | X |
+| `validate_file_sizes` | `fi.file_size` (2GB 상한 비교) | `None` (raise on fail) | X |
+| `register_files` | FileInput 전체 (side-effect) | 입력 리스트 그대로 반환 | — |
+
+세 함수 모두 **`FileInput` 의 기존 속성만** 읽는다. `register_files` 는 side-effect(file-manager 업로드)만 수행하고 입력을 변경 없이 반환(`file_register.py:67`). 따라서 순서만 뒤집으면 로직 재설계 없이 해소된다.
+
+### 해결 내용
+
+두 블록 모두 동일 패턴으로 교정:
+
+```python
+# Before
+if files:
+    await register_files(files)
+    validate_mime_types(files)
+    validate_file_sizes(files)
+```
+
+```python
+# After
+if files:
+    validate_mime_types(files)
+    validate_file_sizes(files)
+    await register_files(files)
+```
+
+두 블록의 수정 전 패턴이 완전히 동일해서 `replace_all` 한 번으로 교정 완료. 함수 경계 밖에는 아무 변경 없음.
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/runner.py` | 두 블록(`:438-441`, `:562-565`) 순서 교정 |
+
+### 영향 범위
+
+- **Breaking 없음** — 외부 시그니처·정상 경로 동작 동일. MIME 통과 + 2GB 이하 파일의 처리 흐름은 그대로
+- **실패 경로만 개선** — 미지원 MIME · 2GB 초과 시 file-manager 호출 없이 422 즉시 반환. 네트워크/디스크/MDB 낭비 제거
+- **테스트**: `service/tests/logic/test_runner_standby.py` 는 `files` 파라미터 미사용 + validate/register 호출 자체를 assert하지 않음 → 이번 변경에 영향 없음. `validators.py` · `file_register.py` 전용 단위 테스트는 아직 없음(리뷰 I-Q11 범위, 후속 처리 예정)
+
+### 관련 리뷰 항목
+
+- 🚨 **C** (Validation 순서 역전) 해소
+
+---
+
+## Fix D. splitter NamedTemporaryFile 이중 핸들 — `tmp.close()` 추가
+
+### 배경
+
+리뷰 원 지적: `packages/llm-request/service/app/logic/file_processing/splitter.py` 의 두 위치 (`:122-123` 분할 파트 저장, `:161-162` 병합 파트 저장)에서 `NamedTemporaryFile(delete=False)` 직후 **`close()` 없이** 같은 경로에 `fitz.save()` 를 호출.
+
+수정 전 실제 코드:
+
+```python
+tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+# ← 이 시점에 tmp가 파일을 열고 있는 fd 보유 (빈 파일)
+part_doc.save(tmp.name, garbage=4, deflate=True)
+# ← fitz가 같은 경로를 또 열어 쓰려 함 → 이중 핸들
+```
+
+### OS별 동작 차이
+
+| OS | 같은 파일 이중 열기 허용 | 결과 |
+|---|---|---|
+| **Windows** | 기본 공유 모드 엄격 (다른 핸들 차단) | `fitz.save` open 실패 → `PermissionError` 확정 |
+| **Linux / macOS** | 허용 (여러 fd가 같은 inode 가리킴) | 대부분 성공. 단 버퍼 flush 타이밍에 따라 바이트 꼬임 가능성 존재 (tempfile이 실제로 쓰지 않으면 거의 문제 없음) |
+
+운영 컨테이너가 Linux라 "실제로는 잘 돌았다" 가 성립했지만, 로컬 개발 환경이 Windows일 경우 `split_pdf` 가 `PermissionError` 로 터진다. 이식성 · 이론적 정합성 측면에서 고쳐야 하는 버그.
+
+### 검증 — 동시성 문제 아님
+
+혼동하기 쉬운 부분을 명시적으로 정리 (상세: `docs/00.concepts.md` §"NamedTemporaryFile과 이중 핸들 문제"):
+
+- **D는 단일 호출 내부 문제.** 한 번의 `split_pdf` 호출 안에서 `tmp` 의 fd와 `fitz.save` 가 여는 fd가 공존하는 상태가 원인
+- **비동기·동시성과 무관.** `tempfile` 은 호출마다 고유 경로를 할당하므로 여러 요청이 병렬로 분할해도 서로 다른 파일을 쓴다. 요청 간 경쟁 아님
+- **함수 return 시 GC로 닫히긴 함**, 하지만 그건 `save` 이후 얘기. 문제는 `save` 호출 *시점* 의 이중 핸들
+
+### 해결 패턴 비교
+
+세 옵션을 검토한 후 옵션 1 채택:
+
+```python
+# 옵션 1: tmp.close() 한 줄 추가 — 채택
+tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+tmp.close()
+part_doc.save(tmp.name, garbage=4, deflate=True)
+
+# 옵션 2: mkstemp + os.close
+fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+os.close(fd)
+part_doc.save(tmp_name, garbage=4, deflate=True)
+
+# 옵션 3: with 문으로 fd 범위 제한
+with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+    tmp_name = tmp.name
+part_doc.save(tmp_name, garbage=4, deflate=True)
+```
+
+옵션 1 채택 사유: **최소 diff**. 기존 `tmp = ...; ... ; finally 블록에서 tmp.name 참조` 구조를 건드리지 않음. 옵션 2/3은 스타일 변경이 커서 `try/finally` 블록 배치까지 재구성해야 함. `delete=False` 라는 기존 계약(파일 수명은 호출자가 관리)도 유지됨.
+
+### 해결 내용
+
+두 블록 모두 `NamedTemporaryFile(...)` 직후 `tmp.close()` 한 줄 삽입.
+
+```diff
+             part_doc.select(group)
+             tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
++            tmp.close()
+             part_doc.save(tmp.name, garbage=4, deflate=True)
+         finally:
+             part_doc.close()
+```
+
+```diff
+                     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
++                    tmp.close()
+                     doc_m.save(tmp.name, garbage=4, deflate=True)
+                 finally:
+                     doc_m.close()
+```
+
+### 부작용 검토
+
+- `delete=False` → `close()` 해도 파일이 디스크에 남음. 이후 `save` 가 같은 경로에 덮어쓰기 → 정상 동작
+- 기존 `os.unlink(tmp.name)` / `os.unlink(part_path)` 정리 로직은 변함 없이 동작
+- `tmp` 객체 GC 시점의 재close 시도는 파이썬의 `close` 가 idempotent → 조용히 no-op
+- `uploader.py` 등 tmp.name을 업로드 후 삭제하는 흐름도 영향 없음
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/file_processing/splitter.py` | 두 곳(`:123`, `:163`)에 `tmp.close()` 추가 |
+| 문서 | `packages/llm-request/docs/00.concepts.md` | "NamedTemporaryFile과 이중 핸들 문제" 섹션 추가 |
+
+### 영향 범위
+
+- **Breaking 없음** — Linux에서도 수정 전후 동작이 동일 (이전엔 "우연히 통과", 이후엔 "원리상 안전하게 통과")
+- **Windows 이식성 확보** — `split_pdf` 가 더 이상 Windows에서 `PermissionError` 로 터지지 않음
+- **이론적 리스크 제거** — Linux에서의 잠재적 버퍼 타이밍 이슈도 원천 봉쇄
+
+### 관련 리뷰 항목
+
+- 🚨 **D** (PDF splitter NamedTemporaryFile) 해소
+- 💡 **S4** (`resolver.py:163-170` `NamedTemporaryFile(delete=False)` → `with` 권장) — 해당 위치는 이미 `tmp.close()` 후 `upload_*` 를 호출하는 패턴이라 D와 같은 버그가 아님. 순수 스타일 제안이므로 이번 PR 범위 밖(후속 follow-up)으로 분리
 
 ---
 

@@ -120,6 +120,7 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
         try:
             part_doc.select(group)
             tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
+            tmp.close()
             part_doc.save(tmp.name, garbage=4, deflate=True)
         finally:
             part_doc.close()
@@ -159,6 +160,7 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
                     finally:
                         doc_c.close()
                     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                    tmp.close()
                     doc_m.save(tmp.name, garbage=4, deflate=True)
                 finally:
                     doc_m.close()
