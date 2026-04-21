@@ -436,9 +436,9 @@ async def llm_request_async(
         files = None
 
     if files:
-        await register_files(files)
         validate_mime_types(files)
         validate_file_sizes(files)
+        await register_files(files)
 
     prep = prepare(
         llm_input,
@@ -560,9 +560,9 @@ async def llm_request_stream_async(
         files = None
 
     if files:
-        await register_files(files)
         validate_mime_types(files)
         validate_file_sizes(files)
+        await register_files(files)
 
     prep = prepare(
         llm_input,

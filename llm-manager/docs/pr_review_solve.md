@@ -25,10 +25,10 @@
   - [ ] B-1. `packages/file-manager/service/app/store.py` 삭제 검토 (완전 미사용 최종 확인 후)
   - [ ] B-2. `file_handler/storage.py`의 `startswith` → `is_relative_to`로 강화 (`/app/data` vs `/app/data_leak` 우회 가능성 제거)
 
-### [ ] C. Validation 순서 역전 @ `runner.py:438-441, 563-565`
+### [x] C. Validation 순서 역전 @ `runner.py:438-441, 562-565`
 - **주장:** 설계는 `validate_mime → validate_size → register_files` 순이나 실제는 register 선행 → 2GB 초과·미지원 MIME도 일단 업로드됨
-- **검증:** TODO
-- **남은 액션:** 실제 순서 확인 → 필요 시 순서 교정
+- **검증:** 주장 정확. 세 함수 서로 데이터 의존성 없음 (`FileInput.mime_type/file_size`만 사용, `register_files`는 입력 그대로 반환). `validators.py` docstring도 "진입 직후 fail-fast (prepare·MDB 조회 이전)" 명시
+- **수정:** [runner.py:438-441](../service/app/logic/runner.py#L438-L441) / [runner.py:562-565](../service/app/logic/runner.py#L562-L565) 두 블록 모두 `validate_mime → validate_size → register_files` 순으로 교정 완료
 
 ### [ ] D. PDF splitter NamedTemporaryFile 처리 오류 @ `splitter.py:122-123, 161`
 - **주장:** `delete=False`로 열린 상태에서 `fitz.save()` 호출 → Windows 100% 실패, Linux 손상 위험
