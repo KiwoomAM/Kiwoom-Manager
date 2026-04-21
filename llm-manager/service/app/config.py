@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     llm_handler_url: str = "http://192.7.9.45:8100"
     redis_url: str = "redis://192.7.9.45:7617/0"
 
-    # file_manager Service (포트는 TBD — 담당자 협의 후 확정)
-    file_manager_url: str = "http://192.7.9.45:8102"
+    # file_manager Service
+    file_manager_url: str = "http://192.7.9.45:8600"
     file_manager_timeout: float = 30.0
 
     # MongoDB

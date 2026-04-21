@@ -99,22 +99,10 @@ Service는 `.env` 또는 환경변수로 설정한다. 기본값이 내부 서�
 | `LLM_HANDLER_URL` | `http://192.7.9.45:8100` | LLM Handler 서비스 |
 | `MDB_HANDLER_URL` | `http://192.7.9.45:8300` | MDB Handler 서비스 |
 | `REDIS_URL` | `redis://192.7.9.45:7617/0` | Redis |
-| `FILE_MANAGER_URL` | `http://192.7.9.45:8102` | file-manager 서비스 (추후 별도 배포 예정, 현재 로컬 실행) |
+| `FILE_MANAGER_URL` | `http://192.7.9.45:8600` | file-manager 서비스 |
 | `FILE_MANAGER_TIMEOUT` | `30.0` | file-manager 요청 타임아웃 (초) |
 | `MONGODB_DATABASE` | `kw_ai` | MongoDB 데이터베이스명 |
 | `PORT` | `8101` | Service 포트 |
-
-## file-manager 실행
-
-`packages/file-manager`는 llm-request 개발·테스트용으로 간단히 구현한 임시 버전이다.
-추후 file-manager 전담 담당자가 완성하면 해당 서비스로 대체·연결할 예정이다.
-
-현재는 직접 띄워서 사용한다.
-
-```bash
-cd packages/file-manager/service
-uvicorn app.main:app --port 8102 --reload
-```
 
 ## 데이터베이스 안내
 

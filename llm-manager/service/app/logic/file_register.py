@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 
-from file_manager import acheck_cache, aupload_file
+from file_manager import FileManagerHandler
 
 from app.core.errors import CacheError, FileUploadError
 from app.models.requests import FileInput
@@ -26,9 +26,10 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
     FileInput 그대로 흐른다.
 
     단계:
-      1. hashing 3필드(file_name, file_size, file_mtime)로 acheck_cache
-      2. 없으면 5필드 meta(+mime_type, extension)로 aupload_file
+      1. hashing 3필드(file_name, file_size, file_mtime)로 check_cache
+      2. 없으면 5필드 meta(+mime_type, extension)로 upload_file
     """
+    fm = FileManagerHandler()
     for fi in inputs:
         hash_meta = {
             "file_name": fi.file_name,
@@ -36,7 +37,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
             "file_mtime": fi.file_mtime,
         }
         try:
-            exists = await acheck_cache(hash_meta)
+            result = await fm.check_cache(hash_meta)
         except Exception as e:
             logger.exception(
                 "file-manager check_cache 실패: file_name=%s", fi.file_name,
@@ -45,7 +46,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
                 f"file-manager check_cache 실패: file_name={fi.file_name}, {e}"
             ) from e
 
-        if exists:
+        if result["hit"]:
             continue
 
         upload_meta = {
@@ -54,7 +55,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
             "extension": fi.extension,
         }
         try:
-            await aupload_file(fi.data, upload_meta)
+            await fm.upload_file(fi.data, upload_meta)
         except Exception as e:
             logger.exception(
                 "file-manager upload_file 실패: file_name=%s", fi.file_name,
