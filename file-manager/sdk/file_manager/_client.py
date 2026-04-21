@@ -50,20 +50,10 @@ class AsyncClient:
 
         return response
 
-    async def post_json(self, path: str, **kwargs: Any) -> dict:
-        """JSON body POST 요청 → JSON 응답 반환."""
+    async def post(self, path: str, **kwargs: Any) -> dict:
+        """POST 요청 → JSON 응답 반환. `json=` 또는 `files=`/`data=`를 kwargs로 전달."""
         resp = await self._request("POST", path, **kwargs)
         return resp.json()
-
-    async def post_multipart(self, path: str, **kwargs: Any) -> dict:
-        """Multipart POST 요청 → JSON 응답 반환."""
-        resp = await self._request("POST", path, **kwargs)
-        return resp.json()
-
-    async def get_bytes(self, path: str, **kwargs: Any) -> bytes:
-        """GET 요청 → 바이너리 응답 반환."""
-        resp = await self._request("GET", path, **kwargs)
-        return resp.content
 
     async def get_bytes_with_headers(
         self, path: str, **kwargs: Any

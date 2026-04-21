@@ -10,12 +10,13 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # MDB Handler Service URL (메타데이터 저장/조회)
-    mdb_handler_url: str = "http://192.7.9.45:8300"
+    mdb_handler_url: str = "http://mdb-handler:8300"
     mdb_database: str = "kw_ai"
     mdb_collection: str = "file_cache"
 
-    # File Server (운영: D:/kw_ai) — file_handler 패키지가 os.environ으로 읽는다
-    file_storage_root: str = "/mnt/c/Users/황정현/kw_ai"
+    # File Server — file_handler 패키지가 os.environ으로 읽는다
+    # (docker compose가 컨테이너 내부에서 /data로 주입)
+    file_storage_root: str = "/data"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

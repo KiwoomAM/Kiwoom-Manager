@@ -115,7 +115,7 @@ class FileManagerHandler:
             "file_mtime": metadata["file_mtime"],
             "file_size": metadata["file_size"],
         }
-        return await self._client.post_json(
+        return await self._client.post(
             f"{_API_PREFIX}/check-cache",
             json=payload,
         )
@@ -141,7 +141,7 @@ class FileManagerHandler:
             "mime_type": metadata["mime_type"],
             "extension": metadata["extension"],
         }
-        resp = await self._client.post_multipart(
+        resp = await self._client.post(
             f"{_API_PREFIX}/upload",
             files=files,
             data=data,
@@ -173,11 +173,6 @@ class FileManagerHandler:
             )
         metadata = json.loads(unquote(metadata_header))
         return file_data, metadata
-
-    async def health_check(self) -> dict:
-        """FM Service 상태 확인."""
-        resp = await self._client._request("GET", "/health")
-        return resp.json()
 
     async def close(self) -> None:
         """HTTP 클라이언트 연결 종료."""
