@@ -1,0 +1,15 @@
+[project]
+name = "kiwoom-file-manager"
+version = "1.0.0"
+description = "Kiwoom File Manager SDK - 파일 저장/캐시/반환 HTTP 클라이언트"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["file_manager*"]
