@@ -155,14 +155,14 @@ class SyncClient:
         data = IndexSearchData.model_validate(resp.json())
         return data.results
 
-    def get_index_data(
-        self, bm_code: str, start_date: str, end_date: str,
-    ) -> pd.DataFrame:
-        """지수 일자별 데이터 → pandas DataFrame."""
-        resp = self._request("POST", "/v1/index/data", json={
-            "bm_code": bm_code, "start_date": start_date, "end_date": end_date,
-        })
-        data = DataFrameData.model_validate(resp.json())
+    def list_all_indexes(self) -> list[dict]:
+        """전체 지수 목록 조회 (DW_내부코드 MK002, 사용여부='Y')."""
+        resp = self._request("GET", "/v1/index/list")
+        data = IndexSearchData.model_validate(resp.json())
+        return data.results
+
+    def _df_from_response(self, resp_json: Any) -> pd.DataFrame:
+        data = DataFrameData.model_validate(resp_json)
         df = pd.DataFrame(data.rows, columns=data.columns)
         for col, dtype in data.dtypes.items():
             if col not in df.columns:
@@ -175,6 +175,24 @@ class SyncClient:
             except Exception as e:
                 logger.warning("컬럼 '%s' dtype 복원 실패 (%s): %s", col, dtype, e)
         return df
+
+    def get_index_data(
+        self, bm_code: str, start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """지수 일자별 데이터 → pandas DataFrame."""
+        resp = self._request("POST", "/v1/index/data", json={
+            "bm_code": bm_code, "start_date": start_date, "end_date": end_date,
+        })
+        return self._df_from_response(resp.json())
+
+    def get_index_data_multi(
+        self, codes: list[str], start_date: str, end_date: str,
+    ) -> pd.DataFrame:
+        """다중 지수 일자별 데이터 → pandas DataFrame (wide format)."""
+        resp = self._request("POST", "/v1/index/data/multi", json={
+            "codes": codes, "start_date": start_date, "end_date": end_date,
+        })
+        return self._df_from_response(resp.json())
 
     # ── Health ─────────────────────────────────────────
 
