@@ -1,7 +1,10 @@
 """file_cache Redis 저장소.
 
 Files API URI와 Context Cache name을 Redis에 캐싱한다.
-redis-handler의 BaseJsonStore 패턴을 사용.
+redis-handler의 BaseJsonStore 패턴을 사용 — 자식 클래스 안에서 `self._make_key`,
+`self._get_json` 등 protected 메서드를 호출하는 게 BaseJsonStore docstring의 권장
+사용법. 모듈 레벨 함수에서 `_store._private` 직접 호출은 캡슐화 위반이므로,
+도메인 메서드는 `FileCacheStore` 클래스 안에 두고 모듈 함수는 단순 위임으로 유지.
 """
 
 from __future__ import annotations
@@ -23,10 +26,52 @@ CONTEXT_CACHE_DEFAULT_TTL = 3600  # 1시간
 
 
 class FileCacheStore(BaseJsonStore):
-    """file_cache Redis 저장소."""
+    """file_cache Redis 저장소.
+
+    BaseJsonStore 가 의도하는 사용 패턴 — 도메인 메서드를 자식 클래스 안에서 정의하고
+    `self._make_key/_get_json/_set_json/_delete` 같은 protected 헬퍼를 호출.
+    """
 
     def __init__(self) -> None:
         super().__init__(prefix="file_cache")
+
+    # ── Files API CRUD ───────────────────────────────────────
+
+    def find_files_api(self, file_checksum: str) -> dict | None:
+        """file_checksum으로 Files API 레코드 조회."""
+        return self._get_json(self._make_key("files_api", file_checksum))
+
+    def save_files_api(
+        self,
+        file_checksum: str,
+        doc: dict,
+        ttl: int = FILES_API_TTL,
+    ) -> None:
+        """Files API 레코드 저장."""
+        self._set_json(self._make_key("files_api", file_checksum), doc, ttl=ttl)
+
+    def delete_files_api(self, file_checksum: str) -> None:
+        """Files API 레코드 삭제 (404 fallback용)."""
+        self._delete(self._make_key("files_api", file_checksum))
+
+    # ── Context Cache CRUD ───────────────────────────────────
+
+    def find_context_cache(self, hash_key: str) -> dict | None:
+        """hash_key로 Context Cache 레코드 조회."""
+        return self._get_json(self._make_key("context_cache", hash_key))
+
+    def save_context_cache(
+        self,
+        hash_key: str,
+        doc: dict,
+        ttl: int = CONTEXT_CACHE_DEFAULT_TTL,
+    ) -> None:
+        """Context Cache 레코드 저장."""
+        self._set_json(self._make_key("context_cache", hash_key), doc, ttl=ttl)
+
+    def delete_context_cache(self, hash_key: str) -> None:
+        """Context Cache 레코드 삭제 (404 fallback용)."""
+        self._delete(self._make_key("context_cache", hash_key))
 
 
 # 모듈 레벨 싱글톤
@@ -108,13 +153,15 @@ def compute_files_api_ttl(
     return min(remaining, FILES_API_TTL)
 
 
-# ── Files API CRUD ───────────────────────────────────────────
+# ── 모듈 레벨 위임 함수 (호출자 호환성 유지) ──────────────────
+# resolver.py 등 기존 호출자가 `from app.logic.file_processing import cache_store`
+# 후 `cache_store.find_files_api(...)` 형태로 사용 중이므로, 이 인터페이스를
+# 그대로 유지한다. 실제 로직은 FileCacheStore 클래스 메서드에 위임.
 
 
 def find_files_api(file_checksum: str) -> dict | None:
     """file_checksum으로 Files API 레코드 조회."""
-    key = _store._make_key("files_api", file_checksum)
-    return _store._get_json(key)
+    return _store.find_files_api(file_checksum)
 
 
 def save_files_api(
@@ -123,17 +170,12 @@ def save_files_api(
     ttl: int = FILES_API_TTL,
 ) -> None:
     """Files API 레코드 저장."""
-    key = _store._make_key("files_api", file_checksum)
-    _store._set_json(key, doc, ttl=ttl)
-
-
-# ── Context Cache CRUD ───────────────────────────────────────
+    _store.save_files_api(file_checksum, doc, ttl=ttl)
 
 
 def find_context_cache(hash_key: str) -> dict | None:
-    """hash_key로 Context Cache 레코드 조회.""" 
-    key = _store._make_key("context_cache", hash_key)
-    return _store._get_json(key)
+    """hash_key로 Context Cache 레코드 조회."""
+    return _store.find_context_cache(hash_key)
 
 
 def save_context_cache(
@@ -142,20 +184,14 @@ def save_context_cache(
     ttl: int = CONTEXT_CACHE_DEFAULT_TTL,
 ) -> None:
     """Context Cache 레코드 저장."""
-    key = _store._make_key("context_cache", hash_key)
-    _store._set_json(key, doc, ttl=ttl)
-
-
-# ── 삭제 ─────────────────────────────────────────────────────
+    _store.save_context_cache(hash_key, doc, ttl=ttl)
 
 
 def delete_files_api(file_checksum: str) -> None:
     """Files API 레코드 삭제 (404 fallback용)."""
-    key = _store._make_key("files_api", file_checksum)
-    _store._delete(key)
+    _store.delete_files_api(file_checksum)
 
 
 def delete_context_cache(hash_key: str) -> None:
     """Context Cache 레코드 삭제 (404 fallback용)."""
-    key = _store._make_key("context_cache", hash_key)
-    _store._delete(key)
+    _store.delete_context_cache(hash_key)

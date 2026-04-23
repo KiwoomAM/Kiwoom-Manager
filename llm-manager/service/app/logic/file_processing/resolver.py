@@ -68,7 +68,12 @@ def _estimate_non_file_bytes(llm_input: dict) -> int:
     try:
         return len(json.dumps(llm_input, default=str).encode("utf-8"))
     except Exception:
-        return 0  # 추정 실패 시 0 → inline 판정에 관대한 fallback
+        logger.exception(
+            "_estimate_non_file_bytes 실패 — llm_input JSON 직렬화 불가. "
+            "0 반환 (inline 한도 계산이 낙관적이 될 수 있음). "
+            "이 상태면 llm_input 자체가 정상이 아닐 가능성이 높음"
+        )
+        return 0
 
 
 # ── 부분 섞기 분류 (§4.1) ────────────────────────────────────
@@ -238,7 +243,7 @@ async def _create_and_save_context_cache(
     checksums: list[str],
     file_refs: list[FileRef],
     *,
-    model: str | None,
+    model: str,
     system_instruction: str | None,
     ttl: int,
 ) -> str:
@@ -363,9 +368,16 @@ async def _process_files_api(
 
     # ── ④ context_cache_ttl 지정 시 standby로 보호된 create_cache + Redis 저장 ──
     cached_content: str | None = None
-    if context_cache_ttl and not file_refs:
+    # context_cache 활성 조건: None 도 0 도 아닌 양수만 (0 은 명시적 비활성)
+    ctx_cache_active = context_cache_ttl is not None and context_cache_ttl > 0
+    if ctx_cache_active and not file_refs:
         logger.info("[route] mode=context_cache source=none reason=no_files_api_files")
-    if context_cache_ttl and file_refs:
+    if ctx_cache_active and file_refs:
+        if model is None:
+            raise ValueError(
+                "context cache 생성에는 model이 필요합니다 — "
+                "llm_input에 'model' 키를 포함하세요"
+            )
         acquired_cc = await dedup.try_acquire_standby(
             "context_cache", hash_key, standby_ttl_seconds,
         )

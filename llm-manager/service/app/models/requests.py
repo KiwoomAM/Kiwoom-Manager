@@ -10,6 +10,10 @@ from pydantic import BaseModel, BeforeValidator, PlainSerializer
 
 # JSON 직렬화 시 base64 문자열로 인코딩, 파싱 시 raw bytes로 디코딩.
 # Pydantic v2의 `bytes` 타입은 JSON 모드에서 UTF-8 디코드를 시도해 바이너리는 실패하므로 필요.
+#
+# ⚠️ 의도된 중복: 동일 정의가 sdk/llm_request/models.py 에도 존재.
+# SDK ↔ Service 는 독립 파이썬 패키지로 공유 모듈이 없으므로 양쪽에 같은 정의 유지.
+# 수정 시 양쪽 **반드시** 동기화 (직렬화 동작이 SDK/Service 계약의 일부).
 Base64Field = Annotated[
     bytes,
     BeforeValidator(lambda v: b64decode(v) if isinstance(v, str) else v),

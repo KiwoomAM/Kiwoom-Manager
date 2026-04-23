@@ -18,6 +18,10 @@ __all__ = [
 
 # JSON 직렬화 시 base64 문자열로 인코딩, 파싱 시 raw bytes로 디코딩.
 # Pydantic v2의 `bytes` 타입은 JSON 모드에서 UTF-8 디코드를 시도해 바이너리는 실패하므로 필요.
+#
+# ⚠️ 의도된 중복: 동일 정의가 service/app/models/requests.py 에도 존재.
+# SDK ↔ Service 는 독립 파이썬 패키지로 공유 모듈이 없으므로 양쪽에 같은 정의 유지.
+# 수정 시 양쪽 **반드시** 동기화 (직렬화 동작이 SDK/Service 계약의 일부).
 Base64Field = Annotated[
     bytes,
     BeforeValidator(lambda v: b64decode(v) if isinstance(v, str) else v),
@@ -28,8 +32,12 @@ Base64Field = Annotated[
 class FileInput(BaseModel):
     """/v1/request 에이전트가 보낼 파일 입력.
 
-    file_path는 없음 — file-manager가 업로드 시 부여하므로 에이전트는 알 수 없다.
-    서버 DTO와 동일 필드 (service/app/models/requests.py::FileInput).
+    에이전트가 세팅하는 5개 meta 필드 + bytes 로 구성.
+
+    서버 DTO(`service/app/models/requests.py::FileInput`) 에는 `file_path` 필드가 추가로 있지만,
+    이는 file-manager 등록 시 서버 내부에서 채우는 값으로 **에이전트는 세팅/참조하지 않는다**.
+    따라서 SDK 모델은 이 필드를 정의하지 않는다 — SDK 가 JSON 직렬화 시 `file_path` 키가
+    빠진 채로 전송되고, 서버 Pydantic 이 기본값 `None` 으로 받은 뒤 file_register 단계에서 채운다.
     """
 
     file_name: str

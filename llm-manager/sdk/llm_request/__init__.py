@@ -79,6 +79,7 @@ __all__ = [
     "llm_request_stream",
     "done_check",
     "fetch_by_cache_key",
+    "close",
     "Timings",
     "FileInput",
     "FileKeyingMeta",
@@ -124,6 +125,7 @@ __all__ = [
 
 # HTTP 클라이언트를 어디에, 어떻게 만드나 설정
 _instance: AsyncClient | None = None
+_instance_lock = asyncio.Lock()  # Python 3.10+ 에선 이벤트 루프 없이도 생성 가능
 
 
 def _resolve_base_url() -> str:
@@ -131,12 +133,37 @@ def _resolve_base_url() -> str:
     return os.getenv("LLM_REQUEST_URL", "http://192.7.9.45:8101")
 
 
-def _get_client() -> AsyncClient:
-    """싱글톤 AsyncClient 반환."""
+async def _get_client() -> AsyncClient:
+    """싱글톤 AsyncClient 반환 (double-checked locking).
+
+    check-then-act race 방지 — 동시 첫 호출에서 AsyncClient 중복 생성 방지.
+    상세: docs/00.concepts.md §"Race Condition, Lock, Single-flight / Standby"
+    """
     global _instance
-    if _instance is None:
-        _instance = AsyncClient(base_url=_resolve_base_url())
+    if _instance is None:                       # 빠른 경로
+        async with _instance_lock:
+            if _instance is None:               # lock 획득 후 재확인
+                _instance = AsyncClient(base_url=_resolve_base_url())
     return _instance
+
+
+async def close() -> None:
+    """SDK 가 사용 중인 AsyncClient 를 명시적으로 정리한다.
+
+    agent 프로세스 종료 전에 호출하여 httpx 커넥션 풀·소켓을 graceful 하게 반납.
+    호출하지 않아도 프로세스 종료 시 OS 가 정리하지만 `ResourceWarning: unclosed`
+    경고가 로그에 남을 수 있다.
+
+    사용 예:
+        try:
+            response, meta = await llm_request_async(...)
+        finally:
+            await close()
+    """
+    global _instance
+    if _instance is not None:
+        await _instance.close()
+        _instance = None
 
 
 # ── Timings ───────────────────────────────────────────────────
@@ -199,7 +226,7 @@ async def llm_request_async(
         debug: True면 meta.route_reason에 요청 처리 경로가 포함된다 (기본 False).
     """
     t = _resolve_timings(timings)
-    client = _get_client()
+    client = await _get_client()
     result = await client.request(
         llm_input,
         files=files,
@@ -246,11 +273,18 @@ async def llm_request_stream_async(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> AsyncIterator[dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). SSE 이벤트를 파싱하여 dict로 yield."""
+) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
+    """스트리밍 LLM 요청 (async). (AsyncIterator[event_dict], meta) 튜플 반환.
+
+    사용 예:
+        stream, meta = await llm_request_stream_async(llm_input)
+        print(meta["cache_hit"])
+        async for event in stream:
+            print(event["text"], end="")
+    """
     t = _resolve_timings(timings)
-    client = _get_client()
-    async for event in client.request_stream(
+    client = await _get_client()
+    return await client.request_stream(
         llm_input,
         files=files,
         cache_mode=cache_mode,
@@ -261,8 +295,7 @@ async def llm_request_stream_async(
         standby_ttl_seconds=t["standby_ttl"],
         http_timeout=t["http_timeout"],
         debug=debug,
-    ):
-        yield event
+    )
 
 
 def llm_request_stream(
@@ -274,11 +307,13 @@ def llm_request_stream(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> Iterator[dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). llm_request_stream_async의 동기 래퍼."""
-    async def _collect():
-        results = []
-        async for event in llm_request_stream_async(
+) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
+    """스트리밍 LLM 요청 (sync). (Iterator[event_dict], meta) 튜플 반환.
+
+    llm_request_stream_async 의 동기 래퍼. 전체 이벤트를 수집 후 iterator로 감싸 반환.
+    """
+    async def _collect() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        stream, meta = await llm_request_stream_async(
             llm_input,
             files=files,
             cache_mode=cache_mode,
@@ -286,11 +321,14 @@ def llm_request_stream(
             database=database,
             timings=timings,
             debug=debug,
-        ):
-            results.append(event)
-        return results
+        )
+        events: list[dict[str, Any]] = []
+        async for event in stream:
+            events.append(event)
+        return events, meta
 
-    return iter(asyncio.run(_collect()))
+    events, meta = asyncio.run(_collect())
+    return iter(events), meta
 
 
 async def done_check(
@@ -303,7 +341,7 @@ async def done_check(
 
     files: FileKeyingMeta 리스트 (hashing 3필드만). bytes 불필요.
     """
-    client = _get_client()
+    client = await _get_client()
     return await client.done_check(
         llm_input,
         files=files,
@@ -317,6 +355,6 @@ async def fetch_by_cache_key(
     database: str | None = None,
 ) -> tuple[LLMResponse, RequestMeta]:
     """캐시 키로 결과 직접 조회."""
-    client = _get_client()
+    client = await _get_client()
     result = await client.fetch(cache_key, database=database)
     return LLMResponse(**result["result"]), RequestMeta(**result["meta"])

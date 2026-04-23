@@ -180,11 +180,12 @@ class TestAgentLlmStreamStandby:
 
         async def _run() -> list[StreamChunk]:
             chunks: list[StreamChunk] = []
-            async for chunk in runner.llm_request_stream_async(
+            stream, _meta = await runner.llm_request_stream_async(
                 llm_input,
                 cache_mode=True, save_mode=True,
                 standby_ttl_seconds=10, database="test_db",
-            ):
+            )
+            async for chunk in stream:
                 chunks.append(chunk)
             return chunks
 

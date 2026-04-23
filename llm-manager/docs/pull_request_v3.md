@@ -1,24 +1,25 @@
-# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D·E·F 해소)
+# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D·E·F + 아키텍처 I-A2·I-A6 해소)
 
 # 📝 개요 (Overview)
 
-PR #468 리뷰의 블로커 **A(Main 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)**, **E(SDK 의존성 선언 누락)**, **F(바이너리 커밋)** 를 해소한다.
+PR #468 리뷰의 블로커 **A(Main 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)**, **E(SDK 의존성 선언 누락)**, **F(바이너리 커밋)** 과 아키텍처 개선 항목 **I-A2(스트림 반환 타입 불일치)**, **I-A6(서버 종료 시 HTTP 클라이언트 close)** 를 해소한다.
 
 A/B/F는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
 
-C/D/E는 이 교체와 무관한 **llm-request 코드·패키지 메타데이터의 국소 버그 수정**. 각 수정은 기존 정상 경로의 동작·시그니처를 바꾸지 않고 실패 경로만 개선한다.
+C/D/E/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메타데이터의 국소 개선** — 기존 정상 경로 동작·시그니처에 영향 없음. 
 
 - **Fix A** — stub 폐기 + v1 흡수 + llm-request 호출부의 최소 adaptation + stub 잔재(12개 파일) 정리
-- **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소, B-2(file-handler 경계 검사 강화)는 follow-up
+- **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소. B-2(file-handler 경계 검사 강화)는 **드롭** — 사내망 전용 배포 + `file_path` 가 file-manager 내부 UUID 라 외부 공격자 통제 불가, 위협 모델 성립 안 함
 - **Fix C** — `runner.py`에서 `register_files` 가 validate 앞에 있던 순서를 뒤집어, 미지원 MIME·2GB 초과 파일이 file-manager에 업로드되기 전에 fail-fast로 차단
 - **Fix D** — `splitter.py`에서 `NamedTemporaryFile(delete=False)` 의 fd를 닫지 않은 채 `fitz.save` 를 호출하던 이중 핸들 패턴을 `tmp.close()` 한 줄로 교정
 - **Fix E** — `sdk/pyproject.toml` 의존성 선언 정리. (1) 누락된 `kiwoom-llm-handler` 추가 — 워크스페이스 경로(`[tool.uv.sources]`)는 이미 설정돼 있어 루트 `uv sync` 환경에선 우연히 돌았지만 sdk 단독 설치·배포 시 ImportError. (2) sdk 코드에서 import 0건인 dead dep 3개(`kiwoom-redis-handler`, `kiwoom-file-manager`, `filetype`) 제거
 - **Fix F** — `packages/file-manager/service/{storage,fixtures}/` 의 바이너리 파일들은 **Fix A의 stub 잔재 정리에 이미 포함되어 제거됨** (별도 섹션 없음). 재발 방지용 `.gitignore` 보강은 follow-up
+- **Fix G** — `llm_request_stream_async` · `llm_request_stream` 반환 타입을 `tuple[AsyncIterator, dict]` 로 변경 (I-A2). 스트림 호출자가 `stream, meta = await ...` 패턴으로 `cache_hit` 등 meta 를 시작 전 확인 가능. HTTP 레이어는 `X-LLM-Meta` 응답 헤더로 전달. SDK 호출 패턴 변경 (breaking) — Kiwoom-Rag 내 외부 호출자 0건 확인 후 진행
+- **Fix H** — FastAPI `lifespan` shutdown 에 `FileManagerHandler().close()` 추가 (I-A6). 리뷰어의 "매 호출마다 AsyncClient 생성" 주장은 실제와 다름 — `FileManagerHandler` 는 이미 `__new__` 기반 싱글톤으로 커넥션 풀 재사용 중. 누락됐던 close 만 보강
 
 
 # 🔗 관련 문서
 
-- [`pr_review_solve.md`](pr_review_solve.md) — 리뷰 체크리스트
 - [`09.file-manager-separation.md`](09.file-manager-separation.md) — file-manager 외부 패키지 분리 설계. §3 "외부 의존 인터페이스 가정"에서 담당자와의 협의 스펙 정의
 - [`10.file-manager-bytes-passthrough.md`](10.file-manager-bytes-passthrough.md) — llm-request 진입 시점의 `register_files` 책임 정의. stub 시절 API(`acheck_cache` / `aupload_file`)가 §2.1에 기록
 
@@ -137,7 +138,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
 - **`packages/llm-request/service/app/config.py`** — `file_manager_url` 기본값 `http://192.7.9.45:8102` → `http://192.7.9.45:8600`. "(포트는 TBD — 담당자 협의 후 확정)" 주석 제거 (담당자 확정됨)
 - **`packages/llm-request/README_v2.md`**
   - 환경변수 표의 `FILE_MANAGER_URL` 기본값 업데이트 (`8102` → `8600`)
-  - "## file-manager 실행" 섹션(stub 직접 띄우기 가이드) 전체 삭제. 이제 file-manager는 공식 이미지로 `docker compose --profile handlers up -d file-manager`로만 실행
+  - "## file-manager 실행" 섹션(stub 직접 띄우기 가이드) 전체 삭제. 이제 file-manager 실행 방법은 **공식 이미지가 표준** (`docker compose --profile handlers up -d file-manager`). 로컬 개발 시엔 `cd packages/file-manager/service && uv run uvicorn app.main:app --port 8600` 로 직접 실행도 가능 (`verify_all.ipynb` 가 이 방식 사용)
 - **`packages/llm-request/quickstarts/verify_all.ipynb`** — 서비스 표 / 헬스체크 / 환경값의 포트 `8102` → `8600`, Redis 실행 커맨드도 main 기준(`predixy` 7617)으로 갱신
 
 #### 4. stub 잔재 정리 (main에 없고 HEAD에만 있던 12개 파일)
@@ -270,6 +271,7 @@ Fix A의 stub 잔재 정리 스윕(§해결 내용 #4)에 포함. 취약 파일�
 
 - 🚨 **B** (Path Traversal) 해소 — 취약 경로 제거 + 안전한 대체 경로 존재 확인
 - 🚨 **B-1** (store.py 제거) 해소
+- 🚨 **B-2** (file-handler `startswith` → `is_relative_to` 강화) **드롭** — 사내망 전용 배포 + `file_path` 가 file-manager 내부 UUID 라 외부 공격자 통제 불가, 위협 모델 성립 안 함. 이슈 raise 도 생략
 
 ---
 
@@ -538,7 +540,554 @@ sdk는 순수 HTTP 클라이언트 — Redis / file-manager 접속은 Service �
 ### 관련 리뷰 항목
 
 - 🚨 **E** (SDK 의존성 누락) 해소
-- ⚠️ **I-A4** (SDK 과도 re-export 축소) — 본 PR 범위 밖. `llm_handler` 의 `call/stream/upload_file/create_cache/...` 전부를 sdk가 노출하는 정책을 재검토할지는 별도 결정 사안 → follow-up
+- ⚠️ **I-A4** (SDK 과도 re-export 축소) — 사용자 결정: SDK 사용자 편의를 위한 의도된 설계. 수정 불필요
+
+---
+
+## Fix G. stream API 를 `tuple` 반환으로 변경 (I-A2)
+
+### 배경
+
+리뷰 원 지적 (I-A2): [`docs/01.DESIGN.md` §336](01.DESIGN.md) 설계 문서는 스트림 함수도 `tuple[AsyncIterator, dict]` 로 정의했지만 실제 구현은 `AsyncIterator[StreamChunk]` 만 반환 — **스트림 호출자가 `cache_hit` 등 meta 정보에 접근할 방법 없음**.
+
+```python
+# 변경 전
+async for chunk in llm_request_stream_async(llm_input):
+    print(chunk["text"])
+# ← 이 코드 어디에서도 cache_hit 을 알 수 없음. non-stream 은 알 수 있는데 stream 만 사각지대
+```
+
+### 결정
+
+**tuple 반환**으로 변경하여 non-stream (`llm_request_async` 의 `(response, meta)`) 과 패턴 통일. Meta 는 HTTP 응답 헤더(`X-LLM-Meta`, URL-encoded JSON) 로 전달 — SSE body 는 기존 `chunk` 이벤트만 유지.
+
+```python
+# 변경 후
+stream, meta = await llm_request_stream_async(llm_input)
+print(meta["cache_hit"])          # 스트림 시작 전 즉시 확인 가능
+async for chunk in stream:
+    print(chunk["text"])
+```
+
+### 대안 비교
+
+| 옵션 | 호출 패턴 | Breaking? | 결정 |
+|---|---|---|---|
+| **(a) tuple 반환** | `stream, meta = await ...` + 순수 `async for` | ✅ | **채택** |
+| (b-1) SSE 마지막 이벤트 | `async for event: if event["type"]=="meta"` | ❌ | 기각 — 분기 어수선, cache_hit 을 스트림 다 끝나야 알 수 있음 |
+| (b-2) SSE 첫 이벤트 | 동상, 다만 첫 이벤트로 meta | ❌ | 기각 — 여전히 타입 분기 필요, non-stream 과 비대칭 |
+| (c) 그대로 | meta 없음 | ❌ | 기각 — 설계 문서와 구현 불일치 유지 |
+
+**Breaking 감수 이유**: Kiwoom-Rag 전체 grep 결과 외부 에이전트에서 `llm_request_stream*` 을 실제 호출하는 코드 **0건** (패키지 내부·테스트·노트북만 존재). non-stream 과의 호출 패턴 일관성이 장기적 이점.
+
+### 해결 내용
+
+#### 1. Service `runner.py` — async generator → async function 변환
+
+기존 `llm_request_stream_async` 는 `yield` 를 포함한 async generator 였음. `_do_llm_stream` 은 async generator 로 유지하되, 최상위 `llm_request_stream_async` 는 async function 으로 바꿔 `(AsyncIterator, meta)` 튜플을 `return`.
+
+4 경로 (캐시 히트 / dc 없음 / leader / follower HIT / timeout) 모두 `(stream, meta)` 튜플 반환하도록 재구성. 캐시 히트 경로엔 **단일 chunk 만 yield 하는 inner async generator** (`_cached_stream`), leader 경로엔 **`release_standby` 를 `finally` 에서 호출하는 inner generator** (`_leader_stream`) 도입.
+
+sync 래퍼 `llm_request_stream` 도 `(Iterator[StreamChunk], dict)` 반환으로 마이그레이션.
+
+#### 2. Service `routers/request.py` — meta 를 `X-LLM-Meta` 헤더로
+
+```python
+stream, meta = await llm_request_stream_async(...)
+
+async def _sse():
+    async for chunk in stream:
+        yield f"data: {json.dumps(event)}\n\n"
+    yield "data: [DONE]\n\n"
+
+headers = {"X-LLM-Meta": quote(json.dumps(meta, default=str, ensure_ascii=False))}
+return StreamingResponse(_sse(), media_type="text/event-stream", headers=headers)
+```
+
+meta 는 URL-encoded JSON 으로 헤더에 담기므로 non-ASCII 값도 안전. SSE body 는 기존 `chunk` 이벤트 + `[DONE]` 마커 그대로.
+
+#### 3. SDK `_client.py` — `httpx.stream()` context 수동 관리
+
+httpx 의 `stream()` 은 기본적으로 context manager 라 `async with` 블록 밖에서 response 를 쥐고 있을 수 없다. tuple 반환을 위해 **`__aenter__` 수동 호출 + body async generator 의 `finally` 에서 `__aexit__`** 패턴 적용.
+
+```python
+ctx = self._http.stream("POST", "/v1/request/stream", **stream_kwargs)
+resp = await ctx.__aenter__()                # 수동 open
+
+meta_header = resp.headers.get("X-LLM-Meta", "")
+meta = json.loads(unquote(meta_header)) if meta_header else {}
+
+async def _iter_events():
+    try:
+        async for line in resp.aiter_lines():
+            ...
+            yield json.loads(data)
+    finally:
+        await ctx.__aexit__(None, None, None)  # 소비 완료 시 close
+
+return _iter_events(), meta
+```
+
+에러 경로(4xx 응답)에선 즉시 `ctx.__aexit__` 후 `ServiceError` raise. 연결 실패(`ConnectError` / `TimeoutException`)는 `__aenter__` 시점에 잡아 `ServiceConnectionError`.
+
+#### 4. SDK 공개 함수 (`llm_request_stream_async`, `llm_request_stream`)
+
+SDK `__init__.py` 의 두 공개 함수는 내부 `_client.request_stream` 의 튜플을 그대로 전달. sync 래퍼는 `asyncio.run` 안에서 stream 소비 후 `(iter(events), meta)` 튜플 반환.
+
+#### 5. 테스트 · 노트북 · README 마이그레이션
+
+- `service/tests/logic/test_runner_standby.py` — `async for chunk in runner.llm_request_stream_async(...)` → `stream, _meta = await runner.llm_request_stream_async(...); async for chunk in stream:`
+- `quickstarts/verify_all.ipynb` §7, §8 셀 — 동일 패턴. meta 에서 `cache_hit` 출력 추가
+- `README_v2.md` — 공개 API 표 반환 타입(`tuple[..., dict]`) + 주의사항 예시 업데이트
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `service/app/logic/runner.py` | `llm_request_stream_async` async function 화 + `llm_request_stream` tuple 반환 |
+| 변경 | `service/app/routers/request.py` | `X-LLM-Meta` 응답 헤더 추가 + `urllib.parse.quote` import |
+| 변경 | `sdk/llm_request/_client.py` | `request_stream` tuple 반환, httpx stream ctx 수동 관리 + `urllib.parse.unquote` import |
+| 변경 | `sdk/llm_request/__init__.py` | `llm_request_stream_async` · `llm_request_stream` tuple 반환 |
+| 변경 | `service/tests/logic/test_runner_standby.py` | stream 테스트 tuple unpack 패턴 마이그레이션 |
+| 변경 | `quickstarts/verify_all.ipynb` | §7, §8 셀 tuple unpack 패턴 |
+| 변경 | `README_v2.md` | 공개 API 표 + 주의사항 예시 |
+
+### 영향 범위
+
+- **SDK 호출 패턴 변경 (Breaking)** — `async for event in llm_request_stream_async(...)` → `stream, meta = await llm_request_stream_async(...); async for event in stream`. Kiwoom-Rag 내 외부 호출자 grep 결과 0건
+- **HTTP 프로토콜 확장 (non-breaking)** — 응답에 `X-LLM-Meta` 헤더 추가. SSE body 포맷은 그대로이므로 헤더를 무시하는 구버전 클라이언트도 body 소비는 가능 (meta 확보 불가)
+- **테스트 커버리지** — `test_runner_standby.py` 의 stream 경로 테스트가 새 API 로 검증됨
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-A2** (`llm_request_stream_async` 반환 타입 불일치) 해소
+
+---
+
+## Fix H. 서버 종료 시 file-manager HTTP 클라이언트 close (I-A6)
+
+### 배경
+
+리뷰 원 지적 (I-A6): `providers.py:79` file-manager httpx 싱글톤 미설정 — "매 호출마다 `AsyncClient` 생성·폐기, 연결 재사용 없음".
+
+### 검증 — 지적의 전제가 사실과 다름
+
+실제로 [`FileManagerHandler`](../../file-manager/sdk/file_manager/handler.py) (file-manager SDK) 는 이미 싱글톤으로 구현돼 있음 — `__new__` + `_initialized` 패턴 (`packages/file-manager/sdk/file_manager/handler.py:60-74`). `fm = FileManagerHandler()` 를 매 요청마다 호출해도 동일 인스턴스 반환하며 내부 `httpx.AsyncClient` 가 재사용됨. **커넥션 풀은 이미 정상 동작**.
+
+다만 한 가지 누락: 서버 종료 시 `fm.close()` 호출이 없음. FastAPI `lifespan` 의 `yield` 이후(shutdown) 구간이 비어 있어 프로세스 종료 시 내부 `httpx.AsyncClient` 가 명시적으로 `aclose()` 되지 않음. OS 가 소켓을 정리해주긴 하지만 명시적 정리가 정석.
+
+### 결정
+
+리뷰 지적 중 "커넥션 재사용" 주장은 이미 반영된 상태 → 그 부분은 수정 불필요. **close 누락 부분만** lifespan shutdown 구간에 추가.
+
+### 해결 내용
+
+`service/app/main.py`:
+
+```python
+from file_manager import FileManagerHandler
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_handlers()
+    logger.info("llm-request service 시작")
+    yield
+    # shutdown — 싱글톤 FileManagerHandler 의 httpx.AsyncClient 정리
+    fm = FileManagerHandler()
+    await fm.close()
+    logger.info("llm-request service 종료")
+```
+
+- `FileManagerHandler()` 호출은 싱글톤이라 **이미 만들어진 인스턴스를 반환** — 새로 만들지 않음
+- import 는 top-level
+- `configure_handlers()` 가 이미 startup 단계에서 handler SDK 들을 초기화하므로 startup 은 별도 변경 없음
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `service/app/main.py` | top-level `from file_manager import FileManagerHandler` + `lifespan` shutdown 에 `await FileManagerHandler().close()` |
+
+### 영향 범위
+
+- **Breaking 없음** — startup 동작 동일. shutdown 시에만 HTTP 클라이언트 명시 close 가 추가됨
+- **리소스 정리 개선** — 프로세스 종료 시 소켓 누수 가능성 제거
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-A6** (file-manager httpx 싱글톤 미설정) 해소 — 단, 리뷰어의 "매 호출 생성" 주장은 사실과 다름. 이미 싱글톤이었고, 누락됐던 close 만 추가
+
+---
+
+## Fix I. Redis 동기 호출 → `asyncio.to_thread` 래핑 (I-Q4)
+
+### 배경
+
+`packages/llm-request/service/app/logic/file_processing/dedup.py` 의 `async def` 함수 3곳 — `try_acquire_standby` (L74), `wait_for_standby_release` (L123), `release_standby` (L149) — 이 `redis-handler` 의 raw `client.set/get/delete` 를 **동기로** 호출 중. async 컨텍스트에서 sync I/O 호출은 이벤트 루프를 그 시간 동안 점유 → **같은 워커 위 다른 코루틴들이 await 못 깨어남**.
+
+설계 문서 `docs/08.cache-stampede-dedup.md` 도 이 상태를 "임시 방편" 으로 인지 중. 본 PR에서 정리.
+
+### 영향 분석 — "Redis 자체가 더 빨라지는 게 아님"
+
+핵심: 이건 **Redis 서버를 빠르게 만드는 게 아니라, 호출자(우리)의 이벤트 루프가 안 막히게 하는** 문제. 같은 워커의 다른 코루틴 보호가 목적.
+
+| 시나리오 | 블로킹 영향 |
+|---|---|
+| 동시 요청 1~10개 | 누적 50ms 이내 — 사용자 체감 0 |
+| 동시 요청 100개 | 누적 500ms 직렬화 — 측정 가능 |
+| Redis 응답 50ms+ 로 느려질 때 | 비선형 증폭 (5초+ 가능) |
+| **LLM 호출 (2~30초) 대비 비율** | **0.02~0.2%** — 평소엔 무시, 단 안전 마진 가치 있음 |
+
+### 해결 옵션 비교
+
+| 옵션 | 변경 | 채택? |
+|---|---|---|
+| **(1) `asyncio.to_thread` 래핑** | sync 함수를 스레드풀로 빼서 `await` 가능. 변경 작음 | **✅** |
+| (2) `redis.asyncio.Redis` 직접 사용 | dedup만 redis-handler 우회. 진짜 async I/O | dedup 만 별도 client 관리, 일관성 깨짐 |
+| (3) 유지 + follow-up | 변경 없음 | 본 PR 옵션 D (전부 처리) 방침과 불일치 |
+
+(1) 은 **redis-handler 가 미래에 동기 SETNX 헬퍼를 제공해도 동일 패턴 그대로 활용 가능** — "sync 함수를 비동기 친화적으로 감싼다" 는 개념이라 함수 출처(raw client / 헬퍼) 와 무관.
+
+### 해결 내용
+
+```diff
+ # dedup.py:74 (try_acquire_standby)
+-result = client.set(standby_key, value, nx=True, ex=ttl_seconds)
++result = await asyncio.to_thread(
++    client.set, standby_key, value, nx=True, ex=ttl_seconds,
++)
+
+ # dedup.py:123 (wait_for_standby_release loop)
+-if client.get(standby_key) is None:
++if await asyncio.to_thread(client.get, standby_key) is None:
+     return None
+
+ # dedup.py:149 (release_standby)
+-client.delete(standby_key)
++await asyncio.to_thread(client.delete, standby_key)
+```
+
+`import asyncio` 는 이미 모듈 상단에 존재해 추가 불필요. 함수 시그니처·호출자 변화 0.
+
+### `redis-handler` 측 변경 0
+
+`redis-handler` 는 sync-only 패키지이고 다른 handler 사용처와 인터페이스 협의가 필요해 본 PR 범위 밖. async 버전 추가는 별도 결정 사안 (`packages/redis-handler/` 측 follow-up). 우리는 **호출자 책임 범위에서만 비동기 친화화** 적용.
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/file_processing/dedup.py` | sync redis 호출 3곳을 `asyncio.to_thread` 로 래핑 |
+
+### 영향 범위
+
+- **Breaking 없음** — `dedup.py` 함수 시그니처 동일, 호출자 변화 0
+- **이벤트 루프 보호** — sync 호출이 스레드풀로 빠져 같은 워커의 다른 코루틴 await 깨우기 안 막힘
+- **스레드 컨텍스트 스위치 비용 ~10μs** 추가 — 무시 가능
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q4** (Async 함수에서 sync Redis 사용) 해소
+
+---
+
+## Fix J. `cache_store.py` BaseJsonStore 캡슐화 정리 (I-Q5)
+
+### 배경
+
+`cache_store.py` 의 모듈 함수 6개 (`find_files_api`, `save_files_api`, `delete_files_api`, 그리고 `*_context_cache` 3개) 가 `BaseJsonStore` 의 protected 메서드(`_make_key`, `_get_json`, `_set_json`, `_delete`) 를 **외부 모듈에서 직접** 호출 중:
+
+```python
+# Before
+_store = FileCacheStore()  # 모듈 싱글톤
+
+def find_files_api(file_checksum):
+    key = _store._make_key("files_api", file_checksum)   # ← 외부에서 protected
+    return _store._get_json(key)
+```
+
+파이썬 관례상 `_` 로 시작하는 이름 = **"외부에서 호출하지 말라"** 는 표시. `BaseJsonStore` 가 내부 구현을 변경하면 cache_store 가 동시에 깨지는 강한 결합.
+
+### 검증 — `BaseJsonStore` 자신이 권장하는 패턴
+
+[`packages/redis-handler/redis_handler/base_store.py`](../../redis-handler/redis_handler/base_store.py) docstring (L13-23) 자체가 정상 사용법을 명시:
+
+```python
+사용법:
+    class MyStore(BaseJsonStore):
+        def save(self, item_id: str, data: dict) -> bool:
+            return self._set_json(self._make_key(item_id), data)
+```
+
+→ **자식 클래스 안에서 `self._make_key` 호출이 정상 패턴**. README.md 의 chat-handler 예시도 동일. 외부 모듈 함수의 `_store._make_key(...)` 접근은 base_store 가 의도한 캡슐화 방향과 위배.
+
+### 옵션 비교
+
+| 옵션 | 의미 | 평가 |
+|---|---|---|
+| ~~(a) redis-handler에 public helper 추가~~ | `make_key()`, `get_json()` 같은 public 노출 추가 | base_store 의도와 **역행** — 다른 사용처도 외부 호출을 유도. 캡슐화 더 약화 |
+| **(b) 클래스 메서드로 이동** | `cache_store.py` 의 모듈 함수 6개를 `FileCacheStore(BaseJsonStore)` 메서드로 옮기고 `self._make_key/_get_json/...` 호출. 모듈 함수는 위임으로 유지 | base_store 의도와 일치, llm-request 안에서 완결 |
+
+→ **(b)** 채택.
+
+### 해결 내용
+
+```diff
+ class FileCacheStore(BaseJsonStore):
+     def __init__(self) -> None:
+         super().__init__(prefix="file_cache")
+
++    # 도메인 메서드 6개를 클래스 안에 정의 — self._make_key/_get_json/... 호출
++    def find_files_api(self, file_checksum: str) -> dict | None:
++        return self._get_json(self._make_key("files_api", file_checksum))
++
++    def save_files_api(self, file_checksum, doc, ttl=FILES_API_TTL) -> None:
++        self._set_json(self._make_key("files_api", file_checksum), doc, ttl=ttl)
++
++    def delete_files_api(self, file_checksum: str) -> None:
++        self._delete(self._make_key("files_api", file_checksum))
++
++    # ... find/save/delete_context_cache 도 같은 패턴으로
+
+ _store = FileCacheStore()
+
+-# 모듈 함수가 _store._private 을 직접 호출 (캡슐화 위반)
+-def find_files_api(file_checksum):
+-    key = _store._make_key("files_api", file_checksum)
+-    return _store._get_json(key)
++
++# 모듈 함수는 호출자(resolver.py 등) 호환성 유지를 위한 단순 위임
++def find_files_api(file_checksum):
++    return _store.find_files_api(file_checksum)
+```
+
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/file_processing/cache_store.py` | 도메인 메서드 6개를 `FileCacheStore` 클래스 안으로 이동, 모듈 함수는 위임으로 유지 |
+
+### 영향 범위
+
+- **Breaking 없음** — 모듈 함수 시그니처/호출 패턴 동일. 호출자(resolver.py, runner.py 등) 변화 0
+- **캡슐화 회복** — `BaseJsonStore` 의 protected 메서드를 외부에서 호출하지 않음. base_store 가 내부 구현을 바꿔도 cache_store 영향 격리
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q5** (`cache_store.py` 의 `BaseJsonStore` private 직접 호출) 해소
+
+---
+
+## Fix K. context_cache 생성 시 model None 검증 (I-Q7)
+
+### 배경
+
+타입 흐름이 좁아지는 호출 체인 — silent runtime error 위험:
+
+```
+runner: prep.llm_input.get("model")          # str | None
+  ↓
+resolver.resolve_files(model=...)             # str | None
+  ↓
+resolver._create_and_save_context_cache(model: str | None)
+  ↓
+uploader.create_context_cache(model: str)    # ← None 받으면 곤란
+  ↓
+llm_handler.aio.create_cache(model=model)    # Gemini API 호출
+```
+
+문제:
+- context_cache 생성이 **LLM call 보다 먼저** 일어남 → model None 일 때 Gemini Context Cache API 가 모호한 에러 메시지로 먼저 터짐
+- 사용자에게 원인이 잘 안 보임. "model 빠뜨렸다" 가 명확하지 않음
+
+### 결정 — fail-fast (resolver 에서 raise)
+
+| 옵션 | 트레이드오프 |
+|---|---|
+| **(i) Resolver 에서 명시적 raise** | 명확한 한국어 에러 메시지. Gemini API 호출 전 차단. 일찍 fail-fast |
+| (ii) 기본값 채워 전달 | 사용자가 의도한 model 과 다른 cache 생성될 위험 (silent corruption). context cache 는 model 별로 분리되므로 잘못된 모델로 만들면 캐시 무용지물 |
+
+→ **(i)** 채택.
+
+### 해결 내용
+
+(1) `_create_and_save_context_cache` 시그니처를 `model: str | None` → `model: str` 로 좁힘 (uploader 와 일치):
+
+```diff
+ async def _create_and_save_context_cache(
+     ...,
+-    model: str | None,
++    model: str,
+     ...
+ ) -> str:
+```
+
+(2) `_process_files_api` 의 context_cache 분기 진입 직전에 None 체크 + raise:
+
+```diff
+ if context_cache_ttl and file_refs:
++    if model is None:
++        raise ValueError(
++            "context cache 생성에는 model이 필요합니다 — "
++            "llm_input에 'model' 키를 포함하세요"
++        )
+     acquired_cc = await dedup.try_acquire_standby(...)
+```
+
+체크는 **`context_cache_ttl + file_refs` 둘 다 있을 때만** 발동 — `context_cache_ttl=None` 인 일반 호출에서는 model 없어도 통과 (LLM call 단계에서 llm-handler 가 처리).
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/file_processing/resolver.py` | `_create_and_save_context_cache` 시그니처 좁힘 + `_process_files_api` 에 None 체크 |
+
+### 영향 범위
+
+- **Breaking 없음 (정상 경로)** — `llm_input.model` 이 있는 정상 호출은 영향 0
+- **실패 경로 개선** — `context_cache_ttl` + `model=None` 조합에서 Gemini API 호출 전에 `ValueError` 로 차단 (한국어 안내 메시지 포함)
+- **회귀 방지 테스트**: Fix L 의 `test_resolver.py::TestResolveFiles::test_model_none_with_context_cache_ttl_raises` 에서 검증
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q7** (`create_context_cache` model 타입 불일치) 해소
+
+---
+
+## Fix L. 단위 테스트 추가 (I-Q11)
+
+리뷰가 누락 지적한 영역에 신규 테스트 파일 3개 추가. 골든 패스 + 핵심 분기 위주, 회귀 방지 목적. 기존 conftest 의 `mock_collection`, `fake_redis`, `fast_backoff`, `_isolate_redis_for_cache_store` (autouse) fixture 재사용.
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 테스트 수 | 커버 범위 |
+|------|------|----------|----------|
+| 신규 | `packages/llm-request/service/tests/logic/file_processing/test_validators.py` | **10** | `validate_mime_types` (whitelist 통과 / 거부 / 빈 리스트 / 부분 거부 / 화이트리스트 상수 검증) + `validate_file_sizes` (한도 이하 / 정확히 한도 / 초과 / 0바이트 / 빈 리스트) |
+| 신규 | `packages/llm-request/service/tests/logic/file_processing/test_resolver.py` | **11** | `classify_files` (비디오 강제 분리 / 20MB 한도 / 50MB 한도 / 합계 초과 분배 / 빈 입력) + `_estimate_non_file_bytes` (정상 / 직렬화 실패 시 0) + `_process_inline` (Part 변환 / 빈 입력) + `resolve_files` (빈 입력 / **Fix K 회귀 방지** model None+ttl raise / model None+ttl없음 OK / 승급 정책) |
+| 신규 | `packages/llm-request/service/tests/logic/test_file_register.py` | **6** | `register_files` (cache hit → upload skip / miss → upload / check_cache 예외 → CacheError wrap / upload 예외 → FileUploadError wrap / 빈 리스트 / 혼합 hit-miss) |
+
+총 **27 tests**.
+
+### 영향 범위
+
+- **Breaking 없음** — 신규 파일만 추가. 기존 코드·테스트 수정 0
+- **회귀 방지** — 본 PR 의 Fix C/D/I/J/K 가 깨질 경우 해당 테스트가 실패로 잡음
+- **테스트 실행**: 기존 `pytest service/tests/ -v` 명령에 자동으로 포함됨 (별도 마커 없음, `asyncio_mode=auto` 적용)
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q11** (테스트 누락 — `test_resolver.py`, validators, classify, `_process_*`) 해소
+
+---
+
+## Fix M. SDK `close()` 공개 API 추가 (I-Q3)
+
+### 배경
+
+`packages/llm-request/sdk/llm_request/_client.py` 의 `AsyncClient` 클래스에 `async def close(self)` 정의는 있지만 — **어디서도 호출되지 않음**. agent 프로세스 종료 시:
+
+- `httpx.AsyncClient` 가 명시적으로 `aclose()` 안 됨 → `ResourceWarning: unclosed <httpx.AsyncClient ...>` 로그
+- 커넥션 풀이 보유한 keep-alive 연결의 소켓 핸들이 명시적 정리 없이 OS 회수에 맡겨짐
+- 장시간 살아있는 agent 프로세스에서 idle 연결 누수 가능
+
+### 결정 — SDK 공개 API 로 노출 + agent 책임으로
+
+agent 프로세스 종료 전 `close()` 호출이 표준. SDK 가 `close` 를 공개 함수로 제공하고 README 에서 명시적으로 안내한다:
+
+- `from llm_request import close` 로 import 가능
+- `await close()` 호출 시 싱글톤 `AsyncClient` 의 `aclose()` 실행 + `_instance` 리셋 → 다음 호출 시 재생성 가능
+
+### 해결 내용
+
+**`sdk/llm_request/__init__.py`**:
+- 모듈 레벨 공개 `async def close()` 함수 추가 — 내부에서 싱글톤 `_instance.close()` 호출 후 `_instance = None` 으로 리셋
+- `__all__` 에 `"close"` 추가
+
+**`README_v2.md`**:
+- 공개 API 표에 `close` 행 추가
+- "주의사항" 섹션에 "agent 프로세스 종료 전 `close()` 호출" 안내
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/sdk/llm_request/__init__.py` | 공개 `async def close()` 함수 + `__all__` 등록 |
+| 변경 | `packages/llm-request/README_v2.md` | API 표에 `close` 행 + 주의사항 안내 추가 |
+
+### 영향 범위
+
+- **Breaking 없음** — 신규 API 추가. 기존 호출 패턴 영향 0
+- **리소스 정리 개선** — agent 가 명시적으로 `close()` 호출하면 소켓·풀 정리됨. `ResourceWarning` 제거
+- **재생성 가능** — `_instance = None` 리셋으로 close 후 다시 SDK 호출해도 새 client 가 만들어짐 (테스트 시나리오에 유용)
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q3** (`AsyncClient.aclose()` 미호출) 해소
+
+---
+
+## Fix N. `_estimate_non_file_bytes` 예외 로깅 (I-Q6)
+
+### 배경
+
+`packages/llm-request/service/app/logic/file_processing/resolver.py` 의 `_estimate_non_file_bytes(llm_input)` 함수가 직렬화 실패 시 **로그 없이 조용히 0 반환**:
+
+```python
+# Before
+def _estimate_non_file_bytes(llm_input: dict) -> int:
+    try:
+        return len(json.dumps(llm_input, default=str).encode("utf-8"))
+    except Exception:
+        return 0  # ← 로그 없음, 추적 불가
+```
+
+이 값은 `classify_files()` 의 inline / Files API 한도 계산 기준 (`total = _estimate_non_file_bytes(llm_input)` 으로 시작). 0 반환 시 **"비파일 부분이 0바이트" 로 오판** → inline pool 에 큰 파일까지 들어갈 가능성 → silent corruption.
+
+### 결정 — silent 해소가 본질, 동작(`return 0`) 은 유지
+
+`logger.exception` 추가만으로 **충분**. fallback 값 변경은 안 함. 이유:
+
+- `json.dumps(llm_input, default=str)` 실패 자체가 극히 드문 edge (예: 재귀 참조). 이 상태면 llm_input 자체가 비정상 → LLM 호출도 어차피 실패할 가능성이 높음
+- fallback 값을 0 vs 한도값(예: `return limit`) 으로 바꿔도 결국 그 입력으로 LLM 호출하면 다른 곳에서 깨짐. 실익 미미
+- 추적 가능성만 확보하면 운영 시 원인 파악 가능
+
+보수적 fallback 강화 (예: `return limit`) 는 별개 결정 사안 → follow-up 으로 분리.
+
+### 해결 내용
+
+```diff
+ def _estimate_non_file_bytes(llm_input: dict) -> int:
+     try:
+         return len(json.dumps(llm_input, default=str).encode("utf-8"))
+     except Exception:
++        logger.exception(
++            "_estimate_non_file_bytes 실패 — llm_input JSON 직렬화 불가. "
++            "0 반환 (inline 한도 계산이 낙관적이 될 수 있음). "
++            "이 상태면 llm_input 자체가 정상이 아닐 가능성이 높음"
++        )
+         return 0
+```
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/service/app/logic/file_processing/resolver.py` | `_estimate_non_file_bytes` 의 `except` 블록에 `logger.exception` 추가 |
+
+### 영향 범위
+
+- **Breaking 없음** — 반환 동작·시그니처 동일
+- **관측성 향상** — 직렬화 실패 시 stack trace + 영향 설명이 로그에 남아 운영 추적 가능
+- **회귀 방지 테스트**: Fix L 의 `test_resolver.py::TestEstimateNonFileBytes::test_unserializable_returns_zero` 가 0 반환 동작을 검증 (logger 호출 자체는 검증 안 함)
+
+### 관련 follow-up
+
+- 직렬화 실패 시 보수적 fallback (`return limit` 같은 큰 값) 으로 바꿔서 inline 한도 계산이 안전한 쪽으로 기울게 할지 — 별도 결정 사안 (실익 미미하다는 분석에 따라 우선순위 낮음)
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-Q6** (`_estimate_non_file_bytes` 의 `except Exception: return 0`) 해소
 
 ---
 
@@ -546,6 +1095,9 @@ sdk는 순수 HTTP 클라이언트 — Redis / file-manager 접속은 Service �
 
 - `ec3eb6d Merge remote-tracking branch 'origin' into feat/llm_request` — main origin의 winus-handler 리팩토링이 함께 유입된 부수 머지. llm-request 로직과 무관.
 - `156c02f test` — `verify_all.ipynb` 재실행 결과(출력 셀 포함) 커밋. 기능 변경 없음.
+- **`Base64Field` 정의 중복** (`sdk/llm_request/models.py` ↔ `service/app/models/requests.py`) — **의도적**. SDK 와 Service 는 독립 파이썬 패키지이고 공유 모듈이 없어 양쪽에 동일 정의를 유지. 직렬화 동작(`b64encode`/`b64decode`)이 SDK↔Service HTTP 계약의 일부라 수정 시 양쪽 동기화 필수. 양 파일 주석에 명시. 리뷰 I-Q8 관련.
+- **`fetch_by_cache_key` 의 collection 하드코딩** (`store.py:120-121`) — **유지**. `agent_llm` 컬렉션만 사용할 계획이며 다른 컬렉션 조회 요구사항 없음. 리뷰 I-A5 관련.
+- **함수 내부 import 7곳** (`runner.py:499, 634` / `providers.py:23, 37, 60, 70-71`) — **유지**. `packages/llm-request/CLAUDE.md` 및 `Kiwoom-Rag/CLAUDE.md` 전체 검토 결과 "함수 내부 import 금지" 규정 없음. 리뷰어 주장의 근거 확인 실패. 기능적 문제 없음. 리뷰 I-Q1 관련.
 
 ---
 
@@ -568,8 +1120,12 @@ sdk는 순수 HTTP 클라이언트 — Redis / file-manager 접속은 Service �
 ### 영향 범위
 
 - **Breaking 없음** — SDK 공개 API(`llm_request_async`, `llm_request_stream_async` 등) 변경 없음
-- **테스트 수집 정상화** — `pytest service/tests/ -v` 가 orchestrator import 에러 없이 수집
-- **후속 정리 대상(본 PR 범위 밖):** `ARCHITECTURE.md`, `docs/01.DESIGN.md`, `docs/03~06.file-handler-phase*.md`, `docs/09.file-manager-separation.md`, `docs/pr_review_solve.md`, `docs/pull_request_v2.md` 에 남은 orchestrator 언급은 설계 문서 레거시라 일괄 정리는 별도 PR로 분리
+
+### 관련 리뷰 항목
+
+- ⚠️ **I-A1** (`run_many` / `run_many_stream` 이 `files` 미전달) 해소 — 함수 자체 제거
+- ⚠️ **I-A3** (`run_many_stream` 에 `_type: "cache_hit"` 이벤트 누락) 해소 — 함수 자체 제거
+- ⚠️ **I-Q9** (`run_many` 예외 시 dangling task) 해소 — 함수 자체 제거
 
 ---
 

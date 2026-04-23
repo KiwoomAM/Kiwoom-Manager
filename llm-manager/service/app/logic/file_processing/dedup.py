@@ -71,7 +71,9 @@ async def try_acquire_standby(
 
     standby_key = _make_standby_key(prefix, key)
     value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
-    result = client.set(standby_key, value, nx=True, ex=ttl_seconds)
+    result = await asyncio.to_thread(
+        client.set, standby_key, value, nx=True, ex=ttl_seconds,
+    )
     return result is not None
 
 
@@ -120,7 +122,7 @@ async def wait_for_standby_release(
                 return result
 
         # standby 살아있는지 확인 — 사라졌으면 호출자가 작업 시작
-        if client.get(standby_key) is None:
+        if await asyncio.to_thread(client.get, standby_key) is None:
             return None
 
         # 다음 대기 간격
@@ -146,7 +148,7 @@ async def release_standby(prefix: str, key: str) -> None:
         if client is None:
             return
         standby_key = _make_standby_key(prefix, key)
-        client.delete(standby_key)
+        await asyncio.to_thread(client.delete, standby_key)
     except Exception:
         logger.exception(
             "standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s",

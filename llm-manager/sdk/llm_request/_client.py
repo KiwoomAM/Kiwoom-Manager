@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -105,8 +106,11 @@ class AsyncClient:
         standby_ttl_seconds: int = 600,
         http_timeout: float | None = None,
         debug: bool = False,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """POST /v1/request/stream — SSE 스트리밍 요청."""
+    ) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
+        """POST /v1/request/stream — SSE 스트리밍 요청.
+
+        (AsyncIterator[event_dict], meta) 튜플 반환. meta는 `X-LLM-Meta` 응답 헤더에서 파싱.
+        """
         body: dict[str, Any] = {
             "llm_input": llm_input,
             "cache_mode": cache_mode,
@@ -127,32 +131,45 @@ class AsyncClient:
         if http_timeout is not None:
             stream_kwargs["timeout"] = http_timeout
 
+        # httpx stream context 를 수동으로 열어서 (body iter, meta) 튜플로 반환.
+        # async generator 가 아닌 coroutine 이므로 with 블록 종료를 __aexit__ 에 위임.
+        ctx = self._http.stream("POST", "/v1/request/stream", **stream_kwargs)
         try:
-            async with self._http.stream("POST", "/v1/request/stream", **stream_kwargs) as resp:
-                if resp.status_code >= 400:
-                    await resp.aread()
-                    try:
-                        err_body = resp.json()
-                        raise ServiceError(
-                            err_body.get("error", resp.text),
-                            status_code=resp.status_code,
-                            error_type=err_body.get("error_type"),
-                        )
-                    except ServiceError:
-                        raise
-                    except Exception:
-                        raise ServiceError(resp.text, status_code=resp.status_code)
+            resp = await ctx.__aenter__()
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}") from e
+        except httpx.TimeoutException as e:
+            raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
 
+        if resp.status_code >= 400:
+            await resp.aread()
+            try:
+                err_body = resp.json()
+                err: ServiceError = ServiceError(
+                    err_body.get("error", resp.text),
+                    status_code=resp.status_code,
+                    error_type=err_body.get("error_type"),
+                )
+            except Exception:
+                err = ServiceError(resp.text, status_code=resp.status_code)
+            await ctx.__aexit__(None, None, None)
+            raise err
+
+        meta_header = resp.headers.get("X-LLM-Meta", "")
+        meta: dict[str, Any] = json.loads(unquote(meta_header)) if meta_header else {}
+
+        async def _iter_events() -> AsyncIterator[dict[str, Any]]:
+            try:
                 async for line in resp.aiter_lines():
                     if line.startswith("data: "):
                         data = line[6:]
                         if data == "[DONE]":
                             break
                         yield json.loads(data)
-        except httpx.ConnectError as e:
-            raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}") from e
-        except httpx.TimeoutException as e:
-            raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
+            finally:
+                await ctx.__aexit__(None, None, None)
+
+        return _iter_events(), meta
 
     async def done_check(
         self,

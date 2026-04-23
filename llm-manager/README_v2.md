@@ -25,7 +25,7 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 | 버전 | `0.2.0` |
 | Python | **`>=3.11`** |
 | 구성 | **SDK** (에이전트 설치) + **Service** (FastAPI, port 8101) |
-| SDK 의존성 | `httpx`, `filetype`, `kiwoom-redis-handler`, `kiwoom-file-manager` |
+| SDK 의존성 | `httpx>=0.27.0`, `kiwoom-llm-handler>=0.1.0` |
 | Service 의존성 | `kiwoom-llm-handler`, `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `PyMuPDF` |
 | 통신 방식 | SDK → **HTTP(httpx)** → Service(8101). MDB·Redis·LLM 호출은 Service가 일괄 담당 |
 
@@ -59,7 +59,6 @@ packages/llm-request/
 │   │       ├── done_check.py   # 캐시 조회
 │   │       ├── store.py        # MongoDB 캐시 저장
 │   │       ├── meta.py         # 저장용 메타 생성
-│   │       ├── types.py        # 내부 타입 정의
 │   │       ├── file_register.py       # file-manager에 파일 등록 (Service 진입 시점)
 │   │       └── file_processing/
 │   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
@@ -184,10 +183,11 @@ print(meta.source)
 | --- | --- | --- |
 | `llm_request_async` | `tuple[LLMResponse, RequestMeta]` | 비동기 단건 LLM 호출 |
 | `llm_request` | `tuple[LLMResponse, RequestMeta]` | 동기 단건 (`asyncio.run` 래퍼) |
-| `llm_request_stream_async` | `AsyncIterator[dict]` | 비동기 스트리밍 |
-| `llm_request_stream` | `Iterator[dict]` | 동기 스트리밍 |
+| `llm_request_stream_async` | `tuple[AsyncIterator[dict], dict]` | 비동기 스트리밍 — `(stream, meta)` 튜플 |
+| `llm_request_stream` | `tuple[Iterator[dict], dict]` | 동기 스트리밍 — `(stream, meta)` 튜플 |
 | `done_check` | `DoneCheckResult` | 캐시 존재 여부만 확인 (LLM 호출 없음) |
 | `fetch_by_cache_key` | `tuple[LLMResponse, RequestMeta]` | 캐시 키로 직접 조회 |
+| `close` | `None` (async) | SDK 내부 `AsyncClient` 커넥션 풀 정리 — agent 프로세스 종료 전 호출 권장 ([주의사항](#agent-프로세스-종료-전-close-호출) 참고) |
 
 ## llm_input 구조
 
@@ -253,7 +253,7 @@ def call(
 | --- | --- | --- | --- |
 | `http_timeout` | `600.0` | SDK → Service HTTP 응답 대기 시간 (초) | 느린 모델 사용 시 늘릴 것. 기본 600초로 대부분 충분 |
 | `mdb_ttl` | `None` | MDB 캐시 수명 (초). None = 영구 저장 | **현재 미동작 — 설정해도 만료 처리 안 됨. 항상 영구 저장** |
-| `context_cache_ttl` | `None` | Gemini Context Cache 수명 (초) | **None이면 Context Cache 비활성. 반복 참조 파일에 Context Cache를 쓰려면 반드시 값을 설정해야 함** (예: `3600`) |
+| `context_cache_ttl` | `None` | Gemini Context Cache 수명 (초) | **`None` 또는 `0` 이면 Context Cache 비활성**. 양수(`>0`) 값만 생성 트리거. 반복 참조 파일에 Context Cache 를 쓰려면 양수 값 지정 필요 (예: `3600`) |
 | `standby_ttl` | `600` | Cache stampede dedup 대기 시간 (초) | 동일 요청이 동시에 몰릴 때 중복 LLM 호출 방지. LLM 응답 시간보다 길게 설정 |
 
 ```python
@@ -752,6 +752,18 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `files=[FileInput(...)]` |
 | ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `RequestMeta` (`meta.source`) |
 
+> **⚠️ 설치 경로 변경 주의**
+>
+> v0.1.0 에선 `pip install -e packages/llm-request` 로 설치했지만, v0.2.0 에선 이 경로가 **uv workspace 루트** 로 바뀌었다. 같은 명령을 쓰면 **빈 워크스페이스만 설치**되어 SDK 기능이 없는 상태가 된다. 새 경로로 설치해야 한다.
+>
+> ```bash
+> pip install -e packages/llm-request/sdk    # ← sdk 하위 경로 사용
+> # 또는 루트에서 전체 워크스페이스 설치:
+> cd packages/llm-request && uv sync
+> ```
+>
+> 기존 v0.1.0 환경에서 업그레이드할 경우 먼저 `pip uninstall kiwoom-llm-request` 로 구 버전을 제거한 뒤 새 경로로 설치 권장.
+
 ## 초기화 코드 제거
 
 ```python
@@ -819,10 +831,12 @@ print(meta.cache_hit)
 ### 스트림은 이터레이터를 끝까지 소비해야 저장됨
 
 `llm_request_stream` / `llm_request_stream_async`는 모든 청크를 순회한 뒤 MDB에 저장한다.
-중간에 `break`하거나 이터레이터를 버리면 저장이 실행되지 않는다.
+중간에 `break`하거나 이터레이터를 버리면 저장이 실행되지 않는다. 두 함수는 `(stream, meta)` 튜플을 반환한다 — meta 는 스트림 시작 전 바로 확인 가능 (`cache_hit`, `cache_key` 등).
 
 ```python
-async for chunk in llm_request_stream_async(...):
+stream, meta = await llm_request_stream_async(...)
+print(meta["cache_hit"])            # 스트림 시작 전 확인 가능
+async for chunk in stream:
     if some_condition:
         break  # ⚠️ 저장 안 됨
 ```
@@ -887,6 +901,29 @@ response, meta = await llm_request_async(
 # 또는 dev DB에 저장
 response, meta = await llm_request_async(..., database="kw_ai_dev")
 ```
+
+---
+
+### agent 프로세스 종료 전 `close()` 호출
+
+SDK 는 내부적으로 httpx `AsyncClient` 싱글톤을 유지한다. 커넥션 풀(TCP 소켓, 파일 디스크립터 등) 을 재사용하기 위함이다. agent 프로세스가 종료될 때 이 리소스를 graceful 하게 반납하려면 `close()` 를 호출해야 한다.
+
+```python
+from llm_request import llm_request_async, close
+
+async def main():
+    try:
+        response, meta = await llm_request_async(
+            {"contents": "...", "model": "gemini-2.5-flash"},
+        )
+        ...
+    finally:
+        await close()
+
+asyncio.run(main())
+```
+
+호출하지 않아도 프로세스 종료 시 OS 가 소켓을 회수하지만 `ResourceWarning: unclosed <httpx.AsyncClient>` 경고가 로그에 뜰 수 있다. 장시간 실행되는 agent 에서는 종료 시 명시적 호출을 권장한다.
 
 
 # 14. 향후 계획

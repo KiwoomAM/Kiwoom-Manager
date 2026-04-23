@@ -9,6 +9,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from file_manager import FileManagerHandler
+
 from app.core.errors import LLMRequestServiceError
 from app.core.providers import configure_handlers
 from app.models.responses import ErrorResponse
@@ -29,10 +31,13 @@ logger = logging.getLogger("llm_request")
 # configure_handlers()가 MDB/Redis/LLM 연결을 여기서 초기화
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작 시 handler SDK 초기화."""
+    """앱 시작 시 handler SDK 초기화 + 종료 시 HTTP 클라이언트 close."""
     configure_handlers()
     logger.info("llm-request service 시작")
     yield
+    # shutdown — 싱글톤 FileManagerHandler 의 httpx.AsyncClient 정리
+    fm = FileManagerHandler()
+    await fm.close()
     logger.info("llm-request service 종료")
 
 

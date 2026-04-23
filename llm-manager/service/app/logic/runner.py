@@ -549,11 +549,11 @@ async def llm_request_stream_async(
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
     debug: bool = False,
-) -> AsyncIterator[StreamChunk]:
-    """스트리밍 LLM 요청 (async). StreamChunk를 yield.
+) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
+    """스트리밍 LLM 요청 (async). (AsyncIterator[StreamChunk], meta) 튜플 반환.
 
-    캐시 히트 시 단일 StreamChunk 1개 yield.
-    standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield.
+    캐시 히트 시 단일 StreamChunk 1개만 yield하는 AsyncIterator 반환.
+    standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield하는 AsyncIterator.
     스트림 완료 후 MDB에 결과 자동 저장.
     """
     if not (cache_mode or save_mode):
@@ -575,15 +575,16 @@ async def llm_request_stream_async(
     )
 
     if prep.cached_output:
-        response, _meta = prep.cached_output
-        yield _to_stream_chunk(response)
-        return
+        response, cached_meta = prep.cached_output
+
+        async def _cached_stream() -> AsyncIterator[StreamChunk]:
+            yield _to_stream_chunk(response)
+
+        return _cached_stream(), cached_meta
 
     # dc 없는 경우 → 공유 캐시 없어서 standby 불필요
     if prep.dc is None:
-        async for chunk in _do_llm_stream(prep, database):
-            yield chunk
-        return
+        return _do_llm_stream(prep, database), _build_live_meta(prep)
 
     # cache miss — agent_llm standby 선점 시도
     cache_key = prep.dc.cache_key
@@ -592,12 +593,16 @@ async def llm_request_stream_async(
     )
     if acquired:
         logger.info("[dedup] role=leader key=%s", cache_key[:16])
-        try:
-            async for chunk in _do_llm_stream(prep, database):
-                yield chunk
-        finally:
-            await dedup.release_standby("agent_llm", cache_key)
-        return
+        meta = _build_live_meta(prep)
+
+        async def _leader_stream() -> AsyncIterator[StreamChunk]:
+            try:
+                async for chunk in _do_llm_stream(prep, database):
+                    yield chunk
+            finally:
+                await dedup.release_standby("agent_llm", cache_key)
+
+        return _leader_stream(), meta
 
     # 다른 요청이 처리 중 → 대기
     t_wait = time.monotonic()
@@ -608,14 +613,16 @@ async def llm_request_stream_async(
     wait_ms = int((time.monotonic() - t_wait) * 1000)
     if cached:
         logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
-        response, _meta = cached
-        yield _to_stream_chunk(response)
-        return
+        response, cached_meta = cached
+
+        async def _cached_stream() -> AsyncIterator[StreamChunk]:
+            yield _to_stream_chunk(response)
+
+        return _cached_stream(), cached_meta
 
     # timeout → 자기가 stream (Y' Hybrid)
     logger.warning("[dedup] role=standby_timeout wait_ms=%d", wait_ms)
-    async for chunk in _do_llm_stream(prep, database):
-        yield chunk
+    return _do_llm_stream(prep, database), _build_live_meta(prep)
 
 
 def llm_request_stream(
@@ -629,13 +636,12 @@ def llm_request_stream(
     context_cache_ttl: int | None = None,
     standby_ttl_seconds: int = 600,
     debug: bool = False,
-) -> Iterator[StreamChunk]:
-    """스트리밍 LLM 요청 (sync)."""
+) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
+    """스트리밍 LLM 요청 (sync). (Iterator[StreamChunk], meta) 튜플 반환."""
     import asyncio
 
-    async def _collect():
-        results = []
-        async for chunk in llm_request_stream_async(
+    async def _collect() -> tuple[list[StreamChunk], dict[str, Any]]:
+        stream, meta = await llm_request_stream_async(
             llm_input,
             files=files,
             cache_mode=cache_mode, save_mode=save_mode,
@@ -643,8 +649,11 @@ def llm_request_stream(
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
             debug=debug,
-        ):
-            results.append(chunk)
-        return results
+        )
+        chunks: list[StreamChunk] = []
+        async for chunk in stream:
+            chunks.append(chunk)
+        return chunks, meta
 
-    return iter(asyncio.run(_collect()))
+    chunks, meta = asyncio.run(_collect())
+    return iter(chunks), meta

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import quote
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -49,19 +50,25 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
 
 @router.post("/v1/request/stream")
 async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
-    """스트리밍 LLM 요청 (SSE)."""
+    """스트리밍 LLM 요청 (SSE).
+
+    meta는 `X-LLM-Meta` 응답 헤더에 URL-encoded JSON 으로 담고,
+    body는 chunk 이벤트만 SSE로 내보낸다.
+    """
+    stream, meta = await llm_request_stream_async(
+        body.llm_input,
+        files=body.files,
+        cache_mode=body.cache_mode,
+        save_mode=body.save_mode,
+        ttl_seconds=body.ttl_seconds,
+        database=body.database,
+        context_cache_ttl=body.context_cache_ttl,
+        standby_ttl_seconds=body.standby_ttl_seconds,
+        debug=body.debug,
+    )
+
     async def _sse():
-        async for chunk in llm_request_stream_async(
-            body.llm_input,
-            files=body.files,
-            cache_mode=body.cache_mode,
-            save_mode=body.save_mode,
-            ttl_seconds=body.ttl_seconds,
-            database=body.database,
-            context_cache_ttl=body.context_cache_ttl,
-            standby_ttl_seconds=body.standby_ttl_seconds,
-            debug=body.debug,
-        ):
+        async for chunk in stream:
             event = {
                 "type": "chunk",
                 "text": chunk.text,
@@ -72,7 +79,10 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(_sse(), media_type="text/event-stream")
+    headers = {
+        "X-LLM-Meta": quote(json.dumps(meta, default=str, ensure_ascii=False)),
+    }
+    return StreamingResponse(_sse(), media_type="text/event-stream", headers=headers)
 
 
 # ── /v1/done-check ───────────────────────────────────────────
