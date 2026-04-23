@@ -29,7 +29,7 @@ router = APIRouter(prefix="/v1/files", tags=["files"])
 # ─── MDB Handler HTTP 클라이언트 ──────────────────────────────────────
 
 _mdb_client: httpx.AsyncClient | None = None
-_mdb_prefix = f"/v1/{settings.mdb_database}/{settings.mdb_collection}"
+_mdb_prefix = f"/v1/{settings.mongodb_database}/{settings.mongodb_collection}"
 
 
 def get_mdb_client() -> httpx.AsyncClient:

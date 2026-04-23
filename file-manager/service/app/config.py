@@ -11,8 +11,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # MDB Handler Service URL (메타데이터 저장/조회)
     mdb_handler_url: str = "http://mdb-handler:8300"
-    mdb_database: str = "kw_ai"
-    mdb_collection: str = "file_cache"
+    mongodb_database: str = "kw_ai"
+    mongodb_collection: str = "file_cache"
 
     # File Server — file_handler 패키지가 os.environ으로 읽는다
     # (docker compose가 컨테이너 내부에서 /data로 주입)

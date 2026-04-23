@@ -1150,5 +1150,35 @@ Fix A의 stub→v1 교체에서 `FileManagerHandler.check_cache` / `upload_file`
 ### 영향 범위
 
 - **Breaking 없음** — `FileInput`의 새 필드는 기본값 `None`. 에이전트가 보내는 요청 바디·SDK 시그니처 모두 동일
+
+---
+
+## file-manager docker env 명칭 통일 (`MDB_*` → `MONGODB_*`)
+
+### 배경
+
+`docker-compose.yml` 에서 MongoDB 관련 env 변수 이름이 서비스마다 섞여 있었다:
+
+- `backend`, `mdb-handler`, `llm-request`, `vectorize`: `MONGODB_DATABASE`
+- `file-manager`: `MDB_DATABASE` / `MDB_COLLECTION`
+
+`file-manager` 만 prefix가 달라, 운영자가 `.env` 에서 DB 이름을 override할 때 혼동을 유발하고 Fix A §"교체된 구성 요약" 표의 "메타 DB" 행과도 표기가 어긋났다.
+
+의미상으로도 둘 다 "어떤 MongoDB DB/컬렉션을 쓸까" 라는 동일 개념이므로, 다수파인 `MONGODB_*` 로 통일.
+
+### 해결 내용
+
+| 유형 | 경로 | 비고 |
+|---|---|---|
+| 변경 | `packages/file-manager/service/app/config.py` | pydantic-settings 필드 `mdb_database` / `mdb_collection` → `mongodb_database` / `mongodb_collection` (필드명이 자동으로 `MONGODB_DATABASE` / `MONGODB_COLLECTION` env를 읽게 됨) |
+| 변경 | `packages/file-manager/service/app/routers/files.py` | `_mdb_prefix` 조립 시 `settings.mdb_*` → `settings.mongodb_*` 참조 갱신 |
+| 변경 | `docker-compose.yml` | `file-manager` 섹션의 env `MDB_DATABASE` / `MDB_COLLECTION` → `MONGODB_DATABASE` / `MONGODB_COLLECTION` |
+
+`mdb-handler` URL 경로(`/v1/{db}/{collection}`) 자체와 기본값(`kw_ai` / `file_cache`)은 그대로 유지 — 이름표만 바뀌었을 뿐 동작·경로·데이터 위치 모두 동일.
+
+### 영향 범위
+
+- **Breaking (운영자 관점)** — `.env` 에 `MDB_DATABASE=...` / `MDB_COLLECTION=...` 을 override 해서 쓰던 환경이 있다면 `MONGODB_DATABASE` / `MONGODB_COLLECTION` 으로 키 이름을 바꿔줘야 한다. override 없이 기본값으로 쓰던 환경은 무영향.
+- **Breaking 없음 (런타임)** — 컨테이너 내부에서 쓰이는 DB/컬렉션 이름·HTTP 요청 경로 모두 동일.
 - **MDB 스키마 호환** — `file_meta` list 안의 dict에 키 하나가 늘어날 뿐. 기존 문서 조회·역직렬화에 영향 없음
 - **서버화 이전부터 누락된 정보를 메우는 변경** — Fix A에서 교체된 v1 SDK가 이미 제공하던 값을 비로소 활용
