@@ -1,8 +1,8 @@
 """파일 등록 단계.
 
 에이전트가 보낸 FileInput 리스트를 file-manager에 등록한다.
-check_cache로 존재 확인 → 없으면 upload_file. file-manager의 내부 식별자(file_path 등)는
-llm-request에서 다루지 않는다.
+check_cache로 존재 확인 → 없으면 upload_file. file-manager가 부여한 file_path를
+각 FileInput에 심어두면 후단의 _dump_files_meta가 MDB `file_meta`에 함께 저장한다.
 
 설계: docs/file-manager-bytes-passthrough.md
 """
@@ -47,6 +47,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
             ) from e
 
         if result["hit"]:
+            fi.file_path = result["file_path"]
             continue
 
         upload_meta = {
@@ -55,7 +56,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
             "extension": fi.extension,
         }
         try:
-            await fm.upload_file(fi.data, upload_meta)
+            fi.file_path = await fm.upload_file(fi.data, upload_meta)
         except Exception as e:
             logger.exception(
                 "file-manager upload_file 실패: file_name=%s", fi.file_name,

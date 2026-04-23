@@ -15,15 +15,15 @@
 - **검증:** merge 완료 (`ec3eb6d Merge remote-tracking branch 'origin' into feat/llm_request`, `50a98d5 file-manager연결`)
 - **결정:** main의 file-handler 기반 설계로 수렴 (완료)
 
-### [~] B. Path Traversal @ `packages/file-manager/service/app/store.py:84`
+### [x] B. Path Traversal @ `packages/file-manager/service/app/store.py:84`
 - **주장:** `get_file_bytes`가 `file_path`를 무검증으로 `Path(storage_dir) / file_path` 결합 → 임의 파일 조회
 - **검증:**
   - merge 후 라우터는 `file_handler.read_file`을 사용 (`routers/files.py:23, 156`)
   - `file_handler/storage.py:32-38`의 `_resolve_safe_path`가 이미 경계 검사 중 (`startswith(root)`)
-  - `store.py` 전체가 dead code로 보임 (라우터·SDK 어느 쪽도 import 안 함)
-- **남은 액션:**
-  - [ ] B-1. `packages/file-manager/service/app/store.py` 삭제 검토 (완전 미사용 최종 확인 후)
-  - [ ] B-2. `file_handler/storage.py`의 `startswith` → `is_relative_to`로 강화 (`/app/data` vs `/app/data_leak` 우회 가능성 제거)
+  - `store.py` 전체가 dead code 확인 (라우터·SDK 어느 쪽도 import 안 함)
+- **수정/하위 상태:**
+  - [x] B-1. `packages/file-manager/service/app/store.py` 삭제 완료 (Fix A의 stub 잔재 정리 스윕에 포함)
+  - [ ] B-2. `file_handler/storage.py` 의 `startswith` → `is_relative_to` 강화 — follow-up (취약 경로는 사라졌고 방어 코드 자체의 강화는 별건)
 
 ### [x] C. Validation 순서 역전 @ `runner.py:438-441, 562-565`
 - **주장:** 설계는 `validate_mime → validate_size → register_files` 순이나 실제는 register 선행 → 2GB 초과·미지원 MIME도 일단 업로드됨
@@ -35,23 +35,26 @@
 - **검증:** 주장 정확. 이중 핸들 문제 — `tmp`가 연 fd와 `fitz.save`가 같은 경로를 여는 핸들이 공존. Windows는 공유 모드로 확정 실패, Linux는 대부분 성공하지만 이론적 위험 존재. 비동기/동시성 아닌 단일 호출 내부 문제. 상세: `docs/00.concepts.md` §NamedTemporaryFile과 이중 핸들 문제
 - **수정:** 두 블록 모두 `tempfile.NamedTemporaryFile(...)` 직후 `tmp.close()` 한 줄 추가 ([splitter.py:123](../service/app/logic/file_processing/splitter.py#L123), [splitter.py:163](../service/app/logic/file_processing/splitter.py#L163)) — `delete=False`이므로 close해도 파일 유지, 이후 `save`가 같은 경로에 덮어씀
 
-### [ ] E. SDK 의존성 누락 @ `packages/llm-request/sdk/pyproject.toml`
+### [x] E. SDK 의존성 누락 @ `packages/llm-request/sdk/pyproject.toml`
 - **주장:** `kiwoom-llm-handler` 미선언 상태로 `llm_handler` re-export → 런타임 ImportError
-- **검증:** TODO
-- **남은 액션:** 의존성 추가 + 중요 이슈 #4 (re-export 범위 축소)와 묶어서 처리
+- **검증:** SDK 코드에서 `(from|import) llm_handler` **4건** 확인 (`sdk/llm_request/__init__.py:30-32`, `sdk/llm_request/aio.py:14`) — 전부 top-level, 모듈 로드 시 즉시 평가. 루트 `uv sync` 환경에선 service를 통해 llm-handler가 설치되어 "우연히" 돌아감. sdk 단독 설치(`pip install -e sdk`) / wheel 배포 시나리오에서는 ImportError 확정
+- **수정:** [sdk/pyproject.toml](../sdk/pyproject.toml) `dependencies` 정리. (1) `kiwoom-llm-handler>=0.1.0` 추가 (경로는 `[tool.uv.sources]` 에 이미 설정됨), (2) sdk 코드에서 import 0건인 dead dep 3개(`kiwoom-redis-handler`, `kiwoom-file-manager`, `filetype`) 제거. `sources` 는 "어디서 가져올지 경로", `dependencies` 는 "이게 필요하다는 선언" 으로 역할이 다름 — sources는 손대지 않음
 
-### [ ] F. 바이너리 커밋 @ `packages/file-manager/service/storage/`
+### [x] F. 바이너리 커밋 @ `packages/file-manager/service/storage/`
 - **주장:** PDF 3개(92MB 포함)·M4A·PNG 커밋
-- **검증:** TODO (merge 후에도 남아있는지)
-- **남은 액션:** 제거 + `.gitignore`에 `packages/*/service/storage/` 추가
+- **검증:** `ls packages/file-manager/service/{storage,fixtures}/` → 두 디렉터리 모두 존재하지 않음. Fix A의 stub 잔재 정리 스윕에서 이미 제거됨 (8개 바이너리 일괄 삭제, `pull_request_v3.md` §Fix A #4 참고)
+- **수정:** 별도 수정 없음 — Fix A에 흡수됨
+- **follow-up:** Kiwoom-Rag 루트 `.gitignore` 에 `packages/*/service/storage/`, `packages/*/service/fixtures/` 재발 방지 패턴 추가 — 루트 파일 수정이라 범위·영향이 다름, 별도 처리
 
 ---
 
 ## ⚠️ Important — 아키텍처 준수
 
-### [ ] I-A1. `run_many` / `run_many_stream`이 `files` 미전달 @ `orchestrator.py:14-57`
+### [x] I-A1. `run_many` / `run_many_stream`이 `files` 미전달 @ `orchestrator.py:14-57`
+> orchestrator 삭제로 해소 — `pull_request_v3.md § orchestrator 제거` 참고
 ### [ ] I-A2. `llm_request_stream_async` 반환 타입 불일치 @ `runner.py:547-551`
-### [ ] I-A3. `run_many_stream`에 `_type: "cache_hit"` 이벤트 누락 @ `orchestrator.py:74`
+### [x] I-A3. `run_many_stream`에 `_type: "cache_hit"` 이벤트 누락 @ `orchestrator.py:74`
+> orchestrator 삭제로 해소 — `pull_request_v3.md § orchestrator 제거` 참고
 ### [ ] I-A4. SDK 과도한 re-export — ARCHITECTURE.md는 5개인데 전체 노출
 ### [ ] I-A5. `fetch_by_cache_key`의 collection 하드코딩 @ `store.py:120-121`
 ### [ ] I-A6. file-manager httpx 싱글톤 미설정 @ `providers.py:79`
@@ -68,7 +71,8 @@
 ### [ ] I-Q6. `_estimate_non_file_bytes`의 `except Exception: return 0` @ `resolver.py:70-71`
 ### [ ] I-Q7. `create_context_cache` model 타입 불일치 @ `resolver.py:241`, `uploader.py:67`
 ### [ ] I-Q8. `Base64Field` 정의 중복 @ `models.py:21-25` ↔ `requests.py:13-17`
-### [ ] I-Q9. `run_many` 예외 시 dangling task @ `orchestrator.py:38-42`
+### [x] I-Q9. `run_many` 예외 시 dangling task @ `orchestrator.py:38-42`
+> orchestrator 삭제로 해소 — `pull_request_v3.md § orchestrator 제거` 참고
 ### [ ] I-Q10. 미사용 `FileChecksum` TypedDict @ `logic/types.py`
 ### [ ] I-Q11. 테스트 누락 — `test_resolver.py`, validators, classify, `_process_*`
 

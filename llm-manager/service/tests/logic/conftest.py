@@ -4,7 +4,7 @@ dedup 관련 fixture는 test_dedup.py 외에 test_resolver_standby.py,
 test_runner_standby.py에서도 공유하므로 conftest로 승격.
 
 주의: 이 파일이 상위 tests/conftest.py를 그림자 처리하므로,
-기존 test_store.py / test_orchestrator.py가 `from conftest import`로
+기존 test_store.py가 `from conftest import`로
 쓰던 SAMPLE_* 상수는 아래에서 re-export.
 """
 

@@ -674,7 +674,7 @@ MDB에 해당 입력의 응답이 이미 저장되어 있는지 확인. LLM 호�
 | `created_at` | `str` | 저장 시각 (UTC ISO) |
 | `requested_at` | `str` | LLM 요청 시각 (UTC ISO, LLM 호출 시에만) |
 | `expires_at` | `str` | `mdb_ttl` 설정 시에만. **현재 필드만 기록, 자동 삭제 미동작** |
-| `file_meta` | `list[dict]` | 파일 포함 요청 시. `FileInput` meta 리스트 (data 제외) |
+| `file_meta` | `list[dict]` | 파일 포함 요청 시. `FileInput` meta 리스트 (data 제외, file-manager가 부여한 `file_path` 포함) |
 
 ## TTL 현황
 

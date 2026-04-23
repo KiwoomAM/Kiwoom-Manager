@@ -1,17 +1,19 @@
-# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D 해소)
+# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D·E·F 해소)
 
 # 📝 개요 (Overview)
 
-PR #468 리뷰의 블로커 중 **A(Main과의 대규모 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)** 를 해소한다.
+PR #468 리뷰의 블로커 **A(Main 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)**, **E(SDK 의존성 선언 누락)**, **F(바이너리 커밋)** 를 해소한다.
 
-A/B는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
+A/B/F는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
 
-C/D는 이 교체와 무관한 **llm-request 코드 내부의 국소 버그 수정**. 각 수정은 기존 함수 동작을 바꾸지 않고 정상 경로의 시그니처도 건드리지 않는다.
+C/D/E는 이 교체와 무관한 **llm-request 코드·패키지 메타데이터의 국소 버그 수정**. 각 수정은 기존 정상 경로의 동작·시그니처를 바꾸지 않고 실패 경로만 개선한다.
 
 - **Fix A** — stub 폐기 + v1 흡수 + llm-request 호출부의 최소 adaptation + stub 잔재(12개 파일) 정리
-- **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소, B-2(file-handler 강화)는 후속 PR
+- **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소, B-2(file-handler 경계 검사 강화)는 follow-up
 - **Fix C** — `runner.py`에서 `register_files` 가 validate 앞에 있던 순서를 뒤집어, 미지원 MIME·2GB 초과 파일이 file-manager에 업로드되기 전에 fail-fast로 차단
 - **Fix D** — `splitter.py`에서 `NamedTemporaryFile(delete=False)` 의 fd를 닫지 않은 채 `fitz.save` 를 호출하던 이중 핸들 패턴을 `tmp.close()` 한 줄로 교정
+- **Fix E** — `sdk/pyproject.toml` 의존성 선언 정리. (1) 누락된 `kiwoom-llm-handler` 추가 — 워크스페이스 경로(`[tool.uv.sources]`)는 이미 설정돼 있어 루트 `uv sync` 환경에선 우연히 돌았지만 sdk 단독 설치·배포 시 ImportError. (2) sdk 코드에서 import 0건인 dead dep 3개(`kiwoom-redis-handler`, `kiwoom-file-manager`, `filetype`) 제거
+- **Fix F** — `packages/file-manager/service/{storage,fixtures}/` 의 바이너리 파일들은 **Fix A의 stub 잔재 정리에 이미 포함되어 제거됨** (별도 섹션 없음). 재발 방지용 `.gitignore` 보강은 follow-up
 
 
 # 🔗 관련 문서
@@ -120,15 +122,15 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
         upload_meta = {**hash_meta,
                        "mime_type": fi.mime_type,
                        "extension": fi.extension}
-        await fm.upload_file(fi.data, upload_meta)     # str — 현재는 반환값 미활용
+        await fm.upload_file(fi.data, upload_meta)     # str — file_path. 본 PR 추가 변경에서 활용 시작 (§➕ 참고)
     return inputs
 ```
 
 변경점 요약:
 - **import**: 모듈 함수 2개 → 단일 클래스 1개
 - **초기화**: 함수 본문에서 `FileManagerHandler()` 호출. v1 SDK가 싱글톤이라 매 요청마다 재호출해도 동일 인스턴스 재사용
-- **`check_cache` 반환**: `bool exists` → `dict {"hit": bool, "file_path": str | None}`. 현재 로직은 `hit` 키만 사용
-- **`upload_file` 반환**: `None` → `str file_path`. 현재 이 값은 버림. 추후 캐시 키 / 재조회 경로에서 활용 여지
+- **`check_cache` 반환**: `bool exists` → `dict {"hit": bool, "file_path": str | None}`. 본 PR 추가 변경에서 `file_path`까지 활용 (§➕)
+- **`upload_file` 반환**: `None` → `str file_path`. 본 PR 추가 변경에서 MDB `file_meta`에 보존 (§➕)
 
 #### 3. 포트 이관 (8102 → 8600) 및 연관 문서 갱신
 
@@ -376,7 +378,7 @@ part_doc.save(tmp.name, garbage=4, deflate=True)
 
 ### 검증 — 동시성 문제 아님
 
-혼동하기 쉬운 부분을 명시적으로 정리 (상세: `docs/00.concepts.md` §"NamedTemporaryFile과 이중 핸들 문제"):
+혼동하기 쉬운 부분을 명시적으로 정리:
 
 - **D는 단일 호출 내부 문제.** 한 번의 `split_pdf` 호출 안에서 `tmp` 의 fd와 `fitz.save` 가 여는 fd가 공존하는 상태가 원인
 - **비동기·동시성과 무관.** `tempfile` 은 호출마다 고유 경로를 할당하므로 여러 요청이 병렬로 분할해도 서로 다른 파일을 쓴다. 요청 간 경쟁 아님
@@ -438,7 +440,6 @@ part_doc.save(tmp_name, garbage=4, deflate=True)
 | 유형 | 경로 | 비고 |
 |------|------|------|
 | 변경 | `packages/llm-request/service/app/logic/file_processing/splitter.py` | 두 곳(`:123`, `:163`)에 `tmp.close()` 추가 |
-| 문서 | `packages/llm-request/docs/00.concepts.md` | "NamedTemporaryFile과 이중 핸들 문제" 섹션 추가 |
 
 ### 영향 범위
 
@@ -453,7 +454,145 @@ part_doc.save(tmp_name, garbage=4, deflate=True)
 
 ---
 
+## Fix E. SDK `kiwoom-llm-handler` 의존성 선언 누락 보완
+
+### 배경
+
+`packages/llm-request/sdk/llm_request/__init__.py` 는 `llm_handler` 의 공개 API를 **대량 re-export** 한다 — `LLMResponse`, `StreamChunk`, `Part`, `FileRef`, `call`, `stream`, `upload_file`, `create_cache` 등. `sdk/llm_request/aio.py` 도 `llm_handler.aio` 의 같은 심볼들을 re-export. 따라서 sdk 패키지가 로드되려면 `kiwoom-llm-handler` 가 설치 대상에 **반드시** 포함되어야 한다.
+
+리뷰 원 지적: `packages/llm-request/sdk/pyproject.toml` 의 `[project] dependencies` 에 `kiwoom-llm-handler` 가 **선언되지 않음**. sdk 단독 설치 시 `from llm_request import llm_request_async` 첫 import 지점에서 `ModuleNotFoundError: No module named 'llm_handler'` 로 실패할 수 있는 구조.
+
+### 왜 지금까지 "우연히" 동작했는가 — `uv.sources` vs `dependencies` 구분
+
+두 섹션은 역할이 다르다:
+
+| 섹션 | 위치 | 역할 |
+|---|---|---|
+| `[tool.uv.sources]` | **워크스페이스 루트** `packages/llm-request/pyproject.toml` | "이 패키지를 설치해야 할 때 **어디서** 가져와라" — 경로 지도 |
+| `dependencies = [...]` | **각 멤버** (`sdk/`, `service/`) `pyproject.toml` | "**이게 필요하다**" — 요구 선언 |
+
+현재 루트는 `kiwoom-llm-handler = { path = "../llm-handler/sdk", editable = true }` 로 경로 지도를 이미 갖고 있다. 그리고 `service/pyproject.toml` 에 `kiwoom-llm-handler>=0.1.0` 이 선언돼 있어서 **`uv sync` 를 루트에서 돌리면 service를 통해 llm-handler가 editable로 설치**된다. sdk는 같은 환경 안에서 그 모듈을 import 가능 — 그래서 workspace 전체 설치 시나리오에선 문제가 드러나지 않았다.
+
+문제가 드러나는 시나리오:
+- `pip install -e packages/llm-request/sdk` 같은 **sdk 단독 설치**
+- sdk만 wheel 빌드해서 배포 → 외부 사용자가 `pip install kiwoom-llm-request` 로 받는 경우
+
+두 경우 모두 sdk의 `dependencies` 만 보므로 llm-handler가 설치 목록에 없다. 첫 import에서 실패 확정.
+
+### 검증 — SDK 코드의 실제 import
+
+sdk 디렉터리에서 `(from|import) llm_handler` 를 grep한 결과 4건 (모두 top-level, 모듈 로드 시 즉시 평가):
+
+```
+sdk/llm_request/__init__.py:30 — import llm_handler as llm_handler  # noqa: PLC0414
+sdk/llm_request/__init__.py:31 — import llm_handler.aio             # noqa: F401
+sdk/llm_request/__init__.py:32 — from llm_handler import (...)      # 대량 re-export
+sdk/llm_request/aio.py:14     — from llm_handler.aio import (...)
+```
+
+지연 실패 아님. 의존성 누락 시 sdk import 시점에 즉시 깨진다.
+
+### 해결 내용
+
+`sdk/pyproject.toml` 의 dependencies 리스트에서 두 가지 정리를 동시에 수행:
+
+1. **누락된 `kiwoom-llm-handler>=0.1.0` 추가** — 버전 스펙은 service와 동일
+2. **dead dep 3개 제거** (`kiwoom-redis-handler`, `kiwoom-file-manager`, `filetype`) — 아래 "dead dep 검증" 참고
+
+```diff
+ dependencies = [
+     "httpx>=0.27.0",
+-    "filetype>=1.2.0",
+-    "kiwoom-redis-handler>=1.0.0",
+-    "kiwoom-file-manager>=0.1.0",
++    "kiwoom-llm-handler>=0.1.0",
+ ]
+```
+
+경로(`[tool.uv.sources]`)는 건드리지 않음 — 이미 루트에 `../llm-handler/sdk` 로 매핑돼 있고, 외부 사용자는 배포 index의 `kiwoom-llm-handler` 를 가져오면 됨(배포 방식은 별도 주제).
+
+### dead dep 검증
+
+리뷰어가 지적한 E의 본질은 "필요한 의존성 누락" 이지만, sdk dependencies 를 뜯어보는 과정에서 **sdk 코드가 실제로 import하지 않는** 패키지 3개가 관찰됐다. `(from|import) <pkg>` grep + case-insensitive 전체 문자열 grep 양방향으로 sdk 트리 전체 재검증:
+
+| 패키지 | sdk 코드 import 여부 | 실제 사용 위치 |
+|---|---|---|
+| `kiwoom-redis-handler` | 0건 | Service 전용 (`service/app/logic/file_processing/{dedup,cache_store}.py`) |
+| `kiwoom-file-manager` | 0건 | Service 전용 (`service/app/logic/file_register.py`) |
+| `filetype` | 0건 | sdk·service 어느 쪽에서도 실사용 미확인 |
+
+sdk는 순수 HTTP 클라이언트 — Redis / file-manager 접속은 Service 역할이므로 sdk에 이들 SDK를 **직접** 연결할 이유가 없다. 이 3개는 **dead dep**. 같은 파일(`sdk/pyproject.toml`)의 같은 편집 기회에 함께 정리하는 것이 변경 단위 측면에서 자연스럽고, `uv.lock` 갱신 시 관련 transitive 의존성도 같이 빠진다.
+
+### 파일 변경 목록
+
+| 유형 | 경로 | 비고 |
+|------|------|------|
+| 변경 | `packages/llm-request/sdk/pyproject.toml` | `dependencies` 정리 — `kiwoom-llm-handler>=0.1.0` 추가 + dead dep 3개(`kiwoom-redis-handler`, `kiwoom-file-manager`, `filetype`) 제거 |
+
+### 영향 범위
+
+- **Breaking 없음** — 루트 `uv sync` 환경의 설치 결과는 실질적으로 동일 (이전부터 llm-handler가 service를 통해 설치되고 있었음). sdk 단독 설치·빌드·배포 시나리오에서만 설치 목록에 llm-handler가 명시적으로 추가됨
+- **런타임 동작 변화 없음** — 코드에서 import하는 대상이 동일
+- `uv.lock` 갱신은 `uv sync` 실행 시 자동 반영
+
+### 관련 리뷰 항목
+
+- 🚨 **E** (SDK 의존성 누락) 해소
+- ⚠️ **I-A4** (SDK 과도 re-export 축소) — 본 PR 범위 밖. `llm_handler` 의 `call/stream/upload_file/create_cache/...` 전부를 sdk가 노출하는 정책을 재검토할지는 별도 결정 사안 → follow-up
+
+---
+
 # 📌 참고 사항
 
 - `ec3eb6d Merge remote-tracking branch 'origin' into feat/llm_request` — main origin의 winus-handler 리팩토링이 함께 유입된 부수 머지. llm-request 로직과 무관.
 - `156c02f test` — `verify_all.ipynb` 재실행 결과(출력 셀 포함) 커밋. 기능 변경 없음.
+
+---
+
+# ➕ 리뷰 외 추가 수정
+
+## orchestrator 제거
+
+### 배경
+
+`service/app/logic/orchestrator.py`는 llm-request가 **라이브러리 시절** 제공하던 `run_many` / `run_many_stream` 병렬 배치 실행 함수의 구현체였다. v0.2.0 서버화(SDK + Service 2-tier) 전환이 완료되면서 배치 호출은 SDK 사용자 쪽에서 `asyncio.gather` 등으로 조합하는 게 더 자연스러워졌고, SDK·Service 런타임 코드에서 `orchestrator` 참조 0건 확인(grep). 폐기 결정.
+
+### 해결 내용
+
+| 유형 | 경로 | 비고 |
+|---|---|---|
+| 삭제 | `packages/llm-request/service/app/logic/orchestrator.py` | 본체 (선행 작업) |
+| 삭제 | `packages/llm-request/service/tests/logic/test_orchestrator.py` | orchestrator import로 `pytest` collect 단계 ImportError 발생 중이었음 |
+| 변경 | `packages/llm-request/service/tests/logic/conftest.py` | 주석의 `test_orchestrator.py` 언급 제거 |
+
+### 영향 범위
+
+- **Breaking 없음** — SDK 공개 API(`llm_request_async`, `llm_request_stream_async` 등) 변경 없음
+- **테스트 수집 정상화** — `pytest service/tests/ -v` 가 orchestrator import 에러 없이 수집
+- **후속 정리 대상(본 PR 범위 밖):** `ARCHITECTURE.md`, `docs/01.DESIGN.md`, `docs/03~06.file-handler-phase*.md`, `docs/09.file-manager-separation.md`, `docs/pr_review_solve.md`, `docs/pull_request_v2.md` 에 남은 orchestrator 언급은 설계 문서 레거시라 일괄 정리는 별도 PR로 분리
+
+---
+
+## file-manager `file_path` 를 MDB `file_meta` 에 보존
+
+### 배경
+
+Fix A의 stub→v1 교체에서 `FileManagerHandler.check_cache` / `upload_file` 의 새 반환 시그니처(`{"hit", "file_path"}` / `str file_path`)는 흡수했으나, **반환된 `file_path` 자체는 활용하지 않고 버리고 있었다** (Fix A §"After" 코드 라인의 `# 현재는 반환값 미활용` 참조).
+
+`file_path`는 file-manager가 부여한 영구 식별자(UUID + 확장자)로, 추후 동일 파일을 재조회·재참조할 때의 핵심 키다. 캐시 문서와 함께 보존해두면 후속 흐름(예: 캐시 hit 결과의 원본 파일 추적, file-manager → llm-request 역방향 조회)에서 별도 매핑 테이블 없이 바로 사용할 수 있다.
+
+### 해결 내용
+
+| 유형 | 경로 | 비고 |
+|---|---|---|
+| 변경 | `packages/llm-request/service/app/models/requests.py` | `FileInput`에 `file_path: str \| None = None` 필드 추가 + docstring 업데이트 |
+| 변경 | `packages/llm-request/service/app/logic/file_register.py` | `check_cache` hit 시 `fi.file_path = result["file_path"]`, miss 시 `fi.file_path = await fm.upload_file(...)` 로 반환값 캐치 + 모듈 docstring 업데이트 |
+| 변경 | `packages/llm-request/README_v2.md` | §10 문서 스키마 표의 `file_meta` 설명에 `file_path` 포함 명시 |
+
+`runner.py` / `store.py` / `_dump_files_meta` 는 변경 불필요 — `_dump_files_meta` 는 `FileInput.model_dump(exclude={"data"})` 결과를 그대로 사용하므로, 새로 추가된 `file_path` 필드가 자동으로 dump되어 MDB 문서의 `file_meta` list 각 원소에 포함된다.
+
+### 영향 범위
+
+- **Breaking 없음** — `FileInput`의 새 필드는 기본값 `None`. 에이전트가 보내는 요청 바디·SDK 시그니처 모두 동일
+- **MDB 스키마 호환** — `file_meta` list 안의 dict에 키 하나가 늘어날 뿐. 기존 문서 조회·역직렬화에 영향 없음
+- **서버화 이전부터 누락된 정보를 메우는 변경** — Fix A에서 교체된 v1 SDK가 이미 제공하던 값을 비로소 활용

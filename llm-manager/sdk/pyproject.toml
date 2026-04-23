@@ -5,9 +5,7 @@ description = "LLM Request SDK - LLM 응답 캐싱 서비스 클라이언트"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27.0",
-    "filetype>=1.2.0",
-    "kiwoom-redis-handler>=1.0.0",
-    "kiwoom-file-manager>=0.1.0",
+    "kiwoom-llm-handler>=0.1.0",
 ]
 
 [project.optional-dependencies]

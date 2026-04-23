@@ -20,7 +20,8 @@ Base64Field = Annotated[
 class FileInput(BaseModel):
     """에이전트가 서버에 넘기는 파일 입력.
 
-    file_path는 없음 — file-manager가 업로드 시 부여하므로 에이전트는 알 수 없다.
+    file_path는 에이전트가 세팅하지 않는다. Service가 file-manager 등록 단계에서
+    check_cache / upload_file 반환값으로 채운 뒤 MDB `file_meta`에 함께 저장한다.
     """
 
     file_name: str
@@ -29,6 +30,7 @@ class FileInput(BaseModel):
     mime_type: str
     extension: str
     data: Base64Field
+    file_path: str | None = None
 
 
 class FileKeyingMeta(BaseModel):
