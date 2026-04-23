@@ -23,7 +23,7 @@
   - `store.py` 전체가 dead code 확인 (라우터·SDK 어느 쪽도 import 안 함)
 - **수정/하위 상태:**
   - [x] B-1. `packages/file-manager/service/app/store.py` 삭제 완료 (Fix A의 stub 잔재 정리 스윕에 포함)
-  - [-] B-2. `file_handler/storage.py` 의 `startswith` → `is_relative_to` 강화 — **드롭**. llm-request 는 사내망 전용 배포이고 `file_path` 는 file-manager 가 내부에서 UUID 로 생성·관리하는 값이라 외부 공격자 통제 불가 → 실전 위협 모델 성립 안 함. 이슈 raise 도 생략. `follow-up.md` 에서도 제거
+  - [-] B-2. `file_handler/storage.py` 의 `startswith` → `is_relative_to` 강화 — **드롭**. llm-request 는 사내망 전용 배포이고 `file_path` 는 file-manager 가 내부에서 UUID 로 생성·관리하는 값이라 외부 공격자 통제 불가 → 실전 위협 모델 성립 안 함. 이슈 raise 도 생략
 
 ### [x] C. Validation 순서 역전 @ `runner.py:438-441, 562-565`
 - **주장:** 설계는 `validate_mime → validate_size → register_files` 순이나 실제는 register 선행 → 2GB 초과·미지원 MIME도 일단 업로드됨
@@ -102,9 +102,9 @@
 - **검증:** Grep 양방향 (`from app.logic.types import`, `from .types import`, 파일명 직접 참조 등) 전 llm-request 트리 재확인 결과 실제 import **0건**. `test_keying.py:171` 의 `TestFileChecksumsInSubset` 은 클래스 이름만 유사 (실제 타입 import 안 함, `file_checksums` 리스트 문자열만 다룸). ARCHITECTURE.md · docs/ 의 언급은 설계 레거시 (사용자 방침: 문서 정리는 별도)
 - **수정:** `service/app/logic/types.py` 파일 통째로 삭제. 파일에 `FileChecksum` 외 다른 symbol 없었음 — 이 파일이 사라져도 import 에러 없음
 ### [x] I-Q11. 테스트 누락 — `test_resolver.py`, validators, classify, `_process_*`
-- **수정:** 신규 테스트 파일 3개 추가 (총 ~22 tests — 골든 패스 + 핵심 분기 커버)
+- **수정:** 신규 테스트 파일 3개 추가 (총 **29 tests** — 골든 패스 + 핵심 분기 커버)
   - [test_validators.py](../service/tests/logic/file_processing/test_validators.py) — `validate_mime_types` (whitelist 통과/거부/빈/부분거부) + `validate_file_sizes` (경계/초과/0/빈) — **10 tests**
-  - [test_resolver.py](../service/tests/logic/file_processing/test_resolver.py) — `classify_files` (비디오 강제분리/20MB/50MB 한도/한도초과/빈) + `_estimate_non_file_bytes` (정상/예외) + `_process_inline` (정상/빈) + `resolve_files` (빈/model None+ttl raise(I-Q7 회귀)/ttl없음OK/승급정책) — **11 tests**
+  - [test_resolver.py](../service/tests/logic/file_processing/test_resolver.py) — `classify_files` (비디오 강제분리/20MB/50MB 한도/한도초과/빈) + `_estimate_non_file_bytes` (정상/예외) + `_process_inline` (정상/빈) + `resolve_files` (빈/model None+ttl raise(I-Q7 회귀)/ttl없음OK/승급정책) — **13 tests**
   - [test_file_register.py](../service/tests/logic/test_file_register.py) — `register_files` (cache hit/miss + upload/check_cache 예외 wrap/upload 예외 wrap/빈/혼합 hit-miss) — **6 tests**
 
 ## ⚠️ Important — 호환성

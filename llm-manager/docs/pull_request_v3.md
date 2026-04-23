@@ -1,12 +1,23 @@
-# Pull Request #468 v3 — Review 대응 (블로커 A·B·C·D·E·F + 아키텍처 I-A2·I-A6 해소)
+# Pull Request #468 v3 — 리뷰 전면 대응 및 후속 정리
 
 # 📝 개요 (Overview)
 
-PR #468 리뷰의 블로커 **A(Main 충돌)**, **B(Path Traversal)**, **C(Validation 순서 역전)**, **D(PDF splitter NamedTemporaryFile 처리 오류)**, **E(SDK 의존성 선언 누락)**, **F(바이너리 커밋)** 과 아키텍처 개선 항목 **I-A2(스트림 반환 타입 불일치)**, **I-A6(서버 종료 시 HTTP 클라이언트 close)** 를 해소한다.
+PR #468 리뷰 전반에 대응하고, 그 과정에서 자연스럽게 드러난 3가지 주변 이슈(orchestrator 폐기, file-manager `file_path` 보존, docker env 명칭 정합)까지 같이 정리한다.
 
-A/B/F는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub을, file-manager 담당자가 main에 올린 공식 v1 구현으로 교체**. 그동안의 stub은 README와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시되어 있었고, 이번 머지로 그 조건이 충족되어 계획대로 걷어냈다.
+해소 항목 요약:
+- **블로커 6** — A(Main 충돌), B(Path Traversal), C(Validation 순서), D(splitter tmp), E(SDK 의존성), F(바이너리 커밋)
+- **아키텍처 2** — I-A2(스트림 반환 타입), I-A6(서버 종료 시 close). I-A1/I-A3 는 orchestrator 제거로 자동 해소
+- **코드 품질 6** — I-Q3(close 공개), I-Q4(async Redis 래핑), I-Q5(BaseJsonStore 캡슐화), I-Q6(예외 로깅), I-Q7(model None 검증), I-Q11(테스트 29개 추가). I-Q9 는 orchestrator 제거로 자동 해소
+- **호환성 1** — I-C1(이주 안내). I-C2/C3/C4 는 Fix A 에 자동 흡수
+- **제안 2** — S2(설계 문서 이름 정합), S3(`context_cache_ttl=0` 명시)
 
-C/D/E/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메타데이터의 국소 개선** — 기존 정상 경로 동작·시그니처에 영향 없음. 
+수정 불필요로 결론 낸 항목 (§📌 참고 사항 에 근거 기록): I-Q1(CLAUDE.md 금지 근거 없음), I-Q8(Base64Field 중복 의도적), I-A4(re-export 의도적), I-A5(collection 하드코딩 유지), S1(IP fallback 유지), S4(`delete=True` 는 오히려 후퇴), B-2(사내망 + 내부 UUID 라 위협 모델 성립 안 함), F-2(`.gitignore` 보강은 레포 루트 수정이라 범위 밖).
+
+A/B/F 는 하나의 사건으로 요약된다 — **llm-request v0.2.0 개발 중 임시 플레이스홀더로 쓰던 `packages/file-manager/` stub 을, file-manager 담당자가 main 에 올린 공식 v1 구현으로 교체**. README 와 설계 문서에 "임시 구현, 담당자 완성 시 대체" 로 명시돼 있던 조건이 충족되어 걷어냈다.
+
+C/D/E/I-Q*/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메타데이터의 국소 개선** — 기존 정상 경로 동작·시그니처에 영향 없음. **I-A2(Fix G) 만 SDK 스트림 호출 패턴을 바꾸는 유일한 breaking change** 로, Kiwoom-Rag 전역 grep 결과 외부 호출자 0건을 확인한 후 진행. I-Q11(Fix L) 은 신규 테스트 29개 추가로 위 변경들의 회귀 방지 기반 마련.
+
+## Fixes — 리뷰 원문 대응
 
 - **Fix A** — stub 폐기 + v1 흡수 + llm-request 호출부의 최소 adaptation + stub 잔재(12개 파일) 정리
 - **Fix B** — Fix A의 부수 효과로 취약 코드 경로(`store.py`) 자체가 저장소에서 사라짐. B-1 해소. B-2(file-handler 경계 검사 강화)는 **드롭** — 사내망 전용 배포 + `file_path` 가 file-manager 내부 UUID 라 외부 공격자 통제 불가, 위협 모델 성립 안 함
@@ -16,6 +27,18 @@ C/D/E/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메타데
 - **Fix F** — `packages/file-manager/service/{storage,fixtures}/` 의 바이너리 파일들은 **Fix A의 stub 잔재 정리에 이미 포함되어 제거됨** (별도 섹션 없음). 재발 방지용 `.gitignore` 보강은 follow-up
 - **Fix G** — `llm_request_stream_async` · `llm_request_stream` 반환 타입을 `tuple[AsyncIterator, dict]` 로 변경 (I-A2). 스트림 호출자가 `stream, meta = await ...` 패턴으로 `cache_hit` 등 meta 를 시작 전 확인 가능. HTTP 레이어는 `X-LLM-Meta` 응답 헤더로 전달. SDK 호출 패턴 변경 (breaking) — Kiwoom-Rag 내 외부 호출자 0건 확인 후 진행
 - **Fix H** — FastAPI `lifespan` shutdown 에 `FileManagerHandler().close()` 추가 (I-A6). 리뷰어의 "매 호출마다 AsyncClient 생성" 주장은 실제와 다름 — `FileManagerHandler` 는 이미 `__new__` 기반 싱글톤으로 커넥션 풀 재사용 중. 누락됐던 close 만 보강
+- **Fix I** — `dedup.py` 3곳의 sync Redis 호출을 `await asyncio.to_thread(...)` 로 래핑 (I-Q4). 이벤트 루프 블로킹 제거. `redis-handler` async 전환은 범위 밖이라 호출자 책임 범위에서만 비동기 친화화
+- **Fix J** — `cache_store.py` 의 모듈 함수 6개를 `FileCacheStore(BaseJsonStore)` 클래스 메서드로 이동 (I-Q5). `BaseJsonStore` 의 protected 메서드를 외부에서 호출하지 않도록 캡슐화 회복. 모듈 함수는 호출자 호환성을 위해 위임 형태로 유지
+- **Fix K** — `context_cache` 생성 분기에서 `model is None` 일 때 명시적 `ValueError` raise (I-Q7). 기존 타입 흐름이 좁아지면서 모호한 Gemini API 에러로 터지던 경로를 fail-fast 한국어 에러로 대체
+- **Fix L** — 신규 단위 테스트 파일 3개 / 총 29 tests 추가 (I-Q11). `test_validators.py` · `test_resolver.py` · `test_file_register.py` — 본 PR 의 Fix C/D/I/J/K 회귀 방지
+- **Fix M** — SDK `async def close()` 공개 함수 추가 + `README_v2.md` 안내 (I-Q3). agent 프로세스 종료 시 `await close()` 호출로 httpx 커넥션 풀 정리
+- **Fix N** — `_estimate_non_file_bytes` 예외 블록에 `logger.exception` 추가 (I-Q6). silent failure 해소. fallback 값(`return 0`) 자체는 유지 — 실패 케이스 자체가 극히 드문 edge 라 fallback 변경의 실익 미미
+
+## 리뷰 외 추가 정리
+
+- **orchestrator 제거** — 라이브러리 시절 `run_many` / `run_many_stream` 의 구현체 폐기. SDK·Service 런타임에서 참조 0건 확인 후 삭제. I-A1 / I-A3 / I-Q9 자동 해소
+- **`file_path` MDB `file_meta` 보존** — Fix A 의 v1 SDK 반환값(`file_path: str`) 을 버리던 상태에서, `FileInput` 에 필드 추가 + file-manager 등록 시 저장. 후속 흐름(캐시 hit 결과의 원본 파일 추적 등)에서 별도 매핑 없이 사용 가능
+- **docker env `MDB_*` → `MONGODB_*` 통일** — `file-manager` 만 prefix 가 달라 있던 걸 다수파 `MONGODB_*` 로 통일. 운영자 `.env` override 키 이름만 변경, 런타임 동작·경로·데이터 위치 모두 동일
 
 
 # 🔗 관련 문서
@@ -173,7 +196,7 @@ stub이 존재했던 시절의 파일이 브랜치에 남아있었다. `git ls-t
 | 신규 흡수 | `packages/file-handler/` | v1이 스토리지를 위임하는 동반 패키지 |
 | 변경 | `packages/llm-request/service/app/logic/file_register.py` | SDK 호출부 stub → v1 |
 | 변경 | `packages/llm-request/service/app/config.py` | `file_manager_url` 기본값 8600 |
-| 변경 | `packages/llm-request/README_v2.md` | 포트 갱신 + "임시 실행" 섹션 제거 |
+| 변경 | `packages/llm-request/README_v2.md` | 포트 갱신 + "file-manager 실행" 섹션 제거 |
 | 변경 | `packages/llm-request/quickstarts/verify_all.ipynb` | 서비스 표 포트/URL 갱신 |
 | 삭제 | `packages/file-manager/pyproject.toml` | stub workspace root |
 | 삭제 | `packages/file-manager/sdk/file_manager/{client,models}.py` | stub SDK |
@@ -346,7 +369,7 @@ if files:
 
 - **Breaking 없음** — 외부 시그니처·정상 경로 동작 동일. MIME 통과 + 2GB 이하 파일의 처리 흐름은 그대로
 - **실패 경로만 개선** — 미지원 MIME · 2GB 초과 시 file-manager 호출 없이 422 즉시 반환. 네트워크/디스크/MDB 낭비 제거
-- **테스트**: `service/tests/logic/test_runner_standby.py` 는 `files` 파라미터 미사용 + validate/register 호출 자체를 assert하지 않음 → 이번 변경에 영향 없음. `validators.py` · `file_register.py` 전용 단위 테스트는 아직 없음(리뷰 I-Q11 범위, 후속 처리 예정)
+- **테스트**: `service/tests/logic/test_runner_standby.py` 는 `files` 파라미터 미사용 + validate/register 호출 자체를 assert하지 않음 → 이번 변경에 영향 없음. `validators.py` · `file_register.py` 전용 단위 테스트는 **Fix L 에서 추가됨** (리뷰 I-Q11)
 
 ### 관련 리뷰 항목
 
@@ -452,7 +475,7 @@ part_doc.save(tmp_name, garbage=4, deflate=True)
 ### 관련 리뷰 항목
 
 - 🚨 **D** (PDF splitter NamedTemporaryFile) 해소
-- 💡 **S4** (`resolver.py:163-170` `NamedTemporaryFile(delete=False)` → `with` 권장) — 해당 위치는 이미 `tmp.close()` 후 `upload_*` 를 호출하는 패턴이라 D와 같은 버그가 아님. 순수 스타일 제안이므로 이번 PR 범위 밖(후속 follow-up)으로 분리
+- 💡 **S4** (`resolver.py:163-170` `NamedTemporaryFile(delete=False)` → `with` 권장) — 해당 위치는 이미 `tmp.close()` 후 `upload_*` 를 호출하는 패턴이라 D와 같은 버그가 아님. 오히려 `delete=True` + `with` 로 바꾸면 블록 내 fd 가 열린 채 upload 가 호출되어 D 와 동일한 이중 핸들 문제 재현 — **거부**
 
 ---
 
@@ -548,7 +571,7 @@ sdk는 순수 HTTP 클라이언트 — Redis / file-manager 접속은 Service �
 
 ### 배경
 
-리뷰 원 지적 (I-A2): [`docs/01.DESIGN.md` §336](01.DESIGN.md) 설계 문서는 스트림 함수도 `tuple[AsyncIterator, dict]` 로 정의했지만 실제 구현은 `AsyncIterator[StreamChunk]` 만 반환 — **스트림 호출자가 `cache_hit` 등 meta 정보에 접근할 방법 없음**.
+리뷰 원 지적 (I-A2): [`docs/01.DESIGN.md`](01.DESIGN.md) L336 "반환 타입 정리" 표는 스트림 함수도 `tuple[AsyncIterator, dict]` 로 정의했지만 실제 구현은 `AsyncIterator[StreamChunk]` 만 반환 — **스트림 호출자가 `cache_hit` 등 meta 정보에 접근할 방법 없음**.
 
 ```python
 # 변경 전
@@ -723,7 +746,7 @@ async def lifespan(app: FastAPI):
 
 ### 배경
 
-`packages/llm-request/service/app/logic/file_processing/dedup.py` 의 `async def` 함수 3곳 — `try_acquire_standby` (L74), `wait_for_standby_release` (L123), `release_standby` (L149) — 이 `redis-handler` 의 raw `client.set/get/delete` 를 **동기로** 호출 중. async 컨텍스트에서 sync I/O 호출은 이벤트 루프를 그 시간 동안 점유 → **같은 워커 위 다른 코루틴들이 await 못 깨어남**.
+`packages/llm-request/service/app/logic/file_processing/dedup.py` 의 `async def` 함수 3곳 — `try_acquire_standby` (L74), `wait_for_standby_release` (L125), `release_standby` (L151) — 이 `redis-handler` 의 raw `client.set/get/delete` 를 **동기로** 호출 중. async 컨텍스트에서 sync I/O 호출은 이벤트 루프를 그 시간 동안 점유 → **같은 워커 위 다른 코루틴들이 await 못 깨어남**.
 
 설계 문서 `docs/08.cache-stampede-dedup.md` 도 이 상태를 "임시 방편" 으로 인지 중. 본 PR에서 정리.
 
@@ -757,12 +780,12 @@ async def lifespan(app: FastAPI):
 +    client.set, standby_key, value, nx=True, ex=ttl_seconds,
 +)
 
- # dedup.py:123 (wait_for_standby_release loop)
+ # dedup.py:125 (wait_for_standby_release loop)
 -if client.get(standby_key) is None:
 +if await asyncio.to_thread(client.get, standby_key) is None:
      return None
 
- # dedup.py:149 (release_standby)
+ # dedup.py:151 (release_standby)
 -client.delete(standby_key)
 +await asyncio.to_thread(client.delete, standby_key)
 ```
@@ -926,7 +949,7 @@ llm_handler.aio.create_cache(model=model)    # Gemini API 호출
 (2) `_process_files_api` 의 context_cache 분기 진입 직전에 None 체크 + raise:
 
 ```diff
- if context_cache_ttl and file_refs:
+ if ctx_cache_active and file_refs:    # S3 도입 조건: context_cache_ttl is not None and > 0 (pr_review_solve.md §S3 참조)
 +    if model is None:
 +        raise ValueError(
 +            "context cache 생성에는 model이 필요합니다 — "
@@ -935,7 +958,7 @@ llm_handler.aio.create_cache(model=model)    # Gemini API 호출
      acquired_cc = await dedup.try_acquire_standby(...)
 ```
 
-체크는 **`context_cache_ttl + file_refs` 둘 다 있을 때만** 발동 — `context_cache_ttl=None` 인 일반 호출에서는 model 없어도 통과 (LLM call 단계에서 llm-handler 가 처리).
+체크는 **context_cache 가 실제로 생성되는 경로에서만** 발동 — `context_cache_ttl` 이 `None` 또는 `0` 인 일반 호출에선 `ctx_cache_active` 가 False 라 model 없어도 통과 (LLM call 단계에서 llm-handler 가 처리).
 
 ### 파일 변경 목록
 
@@ -964,10 +987,10 @@ llm_handler.aio.create_cache(model=model)    # Gemini API 호출
 | 유형 | 경로 | 테스트 수 | 커버 범위 |
 |------|------|----------|----------|
 | 신규 | `packages/llm-request/service/tests/logic/file_processing/test_validators.py` | **10** | `validate_mime_types` (whitelist 통과 / 거부 / 빈 리스트 / 부분 거부 / 화이트리스트 상수 검증) + `validate_file_sizes` (한도 이하 / 정확히 한도 / 초과 / 0바이트 / 빈 리스트) |
-| 신규 | `packages/llm-request/service/tests/logic/file_processing/test_resolver.py` | **11** | `classify_files` (비디오 강제 분리 / 20MB 한도 / 50MB 한도 / 합계 초과 분배 / 빈 입력) + `_estimate_non_file_bytes` (정상 / 직렬화 실패 시 0) + `_process_inline` (Part 변환 / 빈 입력) + `resolve_files` (빈 입력 / **Fix K 회귀 방지** model None+ttl raise / model None+ttl없음 OK / 승급 정책) |
+| 신규 | `packages/llm-request/service/tests/logic/file_processing/test_resolver.py` | **13** | `classify_files` (비디오 강제 분리 / 20MB 한도 / 50MB 한도 / 합계 초과 분배 / 빈 입력) + `_estimate_non_file_bytes` (정상 / 직렬화 실패 시 0) + `_process_inline` (Part 변환 / 빈 입력) + `resolve_files` (빈 입력 / **Fix K 회귀 방지** model None+ttl raise / model None+ttl없음 OK / 승급 정책) |
 | 신규 | `packages/llm-request/service/tests/logic/test_file_register.py` | **6** | `register_files` (cache hit → upload skip / miss → upload / check_cache 예외 → CacheError wrap / upload 예외 → FileUploadError wrap / 빈 리스트 / 혼합 hit-miss) |
 
-총 **27 tests**.
+총 **29 tests**.
 
 ### 영향 범위
 

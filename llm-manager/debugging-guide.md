@@ -63,7 +63,7 @@ llm_request_async()
 
 #### 🔴 서비스 연결 실패 (단발 요청)
 
-> `_client.py:31` [RAISE] `_request()`
+> `_client.py:45` [RAISE] `_request()`
 > ```python
 > raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}")
 > ```
@@ -75,7 +75,7 @@ llm_request_async()
 
 #### 🔴 서비스 요청 타임아웃
 
-> `_client.py:33` [RAISE] `_request()`
+> `_client.py:47` [RAISE] `_request()`
 > ```python
 > raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}")
 > ```
@@ -86,7 +86,7 @@ llm_request_async()
 
 #### 🔴 서비스 에러 응답
 
-> `_client.py:43` [RAISE] `_request()`
+> `_client.py:57` [RAISE] `_request()`
 > ```python
 > raise ServiceError(error_msg, status_code=response.status_code, error_type=error_type)
 > ```
@@ -95,18 +95,18 @@ llm_request_async()
 - **의미**: 서비스가 예외를 정상 응답으로 반환한 상태. `error_type`이 key
 - **확인할 것**: `error_type` → §3 예외 레퍼런스 표 매핑. 서비스 로그에서 같은 `request_id`의 `미처리 예외` 또는 핸들러 로그
 
-#### 🔴 스트림 요청 실패 (3종)
+#### 🔴 스트림 요청 실패 (4종)
 
-> `_client.py:118, 126, 135, 137` [RAISE] `request_stream()`
+> `_client.py:140, 142, 148, 154` [RAISE] `request_stream()`
 > ```python
-> raise ServiceError(..., error_type=err_body.get("error_type"))        # 118 — body 있음
-> raise ServiceError(resp.text, status_code=resp.status_code)            # 126 — body 없음
-> raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}")      # 135
-> raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}")  # 137
+> raise ServiceConnectionError(f"llm-request 서비스 연결 실패: {e}")      # 140
+> raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}")  # 142
+> err = ServiceError(..., error_type=err_body.get("error_type"))         # 148 — body 있음 (raise 는 L156)
+> err = ServiceError(resp.text, status_code=resp.status_code)            # 154 — body 없음 (raise 는 L156)
 > ```
 
-- **언제**: 스트림 엔드포인트(`/v1/request/stream`)에서 동일 패턴
-- **의미**: 단발 요청과 같음
+- **언제**: 스트림 엔드포인트(`/v1/request/stream`)에서 동일 패턴. Fix G 이후 `httpx.stream()` context 를 수동으로 `__aenter__` / `__aexit__` 관리하기 때문에 연결/타임아웃 에러는 `__aenter__` 시점에 잡아 raise
+- **의미**: 단발 요청과 같음. body 있는 4xx/5xx 는 `err` 객체로 만들어 `__aexit__` 후 L156 에서 `raise err`
 
 ---
 
@@ -117,18 +117,18 @@ llm_request_async()
 
 #### 🟢 기동/종료
 
-> `main.py:29, 31` [INFO] `lifespan()`
+> `main.py:36, 41` [INFO] `lifespan()`
 > ```
 > llm-request service 시작
 > llm-request service 종료
 > ```
 
 - **언제**: 서비스 프로세스 기동/종료 시 각 한 번
-- **주의**: 기동 직전 [providers.py](service/app/core/providers.py)의 Redis 연결 확인이 실패하면 이 로그 전에 터짐 (§2.8 참조)
+- **주의**: 기동 직전 [providers.py](service/app/core/providers.py)의 Redis 연결 확인이 실패하면 이 로그 전에 터짐 (§2.7 참조). 종료 직전 (L39-40) 싱글톤 `FileManagerHandler().close()` 로 httpx 커넥션 풀 정리
 
 #### 🟢 요청 단위 로그
 
-> `main.py:94-101` [INFO] `request_logging_middleware()`
+> `main.py:104-111` [INFO] `request_logging_middleware()`
 > ```
 > %s %s → %s (%.0fms) [%s]
 > # 예: POST /v1/request → 200 (1240ms) [req-abc123]
@@ -139,7 +139,7 @@ llm_request_async()
 
 #### 🔴 미처리 예외
 
-> `main.py:83` [EXCEPTION] `request_logging_middleware()`
+> `main.py:93` [EXCEPTION] `request_logging_middleware()`
 > ```
 > 미처리 예외: request_id=%s
 > # traceback 동반 (exc_info=True)
@@ -158,7 +158,7 @@ llm_request_async()
 
 #### 🟡 정규화 fallback 시도
 
-> `keying.py:178-182` [WARNING] `canonicalize_llm_input()`
+> `keying.py:177-181` [WARNING] `canonicalize_llm_input()`
 > ```
 > 캐시 키 정규화 실패: llm_input type=%s — str() fallback 시도
 > # exc_info=True
@@ -169,12 +169,12 @@ llm_request_async()
 
 #### 🔴 캐시 키 정규화 완전 실패
 
-> `keying.py:189-194` [ERROR] `canonicalize_llm_input()`
+> `keying.py:188-192` [ERROR] `canonicalize_llm_input()`
 > ```
 > 캐시 키 정규화 완전 실패: llm_input type=%s, keys=%s
 > # exc_info=True
 > ```
-> `keying.py:195-197` [RAISE]
+> `keying.py:193-195` [RAISE]
 > ```python
 > raise ValueError(f"캐시 키 정규화 완전 실패: llm_input type={type(llm_input).__name__}")
 > ```
@@ -185,7 +185,7 @@ llm_request_async()
 
 #### 🟡 debug=True일 때 빈/유효하지 않은 canonical
 
-> `keying.py:236` [WARNING] `make_cache_key()`
+> `keying.py:234` [WARNING] `make_cache_key()`
 > ```
 > 캐시 키 생성: 값이 비어있거나 유효하지 않습니다. len=%d
 > ```
@@ -202,13 +202,13 @@ llm_request_async()
 
 #### 🔴 Redis 미연결
 
-> `dedup.py:70, 104` [RAISE] `try_acquire_standby()`, `wait_for_standby_release()`
+> `dedup.py:70, 106` [RAISE] `try_acquire_standby()`, `wait_for_standby_release()`
 > ```python
 > raise RuntimeError("Redis 미연결 — standby 불가")
 > ```
 
 - **언제**: Redis 클라이언트가 `None`
-- **의미**: providers.py에서 기동을 막고 있어야 함 (§2.8). 여기 도달 = 기동 후 Redis 단절
+- **의미**: providers.py에서 기동을 막고 있어야 함 (§2.7). 여기 도달 = 기동 후 Redis 단절
 - **확인할 것**: `redis-cli ping`, `REDIS_URL`, 서비스 기동 로그
 
 #### 🔴 알 수 없는 standby prefix
@@ -222,19 +222,19 @@ llm_request_async()
 
 #### 🟡 standby 대기 timeout
 
-> `dedup.py:130-134` [WARNING] `wait_for_standby_release()`
+> `dedup.py:133-138` [WARNING] `wait_for_standby_release()`
 > ```
 > standby 대기 timeout(%d초) 초과 — 호출자가 작업 시작. standby_key=%s,
 > 중복 발생 가능. 빈도 높으면 standby_ttl_seconds 늘리세요.
 > ```
 
 - **언제**: leader가 TTL 안에 끝내지 못해 waiter가 대기 포기
-- **의미**: waiter가 직접 작업 수행 (중복 작업 가능). 동일 현상의 상위 버전이 [runner.py:464, 591](service/app/logic/runner.py#L464), [resolver.py:353, 386](service/app/logic/file_processing/resolver.py#L353)에서 재등장
+- **의미**: waiter가 직접 작업 수행 (중복 작업 가능). 동일 현상의 상위 버전이 [runner.py:482, 624](service/app/logic/runner.py#L482), [resolver.py:364, 406](service/app/logic/file_processing/resolver.py#L364)에서 재등장
 - **확인할 것**: 빈도 많으면 `standby_ttl_seconds` 상향, LLM/업로드 실제 지연 여부
 
 #### 🟡 release 실패 (무시)
 
-> `dedup.py:151-154` [EXCEPTION] `release_standby()`
+> `dedup.py:154-160` [EXCEPTION] `release_standby()`
 > ```
 > standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s
 > ```
@@ -246,7 +246,7 @@ llm_request_async()
 
 ### 2.5 파일 검증 (validators.py)
 
-**역할**: 업로드 가능 여부 사전 검증.
+**역할**: 업로드 가능 여부 사전 검증. Fix C 이후 validate → register 순서로 실행되어 미지원/초과 파일은 file-manager 업로드 전에 차단.
 **관련 파일**: [validators.py](service/app/logic/file_processing/validators.py)
 
 #### 🔴 지원하지 않는 mime 타입
@@ -254,7 +254,7 @@ llm_request_async()
 > `validators.py:37-40` [RAISE] `validate_mime_types()`
 > ```python
 > raise UnsupportedFileTypeError(
->     f"지원하지 않는 파일 타입: mime_type={m.mime_type}, file_name={m.file_name}"
+>     f"지원하지 않는 파일 타입: mime_type={fi.mime_type}, file_name={fi.file_name}"
 > )
 > ```
 
@@ -266,7 +266,7 @@ llm_request_async()
 > `validators.py:52-55` [RAISE] `validate_file_sizes()`
 > ```python
 > raise FileTooLargeError(
->     f"파일 크기가 2GB를 초과합니다: file_name={m.file_name}, size={m.file_size}"
+>     f"파일 크기가 2GB를 초과합니다: file_name={fi.file_name}, size={fi.file_size}"
 > )
 > ```
 
@@ -300,12 +300,12 @@ llm_request_async()
 
 #### 🔴 Files API 업로드 실패
 
-> `resolver.py` [EXCEPTION → RAISE]
+> `resolver.py:197-201` [EXCEPTION → RAISE]
 > ```
 > Files API 업로드 실패: file_name=%s, mime=%s
 > ```
 > ```python
-> raise FileUploadError(f"Files API 업로드 실패: file_name={meta.file_name}, {e}") from e
+> raise FileUploadError(f"Files API 업로드 실패: file_name={fi.file_name}, {e}") from e
 > ```
 
 - **응답**: 502, `error_type="file"`
@@ -314,7 +314,7 @@ llm_request_async()
 
 #### 🔴 Redis files_api 저장 실패
 
-> `resolver.py` [EXCEPTION → RAISE]
+> `resolver.py:226-227` [EXCEPTION → RAISE]
 > ```python
 > raise CacheError(f"Redis files_api 저장 실패: {e}") from e
 > ```
@@ -323,16 +323,16 @@ llm_request_async()
 
 #### 🔴 Context cache 생성 실패
 
-> `resolver.py` [EXCEPTION → RAISE]
+> `resolver.py:263-264` [EXCEPTION → RAISE]
 > ```python
 > raise FileUploadError(f"Context cache 생성 실패: {e}") from e
 > ```
 
-- **원인 후보**: Gemini API 오류, 인자 불일치
+- **원인 후보**: Gemini API 오류, 인자 불일치. model=None 인 경우는 Fix K 에 의해 resolver 에서 `ValueError` 로 사전 차단됨
 
 #### 🔴 Redis context_cache 저장/조회 실패
 
-> `resolver.py` [EXCEPTION → RAISE]
+> `resolver.py:279-280, 322-323, 337-338` [EXCEPTION → RAISE]
 > ```python
 > raise CacheError(f"Redis context_cache 저장 실패: {e}") from e
 > raise CacheError(f"Redis context_cache 조회 실패: {e}") from e
@@ -344,18 +344,18 @@ llm_request_async()
 
 #### 🟡 files_api / context_cache standby timeout (Y' Hybrid)
 
-> `resolver.py` [WARNING] `_process_files_api()`
+> `resolver.py:364, 406` [WARNING] `_process_files_api()`
 > ```
 > files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s
 > context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s
 > ```
 
-- **의미**: §2.5 설명과 동일. 이 파일 단계에서 발생
+- **의미**: §2.4 설명과 동일. 이 파일 단계에서 발생
 - **확인할 것**: 업로드/context_cache가 실제로 오래 걸리는지, TTL 상향 검토
 
 #### 🟡 Gemini 404 자동 복구
 
-> `resolver.py:429-432` [WARNING] `resolve_files_after_404()`
+> `resolver.py:449-452` [WARNING] `resolve_files_after_404()`
 > ```
 > Gemini 404 자동 복구: Redis invalidate 후 재업로드 (checksums=%d)
 > ```
@@ -366,7 +366,7 @@ llm_request_async()
 
 #### 🟡 404 복구 중 Redis 삭제 실패 (무시)
 
-> `resolver.py:439-441, 449-451` [EXCEPTION]
+> `resolver.py:459-461, 469-471` [EXCEPTION]
 > ```
 > Redis files_api 삭제 실패 (계속 진행): checksum=%s
 > Redis context_cache 삭제 실패 (계속 진행): hash_key=%s
@@ -376,7 +376,7 @@ llm_request_async()
 
 #### 🟡 context_cache_ttl로 전 파일 Files API 승급
 
-> `resolver.py:504-507` [WARNING] `resolve_files()`
+> `resolver.py:524-527` [WARNING] `resolve_files()`
 > ```
 > context_cache_ttl=%d 지정 — 모든 파일 Files API 경로로 승급
 > ```
@@ -393,17 +393,17 @@ llm_request_async()
 
 #### 🟡 create_cache 재시도
 
-> `uploader.py:100-107` [WARNING] `create_context_cache()`
+> `uploader.py:101-108` [WARNING] `create_context_cache()`
 > ```
 > create_cache 실패 (시도 %d/%d): %s → %d초 후 재시도
 > ```
 
 - **언제**: Gemini `create_cache` 일시 오류
-- **확인할 것**: 재시도 후에도 실패하면 §2.7 "Context cache 생성 실패"로 이어짐
+- **확인할 것**: 재시도 후에도 실패하면 위 "Context cache 생성 실패"로 이어짐
 
 #### 🟡 PDF splitter 경고들
 
-> `splitter.py:76-82, 105-110, 139` [WARNING]
+> `splitter.py:77-83, 106-111, 140` [WARNING]
 > ```
 > 재분할 한도(%d) 초과: %s (%.1fMB) — 현재 크기로 진행
 > 페이지 %d의 추정 크기(%.1fMB)가 목표(%dMB)를 초과합니다
@@ -415,7 +415,7 @@ llm_request_async()
 
 #### 🟢 분할/병합 진행도
 
-> `splitter.py:129-136, 168-173` [INFO]
+> `splitter.py:131-138, 171-176` [INFO]
 > ```
 > 분할 %d/%d: p.%d-%d (%.1fMB)
 > 병합: 파트 %d+%d → %.1fMB
@@ -423,7 +423,7 @@ llm_request_async()
 
 #### 🟡 FileRef expiration 파싱 실패 / floor 적용
 
-> `cache_store.py:93, 101-106` [WARNING] `compute_files_api_ttl()`
+> `cache_store.py:138, 147-152` [WARNING] `compute_files_api_ttl()`
 > ```
 > FileRef.expiration_time 파싱 실패: %s — 폴백 TTL 사용
 > compute_files_api_ttl: 잔여시간 %d초 < floor(%d초) — floor 적용.
@@ -441,7 +441,7 @@ llm_request_async()
 
 #### 🔴 Redis 연결 실패 (기동 차단)
 
-> `providers.py:25-28` [RAISE] `_ensure_redis_connected()`
+> `providers.py:26-29` [RAISE] `_ensure_redis_connected()`
 > ```python
 > raise RuntimeError(
 >     "Redis 연결 실패 — llm-request를 시작할 수 없습니다. "
@@ -450,7 +450,7 @@ llm_request_async()
 > ```
 
 - **언제**: 서비스 기동 시 Redis ping 실패
-- **의미**: 서비스 기동 자체가 중단. main.py:29 `"llm-request service 시작"` 로그도 못 나옴
+- **의미**: 서비스 기동 자체가 중단. main.py:36 `"llm-request service 시작"` 로그도 못 나옴
 - **확인할 것**: `REDIS_URL`, Redis 서버 상태
 
 #### 🟢 startup standby flush
@@ -466,7 +466,7 @@ llm_request_async()
 
 ### 2.8 LLM 호출 (runner.py)
 
-**역할**: prepare → files → call → finalize의 실제 실행.
+**역할**: prepare → files → call → finalize의 실제 실행. Fix G 이후 `llm_request_stream_async` 는 `(AsyncIterator[StreamChunk], meta)` 튜플을 반환.
 **관련 파일**: [runner.py](service/app/logic/runner.py)
 
 #### 🟢 agent_llm dedup 역할 로그
@@ -484,11 +484,11 @@ llm_request_async()
 
 #### 🟡 캐시 결과 역직렬화 실패 (prepare / standby 대기 중)
 
-> `runner.py:121-125` [WARNING] `prepare()`
+> `runner.py:125-129` [WARNING] `prepare()`
 > ```
 > 캐시 결과 역직렬화 실패: cache_key=%s — 캐시 무시하고 LLM 재호출
 > ```
-> `runner.py:363-367` [WARNING] `_recheck_agent_llm_cache()`
+> `runner.py:371-375` [WARNING] `_recheck_agent_llm_cache()`
 > ```
 > standby 대기 중 캐시 역직렬화 실패: cache_key=%s
 > ```
@@ -498,14 +498,14 @@ llm_request_async()
 
 #### 🟢 MDB 저장 완료
 
-> `runner.py:205-210` [INFO] `finalize()`
+> `runner.py:216-220` [INFO] `finalize()`
 > ```
 > MDB 저장 완료: database=%s, collection=%s, cache_key=%s
 > ```
 
 #### 🔴 MDB 저장 실패 (흐름은 계속)
 
-> `runner.py:212-217` [EXCEPTION] `finalize()`
+> `runner.py:223-228` [EXCEPTION] `finalize()`
 > ```
 > MDB 저장 실패: database=%s, collection=%s, cache_key=%s
 > ```
@@ -515,7 +515,7 @@ llm_request_async()
 
 #### 🟡 스트림 청크 0개
 
-> `runner.py:230-234` [WARNING] `_finalize_stream()`
+> `runner.py:241-245` [WARNING] `_finalize_stream()`
 > ```
 > 스트림 완료 시 청크가 0개: cache_key=%s — 빈 결과는 저장하지 않음
 > ```
@@ -525,33 +525,33 @@ llm_request_async()
 
 #### 🔴 스트림 결과 저장 실패 (흐름은 계속)
 
-> `runner.py:268-271` [EXCEPTION] `_finalize_stream()`
+> `runner.py:274-280` [EXCEPTION] `_finalize_stream()`
 > ```
 > 스트림 결과 저장 실패: cache_key=%s — 캐시 미저장
 > ```
 
 #### 🟡 Gemini 404 감지 — 자동 복구 시도
 
-> `runner.py:389` [WARNING] `_do_llm_call()`
+> `runner.py:396` [WARNING] `_do_llm_call()`
 > ```
 > Gemini 404 감지 — 자동 복구 시도: %s
 > ```
-> `runner.py:508` [WARNING] `_do_llm_stream()`
+> `runner.py:524` [WARNING] `_do_llm_stream()`
 > ```
 > Gemini 404 감지 — stream 자동 복구 시도: %s
 > ```
 
-- **의미**: `resolve_files_after_404()` 호출 (§2.7 참조). 1회만 시도
+- **의미**: `resolve_files_after_404()` 호출 (§2.6 참조). 1회만 시도
 - **확인할 것**: 복구 후에도 실패하면 원 예외가 올라감 → 502
 
 #### 🟡 agent_llm standby timeout
 
-> `runner.py` [WARNING] `llm_request_async()`, `llm_request_stream_async()`
+> `runner.py:482, 624` [WARNING] `llm_request_async()`, `llm_request_stream_async()`
 > ```
 > [dedup] role=standby_timeout wait_ms=%d
 > ```
 
-- **의미**: §2.5와 같은 Y' Hybrid. LLM 호출 단계에서 발생
+- **의미**: §2.4와 같은 Y' Hybrid. LLM 호출 단계에서 발생
 - **확인할 것**: LLM 실제 지연, `standby_ttl_seconds`
 
 ---
@@ -562,7 +562,7 @@ llm_request_async()
 
 #### 🔴 cache_set: _id 누락
 
-> `store.py:56` [RAISE] `cache_set()`
+> `store.py:55` [RAISE] `cache_set()`
 > ```python
 > raise ValueError("cache_set: doc에 _id가 없습니다.")
 > ```
@@ -571,11 +571,11 @@ llm_request_async()
 
 #### 🔴 fetch_by_cache_key: 문서 없음
 
-> `store.py:126-129` [ERROR] `fetch_by_cache_key()`
+> `store.py:125-128` [ERROR] `fetch_by_cache_key()`
 > ```
 > 캐시 조회 실패: cache_key=%s 에 해당하는 문서 없음
 > ```
-> `store.py:130` [RAISE]
+> `store.py:129` [RAISE]
 > ```python
 > raise KeyError(f"cache_key '{cache_key[:16]}...' 에 해당하는 캐시 문서가 없습니다.")
 > ```
@@ -585,7 +585,7 @@ llm_request_async()
 
 #### 🔴 fetch_by_cache_key: 역직렬화 실패
 
-> `store.py:135-139` [ERROR], `store.py:140` [RAISE]
+> `store.py:134-138` [ERROR], `store.py:139` [RAISE]
 > ```
 > 캐시 결과 역직렬화 실패: cache_key=%s
 > ```
@@ -603,7 +603,7 @@ llm_request_async()
 
 #### 🟡 캐시 조회 실패 → fallback
 
-> `done_check.py:43-49` [EXCEPTION] `done_check()`
+> `done_check.py:44-49` [EXCEPTION] `done_check()`
 > ```
 > 캐시 조회 실패: cache_key=%s, collection=%s — LLM 직접 호출로 대체
 > ```
@@ -620,8 +620,8 @@ llm_request_async()
 | 클래스 | HTTP | error_type | 주요 발생 위치 |
 |--------|------|-----------|---------------|
 | `LLMRequestServiceError` | 500 | handler | 기본. 직접 던지는 경우는 거의 없음 |
-| `CacheError` | 502 | cache | resolver.py:216/269/312/327 — Redis 실패 |
-| `FileUploadError` | 502 | file | resolver.py:187/253 — Files API / Context cache 실패 |
+| `CacheError` | 502 | cache | resolver.py:227/280/323/338 — Redis 실패 |
+| `FileUploadError` | 502 | file | resolver.py:201/264 — Files API / Context cache 실패 |
 | `ValidationError` | 422 | validation | 검증 계열 기본 |
 | `UnsupportedFileTypeError` | 422 | unsupported_file_type | validators.py:37 |
 | `FileTooLargeError` | 422 | file_too_large | validators.py:52 |
@@ -631,16 +631,16 @@ llm_request_async()
 | 클래스 | 언제 던져지나 |
 |--------|-------------|
 | `SDKError` | 기본 (직접 던지지 않음) |
-| `ServiceConnectionError` | `_client.py:31/33/135/137` — 네트워크/타임아웃 |
-| `ServiceError` | `_client.py:43/118/126` — HTTP 4xx/5xx. `status_code`, `error_type` 속성으로 §3.1 표와 매핑 |
+| `ServiceConnectionError` | `_client.py:45/47/140/142` — 네트워크/타임아웃 |
+| `ServiceError` | `_client.py:57/148/154` — HTTP 4xx/5xx. `status_code`, `error_type` 속성으로 §3.1 표와 매핑 |
 
 ### 3.3 표준 예외 재사용
 
 | 예외 | 위치 | 의미 |
 |------|------|------|
-| `ValueError` | keying.py:195, store.py:56/140 | 입력/상태 검증 실패 |
-| `RuntimeError` | providers.py:25, dedup.py:70/104 | Redis 미연결 |
-| `KeyError` | store.py:130 | 캐시 문서 없음 |
+| `ValueError` | keying.py:193, store.py:55/139 | 입력/상태 검증 실패 |
+| `RuntimeError` | providers.py:26, dedup.py:70/106 | Redis 미연결 |
+| `KeyError` | store.py:129 | 캐시 문서 없음 |
 
 ---
 
@@ -648,19 +648,19 @@ llm_request_async()
 
 ### "Gemini 404가 나와요"
 - 흐름: 대용량 파일의 Files API URI가 Gemini에서 만료 (Redis TTL < Gemini TTL)
-- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:389, 508](service/app/logic/runner.py#L389)) → `Gemini 404 자동 복구` ([resolver.py:429](service/app/logic/file_processing/resolver.py#L429))
+- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:396, 524](service/app/logic/runner.py#L396)) → `Gemini 404 자동 복구` ([resolver.py:449](service/app/logic/file_processing/resolver.py#L449))
 - 자동 복구: Redis invalidate + 재업로드 (1회 시도)
-- 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:101](service/app/logic/file_processing/cache_store.py#L101) 경고 체크
+- 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:147](service/app/logic/file_processing/cache_store.py#L147) 경고 체크
 
 ### "SDK에서 ServiceError error_type=file"
-- Service 쪽 선행 로그: [resolver.py:187 Files API 업로드 실패](service/app/logic/file_processing/resolver.py#L187) 또는 [resolver.py:253 Context cache 생성 실패](service/app/logic/file_processing/resolver.py#L253)
-- 더 앞: [uploader.py:100 create_cache 재시도](service/app/logic/file_processing/uploader.py#L100)
+- Service 쪽 선행 로그: [resolver.py:201 Files API 업로드 실패](service/app/logic/file_processing/resolver.py#L201) 또는 [resolver.py:264 Context cache 생성 실패](service/app/logic/file_processing/resolver.py#L264)
+- 더 앞: [uploader.py:101 create_cache 재시도](service/app/logic/file_processing/uploader.py#L101)
 - 실제 원인: llm-handler traceback 또는 provider 쪽 상태
 
 ### "SDK에서 ServiceError error_type=cache"
-- Service 쪽 선행 로그: [resolver.py:216/269/312/327](service/app/logic/file_processing/resolver.py#L216) Redis CRUD 실패
+- Service 쪽 선행 로그: [resolver.py:227/280/323/338](service/app/logic/file_processing/resolver.py#L227) Redis CRUD 실패
 - 원인: Redis 장애. `redis-cli ping` 확인
-- 기동 차단도 같이 뜰 수 있음: [providers.py:25 Redis 연결 실패](service/app/core/providers.py#L25)
+- 기동 차단도 같이 뜰 수 있음: [providers.py:26 Redis 연결 실패](service/app/core/providers.py#L26)
 
 ### "SDK에서 ServiceConnectionError"
 - Service 자체에 도달 못 함. Service 로그에 같은 request_id 흔적 없음
@@ -668,23 +668,23 @@ llm_request_async()
 
 ### "MDB 캐시가 동작을 안 해요 (매번 LLM 호출됨)"
 - 후보 로그:
-  - [done_check.py:43 캐시 조회 실패](service/app/logic/done_check.py#L43) — MDB 연결 이슈
-  - [runner.py:121 캐시 결과 역직렬화 실패](service/app/logic/runner.py#L121) — 스키마 불일치
-  - [runner.py:212 MDB 저장 실패](service/app/logic/runner.py#L212) — 쓰기 실패해서 다음 호출이 miss
-  - [runner.py:230 스트림 청크 0개](service/app/logic/runner.py#L230) — 빈 스트림은 원래 미저장
+  - [done_check.py:44 캐시 조회 실패](service/app/logic/done_check.py#L44) — MDB 연결 이슈
+  - [runner.py:125 캐시 결과 역직렬화 실패](service/app/logic/runner.py#L125) — 스키마 불일치
+  - [runner.py:223 MDB 저장 실패](service/app/logic/runner.py#L223) — 쓰기 실패해서 다음 호출이 miss
+  - [runner.py:241 스트림 청크 0개](service/app/logic/runner.py#L241) — 빈 스트림은 원래 미저장
 
 ### "같은 요청이 동시에 들어왔는데 둘 다 LLM 호출됨"
 - 기대: leader/waiter 구조로 한 번만 호출
-- 의심 로그: `standby timeout` 계열 ([dedup.py:130](service/app/logic/file_processing/dedup.py#L130), [runner.py:464/591](service/app/logic/runner.py#L464), [resolver.py:353/386](service/app/logic/file_processing/resolver.py#L353))
+- 의심 로그: `standby timeout` 계열 ([dedup.py:133](service/app/logic/file_processing/dedup.py#L133), [runner.py:482/624](service/app/logic/runner.py#L482), [resolver.py:364/406](service/app/logic/file_processing/resolver.py#L364))
 - 의미: leader가 TTL 안에 끝내지 못함. `standby_ttl_seconds` 상향 검토
 
 ### "서비스가 안 뜹니다"
-- 가장 먼저 볼 것: Redis ([providers.py:25 Redis 연결 실패](service/app/core/providers.py#L25))
+- 가장 먼저 볼 것: Redis ([providers.py:26 Redis 연결 실패](service/app/core/providers.py#L26))
 - `llm-request service 시작` 로그 유무로 기동 성공/실패 구분
 - 중간에 뜨다 죽으면 stdout에 `미처리 예외: request_id=...` traceback 있는지
 
 ### "미처리 예외 로그가 뜹니다"
-- 위치: [main.py:83](service/app/main.py#L83)
+- 위치: [main.py:93](service/app/main.py#L93)
 - 의미: `LLMRequestServiceError`로 감싸지지 않은 예외 = 버그 신호
 - 후속: 같은 `request_id`의 다른 로그를 따라가고, traceback을 errors.py 계층으로 매핑
 
@@ -692,6 +692,6 @@ llm_request_async()
 
 ## 5. 참고
 
-- 로그 구현 이력: [docs/observability-backlog.md](docs/observability-backlog.md)
-- 개념 설명: [docs/concepts.md](docs/concepts.md)
-- 설계 문서: [docs/file-handler-phase3-implementation.md](docs/file-handler-phase3-implementation.md)
+- 로그 구현 이력: [docs/14.observability-backlog.md](docs/14.observability-backlog.md)
+- 개념 설명: [docs/00.concepts.md](docs/00.concepts.md)
+- 설계 문서: [docs/05.file-handler-phase3-implementation.md](docs/05.file-handler-phase3-implementation.md)
