@@ -404,14 +404,14 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 
 `timings={"context_cache_ttl": 3600}` 을 지정할 때만 활성화된다. **지정하지 않으면 Context Cache는 생성되지 않는다.**
 
-같은 파일 조합 + 모델 + 시스템 프롬프트가 반복될 때 입력 토큰을 최대 90% 절감한다.
+같은 **파일 조합 + 모델 + 시스템 프롬프트 + tools + tool_config** 가 반복될 때 입력 토큰을 최대 90% 절감한다.
 
-- **캐시 키**: SHA-256(file_checksums + model + system_instruction)
+- **캐시 키**: SHA-256(file_checksums + model + system_instruction + tools + tool_config)
 - **Redis TTL**: 기본 1시간
 
 > **Context Cache는 시간 단위로 비용이 발생한다.** 필요 이상으로 긴 TTL은 불필요한 비용을 유발하므로 실제 사용 패턴에 맞게 설정할 것.
 
-> **model 또는 system_instruction이 달라지면 캐시 미스가 발생한다.** Context Cache는 파일 조합 + 모델 + 시스템 프롬프트를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다.
+> **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
 
 ## Gemini 404 자동 복구
 

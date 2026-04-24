@@ -246,11 +246,17 @@ async def _create_and_save_context_cache(
     model: str,
     system_instruction: str | None,
     ttl: int,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> str:
     """context_cache 생성 + Redis 저장 → cached_content_name 반환 (분기 ④).
 
     standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
     양쪽에서 호출된다.
+
+    `tools` / `tool_config` 는 cache 에 함께 저장되어야 `call(cached_content=...)` 시
+    Bad Request 를 피할 수 있다 (Gemini 제약 — cached_content + request-level
+    tools/tool_config 동시 전달 불가).
     """
     try:
         cache_ref = await create_context_cache(
@@ -258,6 +264,8 @@ async def _create_and_save_context_cache(
             model=model,
             system_instruction=system_instruction,
             ttl=ttl,
+            tools=tools,
+            tool_config=tool_config,
         )
     except Exception as e:
         logger.exception("Context cache 생성 실패")
@@ -270,6 +278,8 @@ async def _create_and_save_context_cache(
                 "file_checksums": checksums,
                 "model": model,
                 "system_instruction": system_instruction,
+                "tools": tools,
+                "tool_config": tool_config,
                 "cached_content_name": cache_ref.name,
                 "files_api_uris": [r.uri for r in file_refs],
             },
@@ -294,6 +304,8 @@ async def _process_files_api(
     system_instruction: str | None,
     context_cache_ttl: int | None,
     standby_ttl_seconds: int,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> tuple[list[Part], str | None]:
     """Files API 분류 파일 처리 — A/B/C miss 3단계 분기 + standby dedup.
 
@@ -315,6 +327,8 @@ async def _process_files_api(
         checksums,
         model=model,
         system_instruction=system_instruction,
+        tools=tools,
+        tool_config=tool_config,
     )
     try:
         cached = cache_store.find_context_cache(hash_key)
@@ -388,6 +402,8 @@ async def _process_files_api(
                     model=model,
                     system_instruction=system_instruction,
                     ttl=context_cache_ttl,
+                    tools=tools,
+                    tool_config=tool_config,
                 )
             finally:
                 await dedup.release_standby("context_cache", hash_key)
@@ -411,6 +427,8 @@ async def _process_files_api(
                     model=model,
                     system_instruction=system_instruction,
                     ttl=context_cache_ttl,
+                    tools=tools,
+                    tool_config=tool_config,
                 )
 
     return uri_parts, cached_content
@@ -427,6 +445,8 @@ async def resolve_files_after_404(
     system_instruction: str | None,
     context_cache_ttl: int | None,
     standby_ttl_seconds: int = 600,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> ResolvedFiles:
     """Gemini 404 발생 후 Redis 무효화 + resolve_files 재호출.
 
@@ -461,6 +481,7 @@ async def resolve_files_after_404(
 
     hash_key = cache_store.make_context_cache_key(
         checksums, model=model, system_instruction=system_instruction,
+        tools=tools, tool_config=tool_config,
     )
     try:
         cache_store.delete_context_cache(hash_key)
@@ -476,6 +497,8 @@ async def resolve_files_after_404(
         system_instruction=system_instruction,
         context_cache_ttl=context_cache_ttl,
         standby_ttl_seconds=standby_ttl_seconds,
+        tools=tools,
+        tool_config=tool_config,
     )
 
 
@@ -502,6 +525,8 @@ async def resolve_files(
     system_instruction: str | None,
     context_cache_ttl: int | None,
     standby_ttl_seconds: int = 600,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> ResolvedFiles:
     """파일 처리 전체 흐름.
 
@@ -539,6 +564,8 @@ async def resolve_files(
             system_instruction=system_instruction,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
+            tools=tools,
+            tool_config=tool_config,
         ),
     )
 

@@ -2,6 +2,7 @@
 name = "LLM-Request"
 version = "0.2.0"
 description = "LLM Request - uv workspace root"
+readme = "README_v2.md"
 requires-python = ">=3.11"
 dependencies = [
     "kiwoom-llm-request[dev]",

@@ -85,16 +85,25 @@ def make_context_cache_key(
     file_checksums: list[str],
     model: str | None = None,
     system_instruction: str | None = None,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> str:
     """Context Cache용 hash_key를 생성한다.
 
     keying.py의 canonicalize + sha256 방식과 동일.
+
+    `tools` / `tool_config` 도 key 재료에 포함 — cache 생성 시 이들도 함께 저장되므로,
+    동일 파일·모델·system 이라도 tools/tool_config 가 다르면 별도 cache 로 분리돼야
+    오염된 cache HIT (이전 tools 로 생성된 cache 를 다른 tools 요청에 HIT 시키는 버그)
+    를 방지할 수 있다.
     """
     canonical = canonicalize_llm_input(
         {
             "file_checksums": sorted(file_checksums),
             "model": model or "",
             "system_instruction": system_instruction or "",
+            "tools": tools or [],
+            "tool_config": tool_config or "",
         }
     )
     return make_cache_key(canonical)

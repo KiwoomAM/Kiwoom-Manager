@@ -295,11 +295,15 @@ def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
 
     - inline_parts → contents 앞에 삽입 (context cache 와 무관, 항상 유지)
     - uri_parts → cached_content 없을 때만 contents 에 삽입.
-                  cached_content 있으면 **같은 file_refs 가 cache 안에 이미 포함**되어
-                  있어 contents 에 또 넣으면 토큰 중복 + Gemini INVALID_ARGUMENT.
+                  cached_content 있으면 같은 file_refs 가 cache 안에 이미 포함되어
+                  있어 contents 에 또 넣으면 토큰 중복 + Gemini Bad Request.
     - cached_content → 있으면 별도 필드로 세팅 + system/tools/tool_config 제거
                         (이것들은 cache 생성 시 이미 포함됨, request 에 또 넣으면 충돌)
     - file_checksums → 제거 (Gemini에 전달되면 안 되는 cache_key 계산용 필드)
+
+    근거: packages/llm-handler/CLAUDE.md Gotchas — "cached_content 사용 시
+    tools/system/tool_config 동시 전달 불가 (Gemini API 제약). 캐시에 설정했으면
+    call()에서 재지정하면 Bad Request"
     """
     call_input = dict(llm_input)
 
@@ -309,13 +313,16 @@ def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
     elif isinstance(contents, list):
         text_contents = [c for c in contents if isinstance(c, str)]
     else:
-        text_contents = []
+        # dict / None / int / bytes 등은 silent drop 하지 않고 fail-fast.
+        # caller 의 입력 오류(오타 등)를 조용히 덮지 않도록 명시적 에러.
+        raise TypeError(
+            f"llm_input['contents'] 는 str 또는 list 여야 합니다: "
+            f"실제 {type(contents).__name__}"
+        )
 
     if resolved.cached_content:
-        # context cache 에 file_refs / system_instruction / tools / tool_config 가
-        # 이미 포함됨 → request 에서 중복 제거
         call_input["cached_content"] = resolved.cached_content
-        call_input["contents"] = resolved.inline_parts + text_contents  # uri_parts 제외
+        call_input["contents"] = resolved.inline_parts + text_contents
         call_input.pop("system", None)
         call_input.pop("tools", None)
         call_input.pop("tool_config", None)
@@ -344,6 +351,8 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
         system_instruction=prep.llm_input.get("system"),
         context_cache_ttl=prep.context_cache_ttl,
         standby_ttl_seconds=prep.standby_ttl_seconds,
+        tools=prep.llm_input.get("tools"),
+        tool_config=prep.llm_input.get("tool_config"),
     )
     return _apply_resolved(prep.llm_input, resolved)
 
@@ -410,6 +419,8 @@ async def _do_llm_call(
                 system_instruction=prep.llm_input.get("system"),
                 context_cache_ttl=prep.context_cache_ttl,
                 standby_ttl_seconds=prep.standby_ttl_seconds,
+                tools=prep.llm_input.get("tools"),
+                tool_config=prep.llm_input.get("tool_config"),
             )
             call_input = _apply_resolved(prep.llm_input, resolved)
             res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
@@ -538,6 +549,8 @@ async def _do_llm_stream(
                 system_instruction=prep.llm_input.get("system"),
                 context_cache_ttl=prep.context_cache_ttl,
                 standby_ttl_seconds=prep.standby_ttl_seconds,
+                tools=prep.llm_input.get("tools"),
+                tool_config=prep.llm_input.get("tool_config"),
             )
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):

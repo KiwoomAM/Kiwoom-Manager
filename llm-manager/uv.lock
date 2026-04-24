@@ -225,7 +225,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "kiwoom-llm-request-service"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "service" }
 dependencies = [
     { name = "fastapi" },
@@ -297,7 +297,7 @@ requires-dist = [
 
 [[package]]
 name = "llm-request"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "kiwoom-llm-request", extra = ["dev"] },
