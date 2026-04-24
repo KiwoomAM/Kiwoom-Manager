@@ -293,8 +293,12 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
 def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
     """ResolvedFiles를 llm_input에 녹여 call_input 완성.
 
-    - inline_parts + uri_parts → contents 앞에 삽입
-    - cached_content → 있으면 별도 필드로 세팅
+    - inline_parts → contents 앞에 삽입 (context cache 와 무관, 항상 유지)
+    - uri_parts → cached_content 없을 때만 contents 에 삽입.
+                  cached_content 있으면 **같은 file_refs 가 cache 안에 이미 포함**되어
+                  있어 contents 에 또 넣으면 토큰 중복 + Gemini INVALID_ARGUMENT.
+    - cached_content → 있으면 별도 필드로 세팅 + system/tools/tool_config 제거
+                        (이것들은 cache 생성 시 이미 포함됨, request 에 또 넣으면 충돌)
     - file_checksums → 제거 (Gemini에 전달되면 안 되는 cache_key 계산용 필드)
     """
     call_input = dict(llm_input)
@@ -307,10 +311,16 @@ def _apply_resolved(llm_input: dict, resolved: ResolvedFiles) -> dict:
     else:
         text_contents = []
 
-    call_input["contents"] = resolved.inline_parts + resolved.uri_parts + text_contents
-
     if resolved.cached_content:
+        # context cache 에 file_refs / system_instruction / tools / tool_config 가
+        # 이미 포함됨 → request 에서 중복 제거
         call_input["cached_content"] = resolved.cached_content
+        call_input["contents"] = resolved.inline_parts + text_contents  # uri_parts 제외
+        call_input.pop("system", None)
+        call_input.pop("tools", None)
+        call_input.pop("tool_config", None)
+    else:
+        call_input["contents"] = resolved.inline_parts + resolved.uri_parts + text_contents
 
     call_input.pop("file_checksums", None)
     return call_input
