@@ -16,7 +16,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import APIRouter, File, Form, Response, UploadFile
 
-from app.config import settings
+from app.config import MONGODB_CACHE_COLLECTION, settings
 from app.core.errors import MDBConnectionError, MetadataNotFoundError
 from app.models.requests import CheckCacheRequest
 from app.models.responses import CacheCheckResponse, UploadResponse
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/v1/files", tags=["files"])
 # ─── MDB Handler HTTP 클라이언트 ──────────────────────────────────────
 
 _mdb_client: httpx.AsyncClient | None = None
-_mdb_prefix = f"/v1/{settings.mongodb_database}/{settings.mongodb_collection}"
+_mdb_prefix = f"/v1/{settings.mongodb_database}/{MONGODB_CACHE_COLLECTION}"
 
 
 def get_mdb_client() -> httpx.AsyncClient:
