@@ -5,8 +5,10 @@
 - context_cache: file_cache:context_cache_standby:{hash_key}
 - agent_llm:     agent_llm_standby:{cache_key}
 
-redis-handler에 setnx 미구현 → get_client()로 raw 클라이언트 직접 사용.
-상세 설계: docs/cache-stampede-dedup.md
+redis-handler v2.0.0 의 RedisHandler API 사용 (setnx / delete) — NX 폴백 차단으로
+분산 의미론 보호. 단 wait_for_standby_release 의 get 만 raw `get_client()` 를
+의도적으로 유지 — handler.get 의 메모리 폴백 (단절 시 silent dedup bypass) 회피.
+상세 설계: docs/cache-stampede-dedup.md, docs/15.redis-handler-v2-migration.md (§3.4)
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from redis_handler import get_client
+from redis_handler import RedisHandler, RedisUnavailableError, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -56,25 +58,23 @@ async def try_acquire_standby(
     key: str,
     ttl_seconds: int,
 ) -> bool:
-    """Redis SETNX로 standby 선점 시도.
+    """Redis SETNX 로 standby 선점 시도.
 
     Returns:
         True  — 자기가 선점 (작업 시작)
         False — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
 
     Raises:
-        RuntimeError: Redis 미연결 (get_client() → None).
+        RuntimeError: Redis 미연결 (RedisHandler 가 RedisUnavailableError raise).
     """
-    client = get_client()
-    if client is None:
-        raise RuntimeError("Redis 미연결 — standby 불가")
-
     standby_key = _make_standby_key(prefix, key)
     value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
-    result = await asyncio.to_thread(
-        client.set, standby_key, value, nx=True, ex=ttl_seconds,
-    )
-    return result is not None
+    try:
+        return await asyncio.to_thread(
+            RedisHandler().setnx, standby_key, value, ttl=ttl_seconds,
+        )
+    except RedisUnavailableError as e:
+        raise RuntimeError("Redis 미연결 — standby 불가") from e
 
 
 async def wait_for_standby_release(
@@ -84,6 +84,11 @@ async def wait_for_standby_release(
     find_cache_fn: Callable[[], Any] | None = None,
 ) -> dict | None:
     """standby 사라질 때까지 exponential backoff 대기.
+
+    엄격 의미론 채택 (docs/15.redis-handler-v2-migration.md §3.4):
+    raw `get_client()` 사용. Redis 단절 시 ConnectionError 전파로 silent dedup
+    bypass 차단. RedisHandler.get 의 메모리 폴백 의도적 우회.
+    redis-handler 가 strict 옵션 제공 시 이 raw 사용도 마이그레이션 가능.
 
     대기 중 find_cache_fn() 주기적 호출 (sync/async 모두 허용):
       - HIT → 캐시 dict 반환 (즉시 종료)
@@ -121,7 +126,7 @@ async def wait_for_standby_release(
             if result:
                 return result
 
-        # standby 살아있는지 확인 — 사라졌으면 호출자가 작업 시작
+        # raw client.get — 단절 시 ConnectionError raise (handler 폴백 차단 의도)
         if await asyncio.to_thread(client.get, standby_key) is None:
             return None
 
@@ -144,11 +149,8 @@ async def release_standby(prefix: str, key: str) -> None:
     남은 standby는 TTL로 자연 정리됨.
     """
     try:
-        client = get_client()
-        if client is None:
-            return
         standby_key = _make_standby_key(prefix, key)
-        await asyncio.to_thread(client.delete, standby_key)
+        await asyncio.to_thread(RedisHandler().delete, standby_key)
     except Exception:
         logger.exception(
             "standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s",

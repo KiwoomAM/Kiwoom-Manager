@@ -51,50 +51,90 @@ def _isolate_redis_for_cache_store(monkeypatch):
     handler._memory.flush()
 
 
-class FakeRedisClient:
-    """SETNX(NX/EX), GET, DELETE만 지원하는 단순 in-memory fake.
+class _SharedStore:
+    """raw client mock 과 RedisHandler mock 이 공유하는 in-memory 저장소.
 
-    TTL(ex)은 저장만 하고 만료 시뮬레이션은 안 함 (테스트 scope 밖).
+    dedup 가 hybrid 로 두 API 를 모두 사용하므로 (try_acquire/release 는 handler,
+    wait 는 raw client) 두 fake 가 같은 데이터를 봐야 테스트가 정확하다.
     """
 
     def __init__(self) -> None:
-        self._store: dict[str, str] = {}
+        self.data: dict[str, str] = {}
 
-    def set(
-        self,
-        key: str,
-        value: str,
-        nx: bool = False,
-        ex: int | None = None,
-    ) -> bool | None:
-        if nx and key in self._store:
-            return None  # SETNX 실패
-        self._store[key] = value
-        return True
+
+class FakeRawClient:
+    """raw redis-py client 의 .get / .delete 만 흉내내는 fake.
+
+    dedup.wait_for_standby_release 가 raw `get_client()` 로 호출하는 메서드만 커버.
+    TTL 만료 시뮬레이션은 안 함 (테스트 scope 밖).
+    """
+
+    def __init__(self, store: _SharedStore) -> None:
+        self._store = store
 
     def get(self, key: str) -> str | None:
-        return self._store.get(key)
+        return self._store.data.get(key)
 
     def delete(self, *keys: str) -> int:
         count = 0
         for k in keys:
-            if k in self._store:
-                del self._store[k]
+            if k in self._store.data:
+                del self._store.data[k]
                 count += 1
         return count
 
 
+class FakeRedisHandler:
+    """RedisHandler 의 setnx / delete 만 흉내내는 fake.
+
+    dedup.try_acquire_standby / release_standby 가 호출하는 메서드만 커버.
+    분산 의미론 시뮬레이션 위해 메모리 폴백 동작 안 함 — 항상 Redis 가용 상태.
+    """
+
+    def __init__(self, store: _SharedStore) -> None:
+        self._store = store
+
+    def setnx(self, key: str, value: str, *, ttl: int | None = None) -> bool:
+        if key in self._store.data:
+            return False
+        self._store.data[key] = value
+        return True
+
+    def delete(self, key: str) -> int:
+        return 1 if self._store.data.pop(key, None) is not None else 0
+
+
 @pytest.fixture()
 def fake_redis(monkeypatch):
-    """dedup.get_client을 FakeRedisClient로 교체."""
-    client = FakeRedisClient()
-    monkeypatch.setattr(dedup, "get_client", lambda: client)
-    return client
+    """dedup 모듈의 raw `get_client` 와 `RedisHandler` 를 동시에 fake 로 교체.
+
+    두 fake 가 같은 _SharedStore 를 보므로 setnx 로 박은 키를 raw get 으로 조회 가능.
+    반환은 raw client fake — 테스트가 `.get(key)` 로 standby 키 존재 여부 검증할 때
+    기존 호출 패턴(`fake_redis.get(...)`) 과 호환.
+    """
+    store = _SharedStore()
+    handler_fake = FakeRedisHandler(store)
+    raw_fake = FakeRawClient(store)
+    monkeypatch.setattr(dedup, "RedisHandler", lambda: handler_fake)
+    monkeypatch.setattr(dedup, "get_client", lambda: raw_fake)
+    return raw_fake
 
 
 @pytest.fixture()
 def no_redis(monkeypatch):
-    """dedup.get_client이 None 반환 — Redis 미연결 시나리오."""
+    """Redis 전체 미연결 시나리오 — setnx 는 RedisUnavailableError,
+    raw get_client 는 None 반환.
+    """
+    from redis_handler import RedisUnavailableError
+
+    class _DownHandler:
+        def setnx(self, *a, **kw):
+            raise RedisUnavailableError("test: Redis down")
+
+        def delete(self, *a, **kw):
+            return 0
+
+    monkeypatch.setattr(dedup, "RedisHandler", lambda: _DownHandler())
     monkeypatch.setattr(dedup, "get_client", lambda: None)
 
 
