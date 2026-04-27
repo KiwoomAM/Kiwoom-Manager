@@ -144,6 +144,45 @@ class TestMakeContextCacheKey:
         key2 = cache_store.make_context_cache_key(["sha256:b", "sha256:a"])
         assert key1 == key2
 
+    def test_different_tools_different_key(self):
+        """같은 파일·모델·system 이라도 tools 다르면 별도 cache_key.
+
+        이전 버그: cache_key 재료에 tools 미포함 → tools=A 로 만든 cache 가
+        tools=B 요청에 HIT → llm-handler 가 cache 의 tools 적용 → 잘못된 결과.
+        """
+        key1 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash",
+            tools=[{"name": "calculator"}],
+        )
+        key2 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash",
+            tools=[{"name": "search"}],
+        )
+        assert key1 != key2
+
+    def test_different_tool_config_different_key(self):
+        key1 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash", tool_config="auto",
+        )
+        key2 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash", tool_config="any",
+        )
+        assert key1 != key2
+
+    def test_tools_none_and_empty_list_same_key(self):
+        """`tools=None` 과 `tools=[]` 는 동일 키 (None → `or []` 정규화).
+
+        caller 가 명시적으로 빈 리스트를 넘겨도 미지정과 동일 cache 를 공유 —
+        의도된 동작이며 cache 효율을 위해 보장.
+        """
+        key1 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash", tools=None,
+        )
+        key2 = cache_store.make_context_cache_key(
+            ["sha256:abc"], model="gemini-2.5-flash", tools=[],
+        )
+        assert key1 == key2
+
     def test_returns_64_char_hex(self):
         key = cache_store.make_context_cache_key(["sha256:abc"])
         assert len(key) == 64

@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="LLM Request Service",
     description="LLM 응답 캐싱 + 파일 처리 서비스",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 

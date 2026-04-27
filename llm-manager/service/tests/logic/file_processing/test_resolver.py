@@ -210,7 +210,7 @@ class TestResolveFiles:
             "app.logic.file_processing.resolver.upload_file", fake_upload,
         )
 
-        async def fake_create_cache(file_refs, *, model, system_instruction, ttl):
+        async def fake_create_cache(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
             return CacheRef(name="cachedContents/x", model=model)
         monkeypatch.setattr(
             "app.logic.file_processing.resolver.create_context_cache",

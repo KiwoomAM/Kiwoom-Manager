@@ -67,14 +67,22 @@ async def create_context_cache(
     model: str,
     system_instruction: str | None = None,
     ttl: int = 3600,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
 ) -> CacheRef:
     """Context Cache 생성 (재시도 포함).
+
+    Gemini Context Cache 는 cache 생성 시 `tools` / `tool_config` 도 함께 저장해야
+    이후 `call(cached_content=...)` 에서 Bad Request 없이 재사용 가능하다. llm_handler
+    의 `create_cache` 가 이들 파라미터를 지원하므로 llm-request wrapper 에서도 그대로 전달.
 
     Args:
         file_refs: 업로드된 FileRef 리스트.
         model: Gemini 모델명.
         system_instruction: 시스템 프롬프트.
         ttl: 캐시 TTL (초).
+        tools: Function calling / Built-in 도구 정의 (cache 에 동봉).
+        tool_config: function calling 모드 ("auto" | "any" | "none").
 
     Returns:
         CacheRef(name, model, ...).
@@ -90,6 +98,8 @@ async def create_context_cache(
                 model=model,
                 system=system_instruction,
                 ttl=ttl,
+                tools=tools,
+                tool_config=tool_config,
             )
         except Exception as e:
             last_error = e

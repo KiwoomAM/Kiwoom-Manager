@@ -185,7 +185,7 @@ class TestContextCacheStandby:
 
         create_count = 0
 
-        async def fake_create_context_cache(file_refs, *, model, system_instruction, ttl):
+        async def fake_create_context_cache(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
             nonlocal create_count
             create_count += 1
             await asyncio.sleep(0.05)
@@ -227,7 +227,7 @@ class TestContextCacheStandby:
 
         create_count = 0
 
-        async def very_slow_create(file_refs, *, model, system_instruction, ttl):
+        async def very_slow_create(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
             nonlocal create_count
             create_count += 1
             await asyncio.sleep(1.5)  # standby_ttl(1)보다 김

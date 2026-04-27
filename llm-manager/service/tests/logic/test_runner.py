@@ -1,0 +1,400 @@
+"""runner._apply_resolved 단위 테스트.
+
+로직 설명은 _apply_resolved docstring 참고.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+from llm_handler.models import Part
+
+from app.logic.file_processing.resolver import ResolvedFiles
+from app.logic.runner import _Prepared, _apply_resolved, _build_server_call_input
+from app.models.requests import FileInput
+
+
+# ── 헬퍼 ──────────────────────────────────────────────────────
+
+
+def _make_inline_part() -> Part:
+    return Part.from_bytes(data=b"x", mime_type="image/png")
+
+
+def _make_uri_part(uri: str = "https://example.com/test.pdf") -> Part:
+    return Part.from_uri(uri, mime_type="application/pdf")
+
+
+# ── cached_content 없는 경로 ──────────────────────────────────
+
+
+class TestApplyResolvedWithoutContextCache:
+    """기본 경로 — cached_content 없음. 모든 parts 가 contents 에 합쳐짐."""
+
+    def test_inline_and_uri_parts_both_injected_into_contents(self):
+        resolved = ResolvedFiles(
+            inline_parts=[_make_inline_part()],
+            uri_parts=[_make_uri_part()],
+            cached_content=None,
+        )
+        llm_input = {"contents": "분석해줘", "model": "gemini-2.5-flash"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        # inline + uri + text 순서로 합쳐짐
+        assert len(result["contents"]) == 3
+        assert result["contents"][-1] == "분석해줘"
+        assert "cached_content" not in result
+
+    def test_no_parts_keeps_only_text(self):
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        llm_input = {"contents": "텍스트만"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert result["contents"] == ["텍스트만"]
+
+    def test_system_and_tools_preserved_when_no_cache(self):
+        """cached_content 없으면 system/tools/tool_config 는 그대로 보존."""
+        resolved = ResolvedFiles(
+            inline_parts=[],
+            uri_parts=[_make_uri_part()],
+            cached_content=None,
+        )
+        llm_input = {
+            "contents": "x",
+            "system": "너는 금융 전문가",
+            "tools": [{"name": "calculator"}],
+            "tool_config": "auto",
+        }
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert result["system"] == "너는 금융 전문가"
+        assert result["tools"] == [{"name": "calculator"}]
+        assert result["tool_config"] == "auto"
+
+
+# ── cached_content 있는 경로 — 중복 제거 ──────────────────────
+
+
+class TestApplyResolvedWithContextCache:
+    """context cache 사용 경로 — 중복 필드 제거가 핵심."""
+
+    def test_cached_content_set_and_uri_parts_excluded_from_contents(self):
+        """cached_content 있으면 uri_parts 는 cache 안에 있으니 contents 에서 제외."""
+        resolved = ResolvedFiles(
+            inline_parts=[_make_inline_part()],
+            uri_parts=[_make_uri_part()],
+            cached_content="cachedContents/abc",
+        )
+        llm_input = {"contents": "분석해줘", "model": "gemini-2.5-flash"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert result["cached_content"] == "cachedContents/abc"
+        # inline_parts + text 만 (uri_parts 제외)
+        assert len(result["contents"]) == 2
+        assert result["contents"][-1] == "분석해줘"
+
+    def test_cached_content_removes_system_tools_tool_config(self):
+        """cached_content 있으면 system/tools/tool_config 제거 (cache 에 이미 포함)."""
+        resolved = ResolvedFiles(
+            inline_parts=[],
+            uri_parts=[_make_uri_part()],
+            cached_content="cachedContents/abc",
+        )
+        llm_input = {
+            "contents": "x",
+            "model": "gemini-2.5-flash",
+            "system": "너는 금융 전문가",
+            "tools": [{"name": "calculator"}],
+            "tool_config": "auto",
+        }
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert "system" not in result
+        assert "tools" not in result
+        assert "tool_config" not in result
+        assert result["cached_content"] == "cachedContents/abc"
+        assert result["model"] == "gemini-2.5-flash"  # model 은 유지
+
+    def test_cached_content_preserves_inline_parts(self):
+        """inline_parts 는 cache 에 안 들어가므로 cached_content 여도 유지."""
+        inline = _make_inline_part()
+        resolved = ResolvedFiles(
+            inline_parts=[inline],
+            uri_parts=[_make_uri_part()],
+            cached_content="cachedContents/abc",
+        )
+        llm_input = {"contents": "질문"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert inline in result["contents"]
+        assert "질문" in result["contents"]
+
+
+# ── 공통: file_checksums 제거 ─────────────────────────────────
+
+
+class TestApplyResolvedCommon:
+    def test_file_checksums_always_removed(self):
+        """cached_content 유무 관계없이 file_checksums 는 제거."""
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        llm_input = {"contents": "x", "file_checksums": ["abc123"]}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert "file_checksums" not in result
+
+    def test_file_checksums_removed_with_cache(self):
+        resolved = ResolvedFiles(
+            inline_parts=[],
+            uri_parts=[],
+            cached_content="cachedContents/abc",
+        )
+        llm_input = {"contents": "x", "file_checksums": ["abc123"]}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert "file_checksums" not in result
+
+
+# ── 순서 invariant ────────────────────────────────────────────
+
+
+class TestApplyResolvedOrder:
+    """docstring 주장: inline_parts + uri_parts + text_contents 순서.
+
+    len() / contents[-1] 만 확인하던 기존 테스트를 보강 — 각 위치의 객체까지 어서션.
+    """
+
+    def test_order_without_cache_is_inline_then_uri_then_text(self):
+        inline1 = Part.from_bytes(data=b"a", mime_type="image/png")
+        inline2 = Part.from_bytes(data=b"b", mime_type="image/jpeg")
+        uri1 = Part.from_uri("https://example.com/a.pdf", mime_type="application/pdf")
+        uri2 = Part.from_uri("https://example.com/b.pdf", mime_type="application/pdf")
+        resolved = ResolvedFiles(
+            inline_parts=[inline1, inline2],
+            uri_parts=[uri1, uri2],
+            cached_content=None,
+        )
+        llm_input = {"contents": "질문"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        # 정확히 inline1, inline2, uri1, uri2, "질문" 순서
+        assert len(result["contents"]) == 5
+        assert result["contents"][0] is inline1
+        assert result["contents"][1] is inline2
+        assert result["contents"][2] is uri1
+        assert result["contents"][3] is uri2
+        assert result["contents"][4] == "질문"
+
+    def test_order_with_cache_excludes_uri_parts_preserves_inline_text(self):
+        """cached_content 있으면 uri_parts 제외 — inline → text 순서만 남음."""
+        inline1 = Part.from_bytes(data=b"a", mime_type="image/png")
+        uri1 = Part.from_uri("https://example.com/a.pdf", mime_type="application/pdf")
+        resolved = ResolvedFiles(
+            inline_parts=[inline1],
+            uri_parts=[uri1],
+            cached_content="cachedContents/abc",
+        )
+        llm_input = {"contents": "질문"}
+
+        result = _apply_resolved(llm_input, resolved)
+
+        assert len(result["contents"]) == 2
+        assert result["contents"][0] is inline1
+        assert result["contents"][1] == "질문"
+
+
+# ── mutation 안전성 ──────────────────────────────────────────
+
+
+class TestApplyResolvedMutationSafety:
+    """_apply_resolved 는 원본 `llm_input` dict 를 변경하지 않아야 한다.
+
+    runner._do_llm_call 의 404-retry 경로에서 `prep.llm_input` 을 재사용하므로
+    1차 호출이 원본을 훼손하면 retry 가 깨진다. `dict(llm_input)` 이 shallow copy
+    이므로 최소한 "키 제거" / "값 재할당" 이 원본에 전파되지 않는지 검증.
+    """
+
+    def test_original_llm_input_unchanged_without_cache(self):
+        original = {
+            "contents": "분석",
+            "system": "system text",
+            "tools": [{"name": "calc"}],
+            "file_checksums": ["abc"],
+            "model": "gemini-2.5-flash",
+        }
+        snapshot = {k: v for k, v in original.items()}
+        resolved = ResolvedFiles(
+            inline_parts=[Part.from_bytes(data=b"x", mime_type="image/png")],
+            uri_parts=[],
+            cached_content=None,
+        )
+
+        _apply_resolved(original, resolved)
+
+        # 원본 dict 의 키·값 그대로 유지
+        assert original == snapshot
+        assert "file_checksums" in original  # call_input 에서만 pop, 원본엔 남음
+
+    def test_original_llm_input_unchanged_with_cache(self):
+        """cache 경로에서 system / tools / tool_config / file_checksums 를 pop 해도 원본 dict 는 보존."""
+        original = {
+            "contents": "분석",
+            "system": "system text",
+            "tools": [{"name": "calc"}],
+            "tool_config": "auto",
+            "file_checksums": ["abc"],
+            "model": "gemini-2.5-flash",
+        }
+        snapshot = {k: v for k, v in original.items()}
+        resolved = ResolvedFiles(
+            inline_parts=[],
+            uri_parts=[Part.from_uri("https://example.com/x.pdf", mime_type="application/pdf")],
+            cached_content="cachedContents/abc",
+        )
+
+        _apply_resolved(original, resolved)
+
+        assert original == snapshot
+        assert "system" in original
+        assert "tools" in original
+        assert "tool_config" in original
+
+
+# ── call-site wiring ─────────────────────────────────────────
+
+
+class TestBuildServerCallInput:
+    """_build_server_call_input 이 _apply_resolved 를 거쳐 call_input 을 구성하는지.
+
+    runner 의 _do_llm_call / _do_llm_stream / 404-retry 경로 모두 이 함수 또는
+    _apply_resolved 를 직접 거치므로, wiring 테스트로 3개 호출부의 기본 동작을
+    한 군데서 보장.
+    """
+
+    async def test_no_files_returns_llm_input_copy(self):
+        """files=None → llm_input 을 그대로 복사해 반환 (shallow, 원본 공유 X)."""
+        prep = _Prepared(
+            llm_input={"contents": "x", "model": "gemini-2.5-flash"},
+            meta={},
+            cache_mode=False,
+            save_mode=False,
+            ttl_seconds=None,
+            requested_at=datetime.now(UTC),
+            dc=None,
+            cached_output=None,
+            route_reason=None,
+            files=None,
+            context_cache_ttl=None,
+            standby_ttl_seconds=600,
+        )
+
+        result = await _build_server_call_input(prep)
+
+        assert result == {"contents": "x", "model": "gemini-2.5-flash"}
+        assert result is not prep.llm_input  # shallow copy
+
+    async def test_with_files_routes_through_apply_resolved(self, monkeypatch):
+        """files 있을 때 resolve_files 결과가 _apply_resolved 를 거쳐 나옴.
+
+        resolve_files 를 가짜로 두고 cached_content 가 세팅된 ResolvedFiles 를 반환 →
+        결과 call_input 에 cached_content 세팅 + system 제거 + contents 에 text 유지 확인.
+        """
+        fake_resolved = ResolvedFiles(
+            inline_parts=[Part.from_bytes(data=b"x", mime_type="image/png")],
+            uri_parts=[Part.from_uri("https://example.com/a.pdf", mime_type="application/pdf")],
+            cached_content="cachedContents/abc",
+        )
+
+        async def _fake_resolve_files(*args, **kwargs):
+            return fake_resolved
+
+        monkeypatch.setattr("app.logic.runner.resolve_files", _fake_resolve_files)
+
+        prep = _Prepared(
+            llm_input={
+                "contents": "질문",
+                "model": "gemini-2.5-flash",
+                "system": "should be stripped by cache path",
+            },
+            meta={},
+            cache_mode=True,
+            save_mode=True,
+            ttl_seconds=None,
+            requested_at=datetime.now(UTC),
+            dc=None,
+            cached_output=None,
+            route_reason=None,
+            files=[
+                FileInput(
+                    file_name="a.png",
+                    file_size=100,
+                    file_mtime=1,
+                    mime_type="image/png",
+                    extension="png",
+                    data=b"x",
+                )
+            ],
+            context_cache_ttl=3600,
+            standby_ttl_seconds=600,
+        )
+
+        result = await _build_server_call_input(prep)
+
+        # _apply_resolved cache 경로 검증
+        assert result["cached_content"] == "cachedContents/abc"
+        assert "system" not in result
+        # uri_parts 는 제외되지만 inline_part + text 는 포함
+        assert len(result["contents"]) == 2
+        assert result["contents"][-1] == "질문"
+
+
+# ── contents 타입 가드 ────────────────────────────────────────
+
+
+class TestApplyResolvedContentsTypeGuard:
+    """contents 가 str / list 가 아니면 명시적 `TypeError`.
+
+    이전엔 `else: text_contents = []` 로 silent drop — caller 의 입력 오류(오타 등)가
+    조용히 덮여 LLM 호출이 빈 텍스트로 나가 디버깅이 어려웠음. fail-fast 로 교정.
+    """
+
+    def test_dict_contents_raises(self):
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        with pytest.raises(TypeError, match="str 또는 list"):
+            _apply_resolved({"contents": {"text": "hi"}}, resolved)
+
+    def test_none_contents_raises(self):
+        """key 자체가 없는 경우는 `get(..., "")` 로 빈 문자열 fallback 이지만,
+        명시적으로 None 을 넘기면 실수로 간주해 raise."""
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        with pytest.raises(TypeError, match="str 또는 list"):
+            _apply_resolved({"contents": None}, resolved)
+
+    def test_int_contents_raises(self):
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        with pytest.raises(TypeError, match="str 또는 list"):
+            _apply_resolved({"contents": 123}, resolved)
+
+    def test_bytes_contents_raises(self):
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        with pytest.raises(TypeError, match="str 또는 list"):
+            _apply_resolved({"contents": b"raw bytes"}, resolved)
+
+    def test_missing_contents_key_uses_empty_string_fallback(self):
+        """contents key 가 없으면 `get(..., "")` 로 빈 문자열 → str 경로라 통과 (silent OK).
+
+        이건 의도적 — key 누락은 흔한 케이스이고 빈 텍스트로 처리하는 게 합리적.
+        타입 가드는 "잘못된 타입이 들어왔을 때" 만 담당.
+        """
+        resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        result = _apply_resolved({"model": "gemini-2.5-flash"}, resolved)
+        assert result["contents"] == []
