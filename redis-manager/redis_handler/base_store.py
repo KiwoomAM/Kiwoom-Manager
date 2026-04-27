@@ -110,6 +110,10 @@ class BaseJsonStore:
         key: str,
         value: Any,
         ttl: Optional[int] = None,
+        *,
+        nx: bool = False,
+        xx: bool = False,
+        keepttl: bool = False,
     ) -> bool:
         """
         Python 객체를 JSON 직렬화하여 Redis에 저장
@@ -118,12 +122,47 @@ class BaseJsonStore:
             key: Redis 키
             value: 저장할 Python 객체 (json.dumps 가능한 타입)
             ttl: TTL (초), None이면 default_ttl 사용
+            nx: 키 없을 때만 set
+            xx: 키 있을 때만 set
+            keepttl: 기존 TTL 유지
 
         Returns:
-            저장 성공 여부
+            저장 성공 여부 (NX/XX 조건 미충족 시 False)
+        """
+        effective_ttl = None if keepttl else (ttl if ttl is not None else self._default_ttl)
+        return self._handler.set(
+            key,
+            json.dumps(value, ensure_ascii=False),
+            ex=effective_ttl,
+            nx=nx,
+            xx=xx,
+            keepttl=keepttl,
+        )
+
+    def _setnx_json(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None,
+    ) -> bool:
+        """
+        SETNX의 JSON 버전 — 분산 잠금/standby 패턴용 편의 메서드
+
+        Args:
+            key: Redis 키
+            value: 저장할 Python 객체
+            ttl: TTL (초), None이면 default_ttl 사용
+
+        Returns:
+            True: 자기가 점유 (작업 시작 가능)
+            False: 이미 점유됨
+
+        Raises:
+            RedisUnavailableError: Redis 미연결
+            RedisRetryExhausted: retry 소진
         """
         effective_ttl = ttl if ttl is not None else self._default_ttl
-        return self._handler.set(
+        return self._handler.setnx(
             key,
             json.dumps(value, ensure_ascii=False),
             ttl=effective_ttl,

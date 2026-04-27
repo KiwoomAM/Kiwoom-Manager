@@ -91,6 +91,31 @@ class RedisConfig:
         logger.info("RedisConfig 환경변수에서 재로드 완료")
 
 
+class RetryConfig:
+    """
+    Redis 명령 재시도 설정
+
+    환경변수에서 자동 로드. RetryPolicy가 참조한다.
+    """
+
+    MAX_ATTEMPTS: int = int(os.getenv("REDIS_RETRY_MAX_ATTEMPTS", "3"))
+    INITIAL_BACKOFF: float = float(os.getenv("REDIS_RETRY_INITIAL_BACKOFF", "0.1"))
+    MAX_BACKOFF: float = float(os.getenv("REDIS_RETRY_MAX_BACKOFF", "1.0"))
+    MULTIPLIER: float = float(os.getenv("REDIS_RETRY_MULTIPLIER", "2.0"))
+    JITTER_RATIO: float = float(os.getenv("REDIS_RETRY_JITTER_RATIO", "0.2"))
+
+    @classmethod
+    def get_summary(cls) -> Dict[str, Any]:
+        return {
+            "max_attempts": cls.MAX_ATTEMPTS,
+            "initial_backoff": cls.INITIAL_BACKOFF,
+            "max_backoff": cls.MAX_BACKOFF,
+            "multiplier": cls.MULTIPLIER,
+            "jitter_ratio": cls.JITTER_RATIO,
+        }
+
+
 __all__ = [
     "RedisConfig",
+    "RetryConfig",
 ]

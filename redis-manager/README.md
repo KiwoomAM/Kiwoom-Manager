@@ -1,9 +1,18 @@
 # Redis Handler
 
-> Kiwoom Redis Handler v1.0 — 메모리 폴백 포함 범용 Redis 클라이언트
+> Kiwoom Redis Handler v2.0 — 메모리 폴백 + 재시도 + SET 옵션 내장 Redis 클라이언트
 
-Redis 연결 관리, 기본 CRUD, JSON 저장소 베이스를 제공하는 Python 라이브러리입니다.
-Redis 서버가 불가할 때 메모리 백엔드로 투명하게 폴백하므로, 호출자는 Redis 가용 여부를 신경쓸 필요 없이 동일한 API를 사용합니다.
+Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라이브러리. Redis 서버가 불가할 때 메모리 백엔드로 투명하게 폴백하며, 일시적 네트워크 장애는 exponential backoff + jitter로 자동 복구한다.
+
+## v2.0 변경사항
+
+- ✅ **재시도 로직** — `redis.ConnectionError`/`TimeoutError`/`BusyLoadingError` 등 일시 장애 자동 복구
+- ✅ **SET 옵션 확장** — `nx`, `xx`, `keepttl` 지원. `setnx()` 편의 메서드 추가
+- ✅ **Backend Protocol** — `KeyValueBackend` Protocol로 백엔드 추상화 (OCP/DIP)
+- ✅ **도메인 예외** — `RedisHandlerError`, `RedisRetryExhausted`, `RedisUnavailableError`
+- ✅ **테스트 커버리지** — 백엔드/handler/base_store 단위 테스트
+
+기존 `RedisHandler().set(k, v, ttl=N)` 같은 호출은 100% 호환.
 
 ## 요구사항
 
@@ -20,21 +29,15 @@ pip install -e packages/redis-handler
 ## 환경변수
 
 | 변수 | 기본값 | 설명 |
-|------|--------|------|
+|---|---|---|
 | `REDIS_URL` | `redis://192.7.9.45:7617/0` | Redis 서버 URL |
-| `REDIS_SOCKET_TIMEOUT` | `5` | 소켓 타임아웃 (초) |
-| `REDIS_SOCKET_CONNECT_TIMEOUT` | `5` | 연결 타임아웃 (초) |
-
-## 디렉터리 구조
-
-```
-redis_handler/
-├── __init__.py      # 공개 API + 전역 인스턴스 초기화
-├── config.py        # RedisConfig (환경변수 기��� 설정)
-├── connection.py    # 연결 관리 (init/close/get_client)
-├── handler.py       # RedisHandler (Singleton CRUD) + _MemoryBackend
-└── base_store.py    # BaseJsonStore (JSON 저장소 베이스 클래스)
-```
+| `REDIS_SOCKET_TIMEOUT` | 5 | 소켓 타임아웃 (초) |
+| `REDIS_SOCKET_CONNECT_TIMEOUT` | 5 | 연결 타임아웃 (초) |
+| `REDIS_RETRY_MAX_ATTEMPTS` | 3 | 첫 시도 포함 최대 시도 |
+| `REDIS_RETRY_INITIAL_BACKOFF` | 0.1 | 첫 백오프 (초) |
+| `REDIS_RETRY_MAX_BACKOFF` | 1.0 | 백오프 상한 (초) |
+| `REDIS_RETRY_MULTIPLIER` | 2.0 | exp 배율 |
+| `REDIS_RETRY_JITTER_RATIO` | 0.2 | 지터 ±20% |
 
 ## Quick Start
 
@@ -43,94 +46,96 @@ from redis_handler import RedisHandler
 
 rh = RedisHandler()
 
-# String CRUD
+# 일반 set/get (Redis 실패 시 메모리 폴백 자동)
 rh.set("key", "value", ttl=3600)
 val = rh.get("key")
 rh.delete("key")
+
+# 분산 잠금 / 캐시 스탬피드 방지 (Redis 필수)
+acquired = rh.setnx("lock:job", "owner-A", ttl=60)
+if acquired:
+    try:
+        do_work()
+    finally:
+        rh.delete("lock:job")
+else:
+    wait_or_skip()
+
+# 토큰 갱신 (값만, 만료시각 유지)
+rh.set("session:abc", new_token, keepttl=True)
 
 # Set 연산
 rh.sadd("myset", "a", "b", "c")
 members = rh.smembers("myset")
 rh.srem("myset", "a")
 
-# TTL / Key
-rh.expire("key", 600)
-remaining = rh.ttl("key")
-rh.exists("key")
-
-# 상태 확인
+# 헬스 체크
 rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
-rh.close()
 ```
+
+## SET 옵션 매트릭스
+
+| 패턴 | 호출 | 의미 |
+|---|---|---|
+| 영구 저장 | `rh.set(k, v)` | TTL 없음 |
+| TTL (legacy) | `rh.set(k, v, ttl=60)` | 60초 후 만료 |
+| TTL (신규) | `rh.set(k, v, ex=60)` | 60초 후 만료 |
+| 분산 잠금 | `rh.setnx(k, v, ttl=30)` | 30초 락 |
+| TTL 유지 갱신 | `rh.set(k, v, keepttl=True)` | 값만 교체 |
+| 갱신만 허용 | `rh.set(k, v, xx=True)` | 키 없으면 False |
+
+상호 배타 위반(예: `ttl=10, ex=20` 또는 `nx=True, xx=True`) → `ValueError`.
 
 ## API Reference
 
-### RedisConfig
-
-Redis 연결 설정. 환경변수에서 자동 로드되며, `configure()`로 명시적 설정도 ��능합니다.
-
-```python
-from redis_handler import RedisConfig
-
-# 명시적 설정
-RedisConfig.configure(url="redis://localhost:6379/0", socket_timeout=10)
-
-# 환경변수에서 재로드
-RedisConfig.reload_from_env()
-
-# 설정 확인
-RedisConfig.get_summary()    # {"url": "...", "socket_timeout": 5, ...}
-RedisConfig.is_configured()  # True
-```
-
 ### RedisHandler
 
-Singleton CRUD 핸들러. Redis 불가 시 메모리로 자동 폴백합니다.
-
 | 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| **String** | | |
+|---|---|---|
 | `get(key)` | `Optional[str]` | 값 조회 |
-| `set(key, value, ttl=None)` | `bool` | 값 저장 (ttl: 초, None이면 영구) |
-| `setex(key, ttl, value)` | `bool` | TTL과 함께 저장 (Redis 호환 시그니처) |
-| `delete(key)` | `int` | 키 삭제 (삭제된 수 반���) |
-| **Key** | | |
+| `set(key, value, ttl=None, *, ex=None, nx=False, xx=False, keepttl=False)` | `bool` | 값 저장 |
+| `setex(key, ttl, value)` | `bool` | TTL과 함께 저장 |
+| `setnx(key, value, *, ttl=None)` | `bool` | 키 없을 때만 저장 (분산 잠금) |
+| `delete(key)` | `int` | 키 삭제 |
 | `exists(key)` | `bool` | 키 존재 여부 |
-| `ttl(key)` | `int` | 남은 TTL (초). -1 = 영구, -2 = 키 없음 |
-| `expire(key, seconds)` | `bool` | 키에 TTL 설정 |
-| **Set** | | |
-| `sadd(key, *members)` | `int` | Set에 멤버 추가 (새로 추가된 수) |
-| `smembers(key)` | `Set[str]` | Set 전체 멤버 조회 |
-| `srem(key, *members)` | `int` | Set에서 멤버 제거 (제거된 수) |
-| **유틸리티** | | |
+| `ttl(key)` | `int` | 남은 TTL. -1=영구, -2=없음 |
+| `expire(key, seconds)` | `bool` | TTL 설정 |
+| `sadd(key, *members)` | `int` | Set에 멤버 추가 |
+| `smembers(key)` | `Set[str]` | Set 전체 멤버 |
+| `srem(key, *members)` | `int` | Set에서 멤버 제거 |
 | `ping()` | `bool` | Redis 연결 확인 |
-| `health_check()` | `dict` | `{"connected": bool, "storage": str, "config": dict}` |
-| `close()` | `None` | ��결 종료 |
-| `reset()` | `None` | 연결 종료 + 메모리 초기화 (테스트용) |
+| `health_check()` | `dict` | `{"connected", "storage", "config"}` |
+| `close()` | `None` | 연결 종료 |
+| `reset()` | `None` | 연결 종료 + 메모리 초기화 |
 | `cleanup_memory()` | `int` | 메모리 백엔드 만료 키 정리 |
 
 | Property | 타입 | 설명 |
-|----------|------|------|
+|---|---|---|
 | `is_redis_connected` | `bool` | Redis 서버 연결 여부 |
-| `storage_mode` | `str` | 현재 모드: `"redis"` 또는 `"memory"` |
+| `storage_mode` | `str` | `"redis"` 또는 `"memory"` |
 
-### Connection 함수 (저수준)
-
-일반적으로 `RedisHandler`를 통해 접근하면 되지만, 직접 제어가 필요할 때 사용합니다.
+### 예외 처리
 
 ```python
-from redis_handler import init_redis, get_client, is_available, close_redis
+from redis_handler import RedisHandler, RedisUnavailableError, RedisRetryExhausted
 
-init_redis()              # Redis 초기화 (모듈 로드 시 자동 호출)
-client = get_client()     # redis.Redis 인스턴스 또는 None
-is_available()            # 연결 가능 여부
-close_redis()             # 연결 종료
-check_redis_connection()  # 헬스 체크 (verbose 로그 출력)
+rh = RedisHandler()
+
+# 일반 명령은 폴백 자동 — 예외 노출 없음
+val = rh.get("k")  # Redis 실패 시 메모리에서 조회
+
+# NX/XX는 Redis 필수 — 예외 분기 필요
+try:
+    acquired = rh.setnx("lock", "owner", ttl=30)
+except RedisUnavailableError:
+    # Redis 미연결 — 작업 포기 또는 다른 전략
+    return
+except RedisRetryExhausted:
+    # 재시도 소진 — 일시 장애 지속
+    return
 ```
 
-### BaseJsonStore
-
-도메인별 JSON 저장소를 만들기 위한 베이스 클래스. 키 프리픽스, JSON 직렬화/역직렬화, TTL 관리를 제공합니다.
+### BaseJsonStore (도메인 store 작성용)
 
 ```python
 from redis_handler import BaseJsonStore
@@ -139,78 +144,54 @@ class MyStore(BaseJsonStore):
     def __init__(self):
         super().__init__(prefix="my:store", default_ttl=3600)
 
-    def save(self, item_id: str, data: dict) -> bool:
+    def save(self, item_id, data):
         return self._set_json(self._make_key(item_id), data)
 
-    def load(self, item_id: str) -> dict | None:
+    def load(self, item_id):
         return self._get_json(self._make_key(item_id))
 
-    def remove(self, item_id: str) -> int:
-        return self._delete(self._make_key(item_id))
-
-store = MyStore()
-store.save("abc", {"name": "test", "score": 95})
-data = store.load("abc")  # {"name": "test", "score": 95}
+    # 분산 잠금 패턴
+    def acquire_lock(self, item_id):
+        return self._setnx_json(
+            self._make_key("lock", item_id),
+            {"acquired_at": datetime.utcnow().isoformat()},
+            ttl=30,
+        )
 ```
 
 | 메서드 | 반환값 | 설명 |
-|--------|--------|------|
-| `_make_key(*parts)` | `str` | 프리픽스 기반 키 생성 (`prefix:part1:part2`) |
-| `_get_json(key)` | `Optional[Any]` | JSON 역직렬화하여 조회 |
-| `_set_json(key, value, ttl=None)` | `bool` | JSON 직렬화하여 저장 (ttl 미지정 시 default_ttl 사용) |
+|---|---|---|
+| `_make_key(*parts)` | `str` | 프리픽스 기반 키 (`prefix:p1:p2`) |
+| `_get_json(key)` | `Optional[Any]` | JSON 역직렬화 조회 |
+| `_set_json(key, value, ttl=None, *, nx=False, xx=False, keepttl=False)` | `bool` | JSON 직렬화 저장 |
+| `_setnx_json(key, value, ttl=None)` | `bool` | SETNX의 JSON 버전 |
 | `_delete(key)` | `int` | 키 삭제 |
-| `_exists(key)` | `bool` | 키 존재 여부 |
+| `_exists(key)` | `bool` | 존재 여부 |
 | `_ttl(key)` | `int` | 남은 TTL |
 | `_expire(key, seconds)` | `bool` | TTL 설정 |
-| `_sadd(key, *members)` | `int` | Set 멤버 추가 |
-| `_smembers(key)` | `set` | Set 멤버 조회 |
-| `_srem(key, *members)` | `int` | Set 멤버 제거 |
-| `storage_mode` (property) | `str` | `"redis"` 또는 `"memory"` |
+| `_sadd/_smembers/_srem` | | Set 연산 위임 |
 
-## 사용 패턴
+## Architecture
 
-### 전역 싱글톤 인스턴스
-
-```python
-from redis_handler import redis_handler
-
-# 모듈 로드 시 자동 초기화된 전역 인스턴스
-redis_handler.set("key", "value")
-redis_handler.get("key")
 ```
-
-### 도메인 Store 구현 (실제 사용 예시)
-
-백엔드의 `ChatHistoryStore`가 `BaseJsonStore`를 상속하여 세션 채팅 이력을 관리합니다:
-
-```python
-from redis_handler import BaseJsonStore
-
-class ChatHistoryStore(BaseJsonStore):
-    def __init__(self, ttl=604800, max_size=20):
-        super().__init__(prefix="chat:history", default_ttl=ttl)
-        self._max_size = max_size
-
-    def get(self, session_id: str) -> list:
-        return self._get_json(self._make_key(session_id)) or []
-
-    def add(self, session_id: str, message: dict) -> None:
-        history = self.get(session_id)
-        history.append(message)
-        history = history[-self._max_size:]  # 최대 크기 유지
-        self._set_json(self._make_key(session_id), history)
-
-    def clear(self, session_id: str) -> None:
-        self._delete(self._make_key(session_id))
+[Application Code]
+   ↓
+RedisHandler (orchestrator)
+   ├── 입력 검증 (ttl/ex/nx/xx/keepttl 충돌)
+   ├── 백엔드 선택 (Redis 가용성)
+   └── 폴백 정책 (NX/XX 차단, 일반 명령 자동)
+   ↓
+KeyValueBackend Protocol
+   ├── RedisBackend (redis-py + @retryable)
+   └── MemoryBackend (dict + threading.Lock)
 ```
-
-키 형식: `chat:history:{session_id}`
 
 ## 주의사항
 
-- **Singleton**: `RedisHandler()`는 항상 동일 인스턴스를 반환. 리셋 필요 시 `rh.reset()` 사용
+- **Singleton**: `RedisHandler()`는 항상 동일 인스턴스. 리셋 필요 시 `rh.reset()`
 - **메모리 폴백**: Redis 불가 시 인메모리 dict로 동작. 프로세스 종료 시 데이터 소실
-- **TTL**: `set(key, value, ttl=3600)` — 초 단위. `None`이면 영구 저장
+- **TTL**: 초 단위. `None`이면 영구 저장
 - **Thread-safe**: 메모리 백엔드는 `threading.Lock`으로 동시 접근 보호
 - **자동 초기화**: `import redis_handler` 시 `init_redis()`가 자동 호출됨
-- **에러 처리**: Redis 명령 실패 시 warning 로그 후 메모리 폴백으로 자동 전환 (예외를 던지지 않음)
+- **재시도 비용**: 최악 ~16초 지연 (`socket_timeout=5s × 3 + backoff`)
+- **NX/XX 폴백 없음**: 분산 의미론 보호. Redis 미연결 시 `RedisUnavailableError`
