@@ -282,7 +282,7 @@ requires-dist = [{ name = "httpx", specifier = ">=0.27.0" }]
 
 [[package]]
 name = "kiwoom-redis-handler"
-version = "1.0.0"
+version = "2.0.0"
 source = { editable = "../redis-handler" }
 dependencies = [
     { name = "python-dotenv" },
@@ -291,9 +291,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
+    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "redis", specifier = ">=5.0.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "llm-request"
