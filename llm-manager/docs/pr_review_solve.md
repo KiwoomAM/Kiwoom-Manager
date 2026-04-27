@@ -154,3 +154,48 @@
 - `keying.py` file_checksums 주입 + volatile 정규화
 - FastAPI 미들웨어 `request_id` uuid 전파
 - `splitter.py` 재귀 깊이 제한 `_MAX_DEPTH=3`
+
+---
+
+# 📦 v5 추가 — 4-에이전트 병렬 리뷰 대응
+
+> 대응 문서: `pull_request_v5.md`
+
+## 🚨 Critical
+
+### [x] C-1. `tools` / `tool_config` 비대칭 silent drop @ `runner.py:321-323`
+- **주장:** `_apply_resolved` cache 경로가 request 의 `tools` / `tool_config` 를 pop 하지만 `uploader.create_context_cache` 는 해당 파라미터를 받지도 않아 cache 에 안 들어감 → caller 의 도구 정의가 silent drop
+- **반영:** 권장안(주입) 채택. chain 5단계 (uploader → cache_store key → resolver 4함수 → runner 호출부 + README) 모두 연결. 회귀 방지 테스트 5개 추가 (`test_uploader.py` 2 + `test_cache_store.py` 3)
+
+## ⚠️ Important
+
+### [x] I-1. `contents` 비-`str`/`list` 타입 silent 소실 @ `runner.py:307-308`
+- **주장:** `dict` / `int` / `bytes` / `None` 입력 시 `text_contents = []` 로 silent drop
+- **반영:** `else: raise TypeError(...)` 로 fail-fast. 회귀 방지 `TestApplyResolvedContentsTypeGuard` (5 케이스)
+
+### [-] I-2. 하드코딩된 IP — `verify_all.ipynb`
+- **주장:** `LLM_REQUEST_URL = "http://192.7.9.45:8101"` 가 "No Hardcoding" 위반
+- **결정:** 거부 — 의도된 사내망 fallback (v3 §S1 결론과 동일 정책). quickstart 는 zero-config 우선
+
+### [x] I-3. `pyproject.toml` readme — 삭제보다 경로 수정이 근본
+- **주장:** `readme = "README_v2.md"` 로 수정이 정답. 메타데이터 삭제는 PyPI 디스커버리 약화
+- **반영:** `readme = "README_v2.md"` 로 명시
+
+### [x] I-4. 테스트 공백 — 순서·mutation·call-site wiring
+- **주장:** 순서 invariant 미검증 (`len()` / `[-1]` 만), shallow copy mutation 안전성 미검증, `_apply_resolved` 호출 3군데 wiring 통합 테스트 없음
+- **반영:** `test_runner.py` 신규 클래스 3개 — `TestApplyResolvedOrder` (각 위치 객체 동일성 어서션), `TestApplyResolvedMutationSafety` (cache/non-cache 양쪽), `TestBuildServerCallInput` (no-files / files+cache wiring)
+
+## 💡 Suggestions
+
+### [x] S-1. `# uri_parts 제외` 인라인 주석 제거
+- **반영:** 권장안 채택. docstring 과 중복 → drift 방지로 제거
+
+### [x] S-2. docstring 외부 API 단정에 레퍼런스 추가
+- **주장:** "Gemini INVALID_ARGUMENT" 는 외부 API 거동 단정 → spec 링크/티켓 각주 필요
+- **반영:** `INVALID_ARGUMENT` → "Bad Request" 약화 + docstring 끝에 `근거: packages/llm-handler/CLAUDE.md Gotchas` 출처 명시 (`runner.py:341` 의 `상세: docs/inline-vs-files-api-strategy.md` 와 동일 패턴)
+
+### [x] S-3. `test_runner.py` 모듈 docstring 위임
+- **반영:** 모듈 docstring 을 `로직 설명은 _apply_resolved docstring 참고.` 한 줄로 간소화
+
+### [-] S-4. `build_metadata` `@staticmethod` 노출
+- **결정:** 별도 PR — `packages/file-manager/sdk` 시그니처 변경이라 다른 사용처 영향 검토 필요. 미래 안전성 issue → follow-up

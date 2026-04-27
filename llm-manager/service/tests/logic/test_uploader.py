@@ -185,3 +185,55 @@ class TestCreateContextCache:
                 await create_context_cache(
                     [_fake_file_ref()], model="gemini-2.5-flash",
                 )
+
+    @pytest.mark.asyncio
+    async def test_tools_and_tool_config_passed_to_aio_create_cache(self):
+        """Critical 회귀 방지: tools/tool_config 가 llm_handler 까지 전달되는지.
+
+        이전 버그: uploader 가 tools/tool_config 를 받지도 않아 request 의 tools 가
+        cache 에 반영되지 않은 채 runner 가 'cache 에 있다' 가정으로 pop → silent drop.
+        """
+        captured: dict = {}
+
+        async def _capture(file_refs, **kwargs):
+            captured.update(kwargs)
+            return _fake_cache_ref()
+
+        with patch(
+            "app.logic.file_processing.uploader._aio_create_cache",
+            side_effect=_capture,
+        ):
+            await create_context_cache(
+                [_fake_file_ref()],
+                model="gemini-2.5-flash",
+                system_instruction="sys",
+                ttl=600,
+                tools=[{"name": "calculator"}],
+                tool_config="auto",
+            )
+
+        assert captured["tools"] == [{"name": "calculator"}]
+        assert captured["tool_config"] == "auto"
+        # llm_handler.aio.create_cache 는 system_instruction 이 아닌 system 키 사용
+        assert captured["system"] == "sys"
+        assert captured["ttl"] == 600
+
+    @pytest.mark.asyncio
+    async def test_tools_default_none_passed_through(self):
+        """tools/tool_config 미지정 시 None 으로 명시 전달 (기본값 의존 X)."""
+        captured: dict = {}
+
+        async def _capture(file_refs, **kwargs):
+            captured.update(kwargs)
+            return _fake_cache_ref()
+
+        with patch(
+            "app.logic.file_processing.uploader._aio_create_cache",
+            side_effect=_capture,
+        ):
+            await create_context_cache(
+                [_fake_file_ref()], model="gemini-2.5-flash",
+            )
+
+        assert captured["tools"] is None
+        assert captured["tool_config"] is None

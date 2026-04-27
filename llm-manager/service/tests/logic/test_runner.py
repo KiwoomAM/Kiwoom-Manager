@@ -1,10 +1,6 @@
 """runner._apply_resolved 단위 테스트.
 
-Context Cache 사용 시 request-level 필드 중복 제거 검증:
-- cached_content 없음 → inline_parts + uri_parts + text 모두 contents 에 포함
-- cached_content 있음 → uri_parts 제외 + system/tools/tool_config 제거
-  (이것들은 cache 에 이미 포함돼 있어 request 중복 전송 시 토큰 중복 과금 +
-  Gemini INVALID_ARGUMENT)
+로직 설명은 _apply_resolved docstring 참고.
 """
 
 from __future__ import annotations
