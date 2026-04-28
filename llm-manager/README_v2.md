@@ -413,10 +413,6 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 
 > **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
 
-## Gemini 404 자동 복구
-
-Gemini가 Files API URI를 404로 응답하면 해당 URI의 Redis 캐시를 무효화하고 자동으로 재업로드한다. 호출자는 별도 처리 없이 투명하게 복구된다.
-
 ## Cache Stampede Dedup
 
 동일 파일을 동시에 여러 요청이 업로드하려 할 때 중복 업로드를 방지한다.
