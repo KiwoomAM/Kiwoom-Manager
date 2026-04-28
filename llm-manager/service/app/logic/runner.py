@@ -230,27 +230,28 @@ def finalize(
 
 # ── stream finalize ────────────────────────────────────────────
 
-def _finalize_stream(
-    prep: _Prepared, chunks: list[StreamChunk], *, database: str | None = None,
+def _finalize_stream_lite(
+    prep: _Prepared,
+    text_parts: list[str],
+    last: StreamChunk | None,
+    function_calls: list | None,
+    *,
+    database: str | None = None,
 ) -> None:
-    """Stream 완료 후 누적 청크를 조립하여 MDB에 저장."""
+    """Stream 완료 후 텍스트 합본 + 마지막 청크 메타로 MDB 저장 (docs/16 §3.5).
+
+    chunk 객체 전체를 보관하지 않고 호출자가 추출한 정보만 받는다.
+    """
     if not prep.save_mode or prep.dc is None:
         return
-    if not chunks:
+    if last is None:
         logger.warning(
             "스트림 완료 시 청크가 0개: cache_key=%s — 빈 결과는 저장하지 않음",
             prep.dc.cache_key[:16] + "...",
         )
         return
 
-    full_text = "".join((c.text or "") for c in chunks)
-    last = chunks[-1]
-
-    # function_calls: 비-None인 청크 중 마지막 값을 채택
-    function_calls = None
-    for c in chunks:
-        if c.function_calls is not None:
-            function_calls = c.function_calls
+    full_text = "".join(text_parts)
 
     assembled: dict = {
         "text": full_text,
@@ -534,14 +535,20 @@ async def _do_llm_stream(
 ) -> AsyncIterator[StreamChunk]:
     """파일 처리 + LLM stream + 404 자동 복구 + stream finalize."""
     call_input = await _build_server_call_input(prep)
-    accumulated: list[StreamChunk] = []
+    # chunk 객체 전체를 보관하지 않고 finalize 에 필요한 정보만 추출 누적 (docs/16 §3.5)
+    text_parts: list[str] = []
+    last: StreamChunk | None = None
+    function_calls: list | None = None
     try:
         async for chunk in aio_stream(**call_input):
-            accumulated.append(chunk)
+            text_parts.append(chunk.text or "")
+            last = chunk
+            if chunk.function_calls is not None:
+                function_calls = chunk.function_calls
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if _is_gemini_404(e) and prep.files and not accumulated:
+        if _is_gemini_404(e) and prep.files and last is None:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -554,11 +561,14 @@ async def _do_llm_stream(
             )
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
-                accumulated.append(chunk)
+                text_parts.append(chunk.text or "")
+                last = chunk
+                if chunk.function_calls is not None:
+                    function_calls = chunk.function_calls
                 yield chunk
         else:
             raise
-    _finalize_stream(prep, accumulated, database=database)
+    _finalize_stream_lite(prep, text_parts, last, function_calls, database=database)
 
 
 async def llm_request_stream_async(

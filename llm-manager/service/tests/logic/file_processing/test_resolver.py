@@ -14,6 +14,8 @@ from llm_handler.models import CacheRef, FileRef
 from app.logic.file_processing.resolver import (
     _estimate_non_file_bytes,
     _process_inline,
+    _reuse_files_api_uris,
+    _upload_and_cache_file,
     classify_files,
     resolve_files,
 )
@@ -229,3 +231,49 @@ class TestResolveFiles:
         assert len(result.uri_parts) == 1
         assert result.cached_content == "cachedContents/x"
         assert upload_count == 1
+
+
+# ── #2 Phase 1 — Files API 경로 fi.data 회수 ──────────────────
+
+
+class TestFilesApiBytesRelease:
+    """Files API 경로 처리 후 fi.data 가 b'' 로 비워지는지 검증.
+
+    docs/16.memory-cleanup-plan.md §3.2 / §5.1 참조.
+    """
+
+    async def test_live_upload_clears_fi_data(
+        self, fake_redis, monkeypatch,
+    ):
+        """_upload_and_cache_file 종료 후 fi.data == b'' (cache MISS 경로)."""
+        fi = _file(file_name="live.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b"original-bytes-not-empty"
+
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        uri_parts: list = []
+        file_refs: list = []
+        await _upload_and_cache_file(fi, "checksum-live", uri_parts, file_refs)
+
+        assert fi.data == b""
+        assert len(uri_parts) == 1
+
+    def test_cached_reuse_clears_fi_data(self):
+        """_reuse_files_api_uris 종료 후 fi.data == b'' (cache HIT 경로)."""
+        fi = _file(file_name="cached.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b"original-bytes-not-empty"
+
+        existing = {"uris": ["https://example.com/cached-x"]}
+        uri_parts: list = []
+        file_refs: list = []
+        _reuse_files_api_uris(fi, existing, uri_parts, file_refs)
+
+        assert fi.data == b""
+        assert len(uri_parts) == 1

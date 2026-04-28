@@ -163,6 +163,7 @@ def _reuse_files_api_uris(
         "[route] file=%s mode=files_api source=cached uris=%d",
         fi.file_name, len(existing["uris"]),
     )
+    fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
 async def _upload_and_cache_file(
@@ -233,6 +234,7 @@ async def _upload_and_cache_file(
         "[route] file=%s mode=files_api source=live parts=%d duration_ms=%d",
         fi.file_name, len(refs), duration_ms,
     )
+    fi.data = b""  # Files API 경로 — bytes 가 디스크/URI 로 옮겨졌으니 메모리 회수 (docs/16 §3.2)
 
 
 # ── context_cache 헬퍼 ───────────────────────────────────────
