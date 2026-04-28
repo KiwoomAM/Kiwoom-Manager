@@ -230,7 +230,7 @@ def finalize(
 
 # ── stream finalize ────────────────────────────────────────────
 
-def _finalize_stream_lite(
+def _finalize_stream(
     prep: _Prepared,
     text_parts: list[str],
     last: StreamChunk | None,
@@ -567,8 +567,11 @@ async def _do_llm_stream(
                     function_calls = chunk.function_calls
                 yield chunk
         else:
+            # 404 외 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
+            # 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출 안 함. 동일 요청 재호출 시 LLM 재과금 발생.
+            logger.warning("스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
             raise
-    _finalize_stream_lite(prep, text_parts, last, function_calls, database=database)
+    _finalize_stream(prep, text_parts, last, function_calls, database=database)
 
 
 async def llm_request_stream_async(

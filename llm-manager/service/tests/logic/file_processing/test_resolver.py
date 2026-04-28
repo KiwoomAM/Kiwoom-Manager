@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from llm_handler.models import CacheRef, FileRef
 
+from app.core.errors import FileUploadError
 from app.logic.file_processing.resolver import (
     _estimate_non_file_bytes,
     _process_inline,
@@ -277,3 +278,18 @@ class TestFilesApiBytesRelease:
 
         assert fi.data == b""
         assert len(uri_parts) == 1
+
+    async def test_upload_with_empty_data_raises(self, fake_redis):
+        """fi.data == b'' 인 FileInput 재사용 시 FileUploadError raise (C1 회귀 방지).
+
+        404 자동 복구 경로에서 동일 FileInput 객체를 재사용하면 fi.data 가
+        이미 회수된 상태 → 0바이트 업로드/silent corruption 방지를 위해
+        진입 가드에서 raise. docs/16.memory-cleanup-plan.md §6 참조.
+        """
+        fi = _file(file_name="empty.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b""
+
+        uri_parts: list = []
+        file_refs: list = []
+        with pytest.raises(FileUploadError, match="bytes 가 이미 회수"):
+            await _upload_and_cache_file(fi, "checksum-x", uri_parts, file_refs)

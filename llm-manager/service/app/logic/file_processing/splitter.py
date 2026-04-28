@@ -191,9 +191,15 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
         return result
     except Exception:
         # raise → 호출자가 result 못 받음 → 만든 임시 파일 모두 정리 (docs/16 §3.3)
+        logger.exception(
+            "split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)",
+            len(created_temps), len(result),
+        )
         for t in set(created_temps) | set(result):
             try:
                 os.unlink(t)
+            except FileNotFoundError:
+                pass  # set 합집합 특성상 정상 (이미 unlink 된 항목 포함)
             except OSError:
-                pass
+                logger.warning("임시 파일 정리 실패: %s", t, exc_info=True)
         raise
