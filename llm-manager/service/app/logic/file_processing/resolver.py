@@ -163,6 +163,7 @@ def _reuse_files_api_uris(
         "[route] file=%s mode=files_api source=cached uris=%d",
         fi.file_name, len(existing["uris"]),
     )
+    fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
 async def _upload_and_cache_file(
@@ -176,6 +177,13 @@ async def _upload_and_cache_file(
     standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
     양쪽에서 호출된다.
     """
+    if not fi.data:
+        # 동일 FileInput 재사용 방지 — Phase 1 이후 첫 업로드로 fi.data 가 회수되면
+        # 404 자동 복구 경로에서 0바이트 업로드/silent corruption 발생 가능 (docs/16 §6)
+        raise FileUploadError(
+            f"Files API 업로드 실패: bytes 가 이미 회수된 FileInput 재사용 "
+            f"(file_name={fi.file_name}). 자동 복구 미지원 — 호출자가 새 요청으로 재시도 필요"
+        )
     if not fi.extension:
         logger.warning(
             "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",
@@ -233,6 +241,7 @@ async def _upload_and_cache_file(
         "[route] file=%s mode=files_api source=live parts=%d duration_ms=%d",
         fi.file_name, len(refs), duration_ms,
     )
+    fi.data = b""  # Files API 경로 — bytes 가 디스크/URI 로 옮겨졌으니 메모리 회수 (docs/16 §3.2)
 
 
 # ── context_cache 헬퍼 ───────────────────────────────────────

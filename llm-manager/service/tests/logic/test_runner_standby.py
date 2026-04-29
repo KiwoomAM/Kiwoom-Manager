@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from llm_handler.models import LLMResponse, StreamChunk, TokenUsage
+from llm_handler.models import FunctionCall, LLMResponse, StreamChunk, TokenUsage
 
 from app.logic import runner
 
@@ -204,3 +204,53 @@ class TestAgentLlmStreamStandby:
         live_text = "".join(c.text or "" for c in live_chunks)
         assert cached_chunks[0].text == live_text
         assert cached_chunks[0].finish_reason == "STOP"
+
+
+# ── stream chunk 누적 시맨틱 회귀 ────────────────────────────
+
+
+class TestStreamFunctionCallsAccumulation:
+    """_do_llm_stream 의 function_calls 누적 분기 회귀.
+
+    `if chunk.function_calls is not None: function_calls = chunk.function_calls`
+    — 마지막 비-None 청크의 값을 채택하는 시맨틱이 깨지지 않는지 검증.
+    기존 stream 테스트는 모든 청크 function_calls=None 이라 이 분기를 한 번도 실행하지 않음.
+    """
+
+    async def test_middle_chunk_function_calls_preserved_in_saved_response(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """중간 청크에만 function_calls 가 있고 마지막 청크가 None 이어도, 저장된 응답에 보존."""
+        fc = FunctionCall(name="lookup", args={"q": "x"}, id="fc-1")
+
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(text="a", finish_reason=None, usage=None, function_calls=None)
+            yield StreamChunk(text="b", finish_reason=None, usage=None, function_calls=[fc])
+            yield StreamChunk(
+                text="c",
+                finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+                function_calls=None,  # 마지막 청크는 None — 누적된 값이 보존되어야 함
+            )
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+
+        llm_input = {
+            "contents": "fc accumulation",
+            "model": "gemini-2.5-flash",
+            "service_name": "test",
+        }
+
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input,
+            cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        # mock_collection 은 store: dict[str, dict] — 저장된 doc 1개 있어야 함
+        assert len(mock_collection) == 1
+        saved = next(iter(mock_collection.values()))
+        assert saved["result"]["function_calls"] == [fc.model_dump()]
+        assert saved["result"]["text"] == "abc"

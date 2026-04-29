@@ -298,9 +298,24 @@ llm_request_async()
 - `mode=context_cache source=cached` — `_process_files_api()` 분기 A(Redis hit) 또는 standby 대기 후 hit
 - `mode=context_cache source=none` — `context_cache_ttl` 지정됐지만 files_api 파일 없음 (조건 미충족)
 
+#### 🔴 Files API 업로드 진입 가드 — `fi.data` 회수 후 재사용
+
+> `resolver.py:181-187` [RAISE] `_upload_and_cache_file()`
+> ```python
+> if not fi.data:
+>     raise FileUploadError(
+>         f"Files API 업로드 실패: bytes 가 이미 회수된 FileInput 재사용 "
+>         f"(file_name={fi.file_name}). 자동 복구 미지원 — 호출자가 새 요청으로 재시도 필요"
+>     )
+> ```
+
+- **응답**: 502, `error_type="file"`
+- **언제**: Phase 1 메모리 정리 후(`fi.data = b""`) 동일 FileInput 객체로 재업로드 시도. 거의 유일한 발생 경로는 Gemini 404 자동 복구 흐름
+- **확인할 것**: 진입 가드는 의도된 차단 — silent corruption 방지. 사용자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+
 #### 🔴 Files API 업로드 실패
 
-> `resolver.py:197-201` [EXCEPTION → RAISE]
+> `resolver.py:204-209` [EXCEPTION → RAISE]
 > ```
 > Files API 업로드 실패: file_name=%s, mime=%s
 > ```
@@ -314,7 +329,7 @@ llm_request_async()
 
 #### 🔴 Redis files_api 저장 실패
 
-> `resolver.py:226-227` [EXCEPTION → RAISE]
+> `resolver.py:226-228` [EXCEPTION → RAISE]
 > ```python
 > raise CacheError(f"Redis files_api 저장 실패: {e}") from e
 > ```
@@ -323,7 +338,7 @@ llm_request_async()
 
 #### 🔴 Context cache 생성 실패
 
-> `resolver.py:263-264` [EXCEPTION → RAISE]
+> `resolver.py:280-281` [EXCEPTION → RAISE]
 > ```python
 > raise FileUploadError(f"Context cache 생성 실패: {e}") from e
 > ```
@@ -353,20 +368,20 @@ llm_request_async()
 - **의미**: §2.4 설명과 동일. 이 파일 단계에서 발생
 - **확인할 것**: 업로드/context_cache가 실제로 오래 걸리는지, TTL 상향 검토
 
-#### 🟡 Gemini 404 자동 복구
+#### 🟡 Gemini 404 — Redis invalidate 후 진입 가드 raise
 
-> `resolver.py:449-452` [WARNING] `resolve_files_after_404()`
+> `resolver.py:477-479` [WARNING] `resolve_files_after_404()`
 > ```
 > Gemini 404 자동 복구: Redis invalidate 후 재업로드 (checksums=%d)
 > ```
 
 - **언제**: LLM 호출 중 Gemini가 Files API URI 404 반환 → runner가 이 함수 호출
-- **의미**: Redis TTL < Gemini TTL 이슈. invalidate + 재업로드로 복구
-- **확인할 것**: 반복되면 `FILES_API_TTL_FLOOR` 조정
+- **의미**: Redis 캐시는 invalidate 되지만, Phase 1 메모리 정리(`fi.data = b""`)로 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+- **확인할 것**: Redis TTL < Gemini TTL 이슈가 반복되면 `FILES_API_TTL_FLOOR` 조정
 
 #### 🟡 404 복구 중 Redis 삭제 실패 (무시)
 
-> `resolver.py:459-461, 469-471` [EXCEPTION]
+> `resolver.py:486-490, 496-500` [EXCEPTION]
 > ```
 > Redis files_api 삭제 실패 (계속 진행): checksum=%s
 > Redis context_cache 삭제 실패 (계속 진행): hash_key=%s
@@ -403,7 +418,7 @@ llm_request_async()
 
 #### 🟡 PDF splitter 경고들
 
-> `splitter.py:77-83, 106-111, 140` [WARNING]
+> `splitter.py:76-82, 106-111, 144` [WARNING]
 > ```
 > 재분할 한도(%d) 초과: %s (%.1fMB) — 현재 크기로 진행
 > 페이지 %d의 추정 크기(%.1fMB)가 목표(%dMB)를 초과합니다
@@ -415,11 +430,23 @@ llm_request_async()
 
 #### 🟢 분할/병합 진행도
 
-> `splitter.py:131-138, 171-176` [INFO]
+> `splitter.py:134-141, 181-186` [INFO]
 > ```
 > 분할 %d/%d: p.%d-%d (%.1fMB)
 > 병합: 파트 %d+%d → %.1fMB
 > ```
+
+#### 🔴 split_pdf 실패 — 임시 파일 정리
+
+> `splitter.py:194-205` [EXCEPTION + WARNING]
+> ```
+> split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)
+> 임시 파일 정리 실패: %s
+> ```
+
+- **언제**: PDF 분할/병합 도중 `part_doc.save()` / `doc_m.save()` / 재귀 호출 등에서 raise
+- **의미**: 만들어진 임시 파일을 일괄 unlink 후 raise — leak 0. `FileNotFoundError`(set 합집합 특성상 정상)는 silent, 그 외 `OSError`(디스크 풀 / readonly fs / 권한)는 `logger.warning` 으로 신호 보존
+- **확인할 것**: WARNING 이 동반되면 `/tmp` 상태(디스크 풀 / 권한 / readonly fs) 점검
 
 #### 🟡 FileRef expiration 파싱 실패 / floor 적용
 
@@ -515,7 +542,7 @@ llm_request_async()
 
 #### 🟡 스트림 청크 0개
 
-> `runner.py:241-245` [WARNING] `_finalize_stream()`
+> `runner.py:247-252` [WARNING] `_finalize_stream()`
 > ```
 > 스트림 완료 시 청크가 0개: cache_key=%s — 빈 결과는 저장하지 않음
 > ```
@@ -525,24 +552,35 @@ llm_request_async()
 
 #### 🔴 스트림 결과 저장 실패 (흐름은 계속)
 
-> `runner.py:274-280` [EXCEPTION] `_finalize_stream()`
+> `runner.py:275-279` [EXCEPTION] `_finalize_stream()`
 > ```
 > 스트림 결과 저장 실패: cache_key=%s — 캐시 미저장
 > ```
 
-#### 🟡 Gemini 404 감지 — 자동 복구 시도
+#### 🟡 Gemini 404 감지 — Redis invalidate 후 진입 가드 raise
 
-> `runner.py:396` [WARNING] `_do_llm_call()`
+> `runner.py:416` [WARNING] `_do_llm_call()`
 > ```
 > Gemini 404 감지 — 자동 복구 시도: %s
 > ```
-> `runner.py:524` [WARNING] `_do_llm_stream()`
+> `runner.py:552` [WARNING] `_do_llm_stream()`
 > ```
 > Gemini 404 감지 — stream 자동 복구 시도: %s
 > ```
 
-- **의미**: `resolve_files_after_404()` 호출 (§2.6 참조). 1회만 시도
-- **확인할 것**: 복구 후에도 실패하면 원 예외가 올라감 → 502
+- **의미**: `resolve_files_after_404()` 호출되어 Redis invalidate 까지 진행되지만, 메모리 정리(`fi.data = b""`) 이후 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자가 새 요청으로 재시도 (상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6)
+- **확인할 것**: 반복 발생 시 `FILES_API_TTL_FLOOR` 조정 (Redis TTL < Gemini TTL 어긋남이 원인)
+
+#### 🟡 스트림 중 비-404 예외 — partial 응답 폐기
+
+> `runner.py:572` [WARNING] `_do_llm_stream()`
+> ```
+> 스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s
+> ```
+
+- **언제**: stream 도중 rate limit / 네트워크 단절 / provider 오류 등 (404 외)
+- **의미**: 사용자에게는 partial chunk 가 이미 yield 됐으나 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출하지 않음. 동일 요청 재호출 시 LLM 재과금
+- **확인할 것**: 자주 뜨면 provider 안정성 / 네트워크 상태 점검
 
 #### 🟡 agent_llm standby timeout
 
@@ -620,8 +658,8 @@ llm_request_async()
 | 클래스 | HTTP | error_type | 주요 발생 위치 |
 |--------|------|-----------|---------------|
 | `LLMRequestServiceError` | 500 | handler | 기본. 직접 던지는 경우는 거의 없음 |
-| `CacheError` | 502 | cache | resolver.py:227/280/323/338 — Redis 실패 |
-| `FileUploadError` | 502 | file | resolver.py:201/264 — Files API / Context cache 실패 |
+| `CacheError` | 502 | cache | resolver.py:235/299/346/361 — Redis 실패 |
+| `FileUploadError` | 502 | file | resolver.py:183(진입 가드 — `fi.data == b""` 재사용) / 208(Files API 업로드 실패) / 281(Context cache 생성 실패) |
 | `ValidationError` | 422 | validation | 검증 계열 기본 |
 | `UnsupportedFileTypeError` | 422 | unsupported_file_type | validators.py:37 |
 | `FileTooLargeError` | 422 | file_too_large | validators.py:52 |
@@ -648,17 +686,17 @@ llm_request_async()
 
 ### "Gemini 404가 나와요"
 - 흐름: 대용량 파일의 Files API URI가 Gemini에서 만료 (Redis TTL < Gemini TTL)
-- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:396, 524](service/app/logic/runner.py#L396)) → `Gemini 404 자동 복구` ([resolver.py:449](service/app/logic/file_processing/resolver.py#L449))
-- 자동 복구: Redis invalidate + 재업로드 (1회 시도)
+- 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:416, 552](service/app/logic/runner.py#L416)) → `Gemini 404 자동 복구` ([resolver.py:477](service/app/logic/file_processing/resolver.py#L477)) → 진입 가드에서 `FileUploadError` raise ([resolver.py:183](service/app/logic/file_processing/resolver.py#L183))
+- 자동 복구는 폐지 — Phase 1 메모리 정리(`fi.data = b""`)와 양립 불가. 사용자에게 502 raise 됨 → 새 요청으로 재시도 필요. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 - 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:147](service/app/logic/file_processing/cache_store.py#L147) 경고 체크
 
 ### "SDK에서 ServiceError error_type=file"
-- Service 쪽 선행 로그: [resolver.py:201 Files API 업로드 실패](service/app/logic/file_processing/resolver.py#L201) 또는 [resolver.py:264 Context cache 생성 실패](service/app/logic/file_processing/resolver.py#L264)
+- Service 쪽 선행 로그: [resolver.py:183 진입 가드 raise (`fi.data == b""` 재사용)](service/app/logic/file_processing/resolver.py#L183), [resolver.py:208 Files API 업로드 실패](service/app/logic/file_processing/resolver.py#L208), [resolver.py:281 Context cache 생성 실패](service/app/logic/file_processing/resolver.py#L281)
 - 더 앞: [uploader.py:101 create_cache 재시도](service/app/logic/file_processing/uploader.py#L101)
-- 실제 원인: llm-handler traceback 또는 provider 쪽 상태
+- 실제 원인: llm-handler traceback 또는 provider 쪽 상태. 진입 가드 케이스는 404 재시도로 인한 동일 FileInput 재사용 시나리오
 
 ### "SDK에서 ServiceError error_type=cache"
-- Service 쪽 선행 로그: [resolver.py:227/280/323/338](service/app/logic/file_processing/resolver.py#L227) Redis CRUD 실패
+- Service 쪽 선행 로그: [resolver.py:235/299/346/361](service/app/logic/file_processing/resolver.py#L235) Redis CRUD 실패
 - 원인: Redis 장애. `redis-cli ping` 확인
 - 기동 차단도 같이 뜰 수 있음: [providers.py:26 Redis 연결 실패](service/app/core/providers.py#L26)
 

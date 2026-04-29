@@ -82,10 +82,11 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
         return [path]
 
     doc = fitz.open(path)
-
-    # 페이지별 바이트 추정
-    page_sizes = _estimate_page_sizes(doc, file_size)
-    doc.close()
+    try:  # Bug A — _estimate_page_sizes raise 시에도 doc.close 보장 (docs/16 §3.3)
+        # 페이지별 바이트 추정
+        page_sizes = _estimate_page_sizes(doc, file_size)
+    finally:
+        doc.close()
 
     # 누적 크기 기반 그룹핑
     groups: list[list[int]] = []
@@ -114,67 +115,91 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
 
     # 그룹별 PDF 저장 + 초과 시 재분할
     limit_bytes = target_mb * 1024 * 1024
+    created_temps: list[str] = []  # 만든 임시 파일 추적 — except 시 정리용 (docs/16 §3.3)
     result: list[str] = []
-    for idx, group in enumerate(groups):
-        part_doc = fitz.open(path)
-        try:
-            part_doc.select(group)
-            tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
-            tmp.close()
-            part_doc.save(tmp.name, garbage=4, deflate=True)
-        finally:
-            part_doc.close()
+    try:
+        for idx, group in enumerate(groups):
+            part_doc = fitz.open(path)
+            try:
+                part_doc.select(group)
+                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
+                tmp.close()
+                created_temps.append(tmp.name)
+                part_doc.save(tmp.name, garbage=4, deflate=True)
+            finally:
+                part_doc.close()
 
-        part_size = os.path.getsize(tmp.name)
-        part_mb = part_size / (1024 * 1024)
-        logger.info(
-            "분할 %d/%d: p.%d-%d (%.1fMB)",
-            idx + 1,
-            len(groups),
-            group[0] + 1,
-            group[-1] + 1,
-            part_mb,
-        )
+            part_size = os.path.getsize(tmp.name)
+            part_mb = part_size / (1024 * 1024)
+            logger.info(
+                "분할 %d/%d: p.%d-%d (%.1fMB)",
+                idx + 1,
+                len(groups),
+                group[0] + 1,
+                group[-1] + 1,
+                part_mb,
+            )
 
-        if part_size > limit_bytes:
-            logger.warning("파트 %d이 %.1fMB로 초과 → 재분할", idx + 1, part_mb)
-            sub_paths = split_pdf(tmp.name, target_mb, _depth=_depth + 1)
-            os.unlink(tmp.name)
-            result.extend(sub_paths)
-        else:
-            result.append(tmp.name)
-
-    # 후처리: 인접 파트 병합 (실제 크기 기준, 45MB 상한)
-    merge_limit_bytes = _MERGE_LIMIT_MB * 1024 * 1024
-    if len(result) > 1:
-        merged: list[str] = [result[0]]
-        for i in range(1, len(result)):
-            prev_size = os.path.getsize(merged[-1])
-            curr_size = os.path.getsize(result[i])
-            if prev_size + curr_size <= merge_limit_bytes:
-                doc_m = fitz.open(merged[-1])
-                try:
-                    doc_c = fitz.open(result[i])
-                    try:
-                        doc_m.insert_pdf(doc_c)
-                    finally:
-                        doc_c.close()
-                    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-                    tmp.close()
-                    doc_m.save(tmp.name, garbage=4, deflate=True)
-                finally:
-                    doc_m.close()
-                os.unlink(merged[-1])
-                os.unlink(result[i])
-                merged[-1] = tmp.name
-                logger.info(
-                    "병합: 파트 %d+%d → %.1fMB",
-                    len(merged),
-                    len(merged) + 1,
-                    os.path.getsize(tmp.name) / (1024 * 1024),
-                )
+            if part_size > limit_bytes:
+                logger.warning("파트 %d이 %.1fMB로 초과 → 재분할", idx + 1, part_mb)
+                sub_paths = split_pdf(tmp.name, target_mb, _depth=_depth + 1)
+                if sub_paths == [tmp.name]:
+                    # Bug B — 재귀가 _MAX_DEPTH 초과로 [path] 그대로 반환 시 unlink 금지
+                    result.append(tmp.name)
+                else:
+                    # 시나리오 ③ — 재귀 결과도 추적 후 tmp.name 정리
+                    created_temps.extend(sub_paths)
+                    os.unlink(tmp.name)
+                    result.extend(sub_paths)
             else:
-                merged.append(result[i])
-        result = merged
+                result.append(tmp.name)
 
-    return result
+        # 후처리: 인접 파트 병합 (실제 크기 기준, 45MB 상한)
+        merge_limit_bytes = _MERGE_LIMIT_MB * 1024 * 1024
+        if len(result) > 1:
+            merged: list[str] = [result[0]]
+            for i in range(1, len(result)):
+                prev_size = os.path.getsize(merged[-1])
+                curr_size = os.path.getsize(result[i])
+                if prev_size + curr_size <= merge_limit_bytes:
+                    doc_m = fitz.open(merged[-1])
+                    try:
+                        doc_c = fitz.open(result[i])
+                        try:
+                            doc_m.insert_pdf(doc_c)
+                        finally:
+                            doc_c.close()
+                        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                        tmp.close()
+                        created_temps.append(tmp.name)
+                        doc_m.save(tmp.name, garbage=4, deflate=True)
+                    finally:
+                        doc_m.close()
+                    os.unlink(merged[-1])
+                    os.unlink(result[i])
+                    merged[-1] = tmp.name
+                    logger.info(
+                        "병합: 파트 %d+%d → %.1fMB",
+                        len(merged),
+                        len(merged) + 1,
+                        os.path.getsize(tmp.name) / (1024 * 1024),
+                    )
+                else:
+                    merged.append(result[i])
+            result = merged
+
+        return result
+    except Exception:
+        # raise → 호출자가 result 못 받음 → 만든 임시 파일 모두 정리 (docs/16 §3.3)
+        logger.exception(
+            "split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)",
+            len(created_temps), len(result),
+        )
+        for t in set(created_temps) | set(result):
+            try:
+                os.unlink(t)
+            except FileNotFoundError:
+                pass  # set 합집합 특성상 정상 (이미 unlink 된 항목 포함)
+            except OSError:
+                logger.warning("임시 파일 정리 실패: %s", t, exc_info=True)
+        raise
