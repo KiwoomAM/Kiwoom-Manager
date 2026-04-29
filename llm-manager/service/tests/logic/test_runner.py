@@ -541,3 +541,118 @@ class TestPrepareCachedMetaFileMeta:
         assert prep.cached_output is not None
         _, meta = prep.cached_output
         assert "file_meta" not in meta
+
+
+# ── Phase 2 — _prepare_files 헬퍼 (files + stored_files) ────────
+
+
+class TestPrepareFiles:
+    """_prepare_files: stored_files resolve + files register → combined.
+
+    G2: file-manager 가 우리 SUPPORTED_MIME_TYPES 모름 → resolve 결과 재검증.
+    G4: 결정적 순서 — files 먼저, stored_files 나중.
+    P2-5: data-mode 시 fi.resolved_via='upload' 강제 채움.
+    """
+
+    async def test_data_mode_marks_resolved_via_upload(self, monkeypatch):
+        """files=[..] only → register_files 호출 + 'upload' 표시."""
+        from app.logic import runner
+        from app.models.requests import FileInput
+
+        async def fake_register(files):
+            for fi in files:
+                fi.file_path = "uploaded-uuid.pdf"
+            return files
+
+        monkeypatch.setattr(runner, "register_files", fake_register)
+
+        files = [FileInput(
+            file_name="x.pdf", file_size=1, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+            data=b"\x00",
+        )]
+
+        combined = await runner._prepare_files(files=files, stored_files=None)
+
+        assert combined is not None
+        assert len(combined) == 1
+        assert combined[0].resolved_via == "upload"
+        assert combined[0].file_path == "uploaded-uuid.pdf"
+
+    async def test_stored_files_only_returns_resolved_with_primary(self, monkeypatch):
+        """stored_files=[..] only → resolve_stored_files 호출."""
+        from app.logic import runner
+        from app.models.requests import FileInput, StoredFile
+
+        async def fake_resolve(refs):
+            return [FileInput(
+                file_name="y.pdf", file_size=2, file_mtime=0,
+                mime_type="application/pdf", extension=".pdf",
+                data=b"\x10",
+                file_path="primary-uuid.pdf",
+                resolved_via="primary",
+            )]
+
+        monkeypatch.setattr(runner, "resolve_stored_files", fake_resolve)
+
+        refs = [StoredFile(
+            file_path="primary-uuid.pdf",
+            file_name="y.pdf", file_size=2, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+        )]
+
+        combined = await runner._prepare_files(files=None, stored_files=refs)
+
+        assert combined is not None
+        assert len(combined) == 1
+        assert combined[0].resolved_via == "primary"
+
+    async def test_mixed_combined_files_first_then_stored(self, monkeypatch):
+        """G4 결정적 순서 — files 먼저, stored_files 나중."""
+        from app.logic import runner
+        from app.models.requests import FileInput, StoredFile
+
+        async def fake_register(files):
+            for fi in files:
+                fi.file_path = "upload.pdf"
+            return files
+
+        async def fake_resolve(refs):
+            return [FileInput(
+                file_name="stored.pdf", file_size=2, file_mtime=0,
+                mime_type="application/pdf", extension=".pdf",
+                data=b"\x20",
+                file_path="primary.pdf",
+                resolved_via="primary",
+            )]
+
+        monkeypatch.setattr(runner, "register_files", fake_register)
+        monkeypatch.setattr(runner, "resolve_stored_files", fake_resolve)
+
+        files = [FileInput(
+            file_name="upload.pdf", file_size=1, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+            data=b"\x00",
+        )]
+        refs = [StoredFile(
+            file_path="primary.pdf",
+            file_name="stored.pdf", file_size=2, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+        )]
+
+        combined = await runner._prepare_files(files=files, stored_files=refs)
+
+        # G4: files (upload) 먼저, stored (primary) 나중
+        assert combined is not None
+        assert len(combined) == 2
+        assert combined[0].resolved_via == "upload"
+        assert combined[0].file_name == "upload.pdf"
+        assert combined[1].resolved_via == "primary"
+        assert combined[1].file_name == "stored.pdf"
+
+    async def test_both_none_returns_none(self):
+        """files=None, stored_files=None → combined=None (파일 없는 호출)."""
+        from app.logic import runner
+
+        combined = await runner._prepare_files(files=None, stored_files=None)
+        assert combined is None

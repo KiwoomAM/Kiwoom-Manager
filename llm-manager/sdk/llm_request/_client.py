@@ -15,6 +15,7 @@ from llm_request.models import (
     FileInput,
     FileKeyingMeta,
     RequestResult,
+    StoredFile,
 )
 
 
@@ -63,6 +64,7 @@ class AsyncClient:
         llm_input: dict,
         *,
         files: list[FileInput] | None = None,
+        stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -83,6 +85,8 @@ class AsyncClient:
         if files:
             # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
             body["files"] = [f.model_dump(mode="json") for f in files]
+        if stored_files:
+            body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if database is not None:
@@ -98,6 +102,7 @@ class AsyncClient:
         llm_input: dict,
         *,
         files: list[FileInput] | None = None,
+        stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
         ttl_seconds: int | None = None,
@@ -120,6 +125,8 @@ class AsyncClient:
         }
         if files:
             body["files"] = [f.model_dump(mode="json") for f in files]
+        if stored_files:
+            body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:
             body["ttl_seconds"] = ttl_seconds
         if database is not None:

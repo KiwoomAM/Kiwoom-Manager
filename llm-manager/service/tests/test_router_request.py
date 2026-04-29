@@ -214,3 +214,75 @@ def test_fetch_endpoint_exposes_file_meta(test_client, mock_collection):
     assert resp.status_code == 200
     data = resp.json()
     assert data["meta"]["file_meta"][0]["file_path"] == "fetched-uuid.pdf"
+
+
+# ── Phase 2 — router 가 stored_files 를 runner 로 전달하는지 ──────
+
+
+def test_request_routes_stored_files_to_runner(test_client, monkeypatch):
+    """/v1/request 가 body.stored_files 를 llm_request_async 로 전달."""
+    from llm_handler.models import LLMResponse, TokenUsage
+
+    captured = {}
+
+    async def spy_llm_request_async(llm_input, **kwargs):
+        captured["llm_input"] = llm_input
+        captured.update(kwargs)
+        return (
+            LLMResponse(
+                text="ok", model="gemini-2.5-flash",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+                finish_reason="STOP", request_id="r",
+            ),
+            {"source": "live", "cache_hit": False},
+        )
+
+    # 라우터가 import 한 reference 를 patch
+    monkeypatch.setattr("app.routers.request.llm_request_async", spy_llm_request_async)
+
+    resp = test_client.post("/v1/request", json={
+        "llm_input": {"contents": "test", "model": "gemini-2.5-flash"},
+        "stored_files": [{
+            "file_path": "abc.pdf", "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+        }],
+    })
+
+    assert resp.status_code == 200
+    assert captured["stored_files"] is not None
+    assert len(captured["stored_files"]) == 1
+    assert captured["stored_files"][0].file_path == "abc.pdf"
+    assert captured["stored_files"][0].mime_type == "application/pdf"
+
+
+def test_request_stream_routes_stored_files_to_runner(test_client, monkeypatch):
+    """/v1/request/stream 동일 — body.stored_files 를 llm_request_stream_async 로 전달."""
+    from llm_handler.models import StreamChunk, TokenUsage
+
+    captured = {}
+
+    async def spy_stream_async(llm_input, **kwargs):
+        captured["llm_input"] = llm_input
+        captured.update(kwargs)
+
+        async def _empty_stream():
+            yield StreamChunk(
+                text="ok", finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+        return _empty_stream(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "test", "model": "gemini-2.5-flash"},
+        "stored_files": [{
+            "file_path": "abc.pdf", "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+        }],
+    })
+
+    assert resp.status_code == 200
+    assert captured["stored_files"] is not None
+    assert captured["stored_files"][0].file_path == "abc.pdf"

@@ -69,6 +69,7 @@ from llm_request.models import (
     FileKeyingMeta,
     RequestMeta,
     RequestResult,
+    StoredFile,
 )
 
 __all__ = [
@@ -83,6 +84,7 @@ __all__ = [
     "Timings",
     "FileInput",
     "FileKeyingMeta",
+    "StoredFile",
     "RequestMeta",
     "SDKError",
     "ServiceConnectionError",
@@ -209,6 +211,7 @@ async def llm_request_async(
     llm_input: dict,
     *,
     files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
@@ -217,8 +220,11 @@ async def llm_request_async(
 ) -> tuple[LLMResponse, RequestMeta]:
     """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
 
-    files: 에이전트가 구성한 FileInput 리스트 (meta + bytes).
-    서버가 내부에서 file-manager에 등록 후 처리한다.
+    files: 에이전트가 구성한 FileInput 리스트 (meta + bytes). 서버가 내부에서
+    file-manager에 신규 등록 후 처리한다.
+    stored_files (Phase 2): 이미 file-manager 에 등록된 파일 참조 (StoredFile, 6 필드).
+    Phase 1 응답의 `meta.file_meta` 를 그대로 재사용 가능. 서버가 file-manager 에서
+    bytes 만 fetch 하여 파이프라인 진입.
 
     Args:
         timings: 시간 관련 설정 묶음. 일부 키만 지정하면 나머지는 기본값 적용.
@@ -230,6 +236,7 @@ async def llm_request_async(
     result = await client.request(
         llm_input,
         files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
@@ -246,6 +253,7 @@ def llm_request(
     llm_input: dict,
     *,
     files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
@@ -256,6 +264,7 @@ def llm_request(
     return asyncio.run(llm_request_async(
         llm_input,
         files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         database=database,
@@ -268,6 +277,7 @@ async def llm_request_stream_async(
     llm_input: dict,
     *,
     files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
@@ -287,6 +297,7 @@ async def llm_request_stream_async(
     return await client.request_stream(
         llm_input,
         files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
@@ -302,6 +313,7 @@ def llm_request_stream(
     llm_input: dict,
     *,
     files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
@@ -316,6 +328,7 @@ def llm_request_stream(
         stream, meta = await llm_request_stream_async(
             llm_input,
             files=files,
+            stored_files=stored_files,
             cache_mode=cache_mode,
             save_mode=save_mode,
             database=database,

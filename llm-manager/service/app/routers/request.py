@@ -34,6 +34,7 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
     llm_result, meta = await llm_request_async(
         body.llm_input,
         files=body.files,
+        stored_files=body.stored_files,
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
         ttl_seconds=body.ttl_seconds,
@@ -58,6 +59,7 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
     stream, meta = await llm_request_stream_async(
         body.llm_input,
         files=body.files,
+        stored_files=body.stored_files,
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
         ttl_seconds=body.ttl_seconds,
