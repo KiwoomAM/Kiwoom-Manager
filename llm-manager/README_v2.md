@@ -302,6 +302,20 @@ response, meta = await llm_request_async(
 | `metadata` | `dict` | `{"service_name": ..., "model": ...}` |
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
+| `file_meta` | `list[dict] \| None` | `files` 인자로 호출 시 file-manager 가 부여한 `file_path` 등 파일 메타가 담긴 list. files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
+
+#### `file_meta` 활용 예시
+
+```python
+response, meta = await llm_request_async(llm_input, files=[FileInput(...)])
+
+if meta.file_meta:
+    for fm in meta.file_meta:
+        # fm = {"file_name", "file_size", "file_mtime", "mime_type", "extension", "file_path"}
+        save_to_db(fm["file_path"])
+```
+
+> 응답 shape — files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `RequestMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
 
 ## done_check
 

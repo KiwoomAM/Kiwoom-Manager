@@ -65,6 +65,7 @@ class RequestMeta(BaseModel):
     metadata: dict[str, Any] = {}
     collection: str | None = None
     route_reason: str | None = None
+    file_meta: list[dict] | None = None
 
 
 class RequestResult(TypedDict):

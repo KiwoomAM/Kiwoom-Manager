@@ -726,6 +726,25 @@ llm_request_async()
 - 의미: `LLMRequestServiceError`로 감싸지지 않은 예외 = 버그 신호
 - 후속: 같은 `request_id`의 다른 로그를 따라가고, traceback을 errors.py 계층으로 매핑
 
+### "응답 `meta.file_meta` 가 없는데?"
+
+세 가지 원인:
+
+1. **호출에 `files` 인자가 없음** — `meta.file_meta` 키는 `files=[..]` 일 때만 노출 (files=None / 빈 list 면 키 자체 부재). MongoDB doc 의 `file_meta` 동작과 거울. **의도된 동작**
+2. **Phase 1 적용 전 저장된 옛 doc 의 cache hit** — 옛 doc 에는 `file_meta` 가 없어 cache hit 응답에도 키 없음. 새 호출 또는 캐시 갱신 후 노출
+3. **옛 SDK 사용** — `RequestMeta` 모델에 `file_meta` 필드가 정의된 SDK 버전인지 확인. 옛 SDK 는 Pydantic v2 기본 `extra="ignore"` 로 키 폐기
+
+→ 안전 접근: dict 면 `meta.get("file_meta")`, RequestMeta 면 `getattr(meta, "file_meta", None)`.
+
+### SDK ↔ Service 버전 매트릭스 (Phase 1)
+
+| | 옛 SDK (`RequestMeta` 에 필드 없음) | 새 SDK (필드 있음) |
+|---|---|---|
+| **옛 Service** (`file_meta` 안 보냄) | ✅ 정상 | ✅ 정상 (default `None`) |
+| **새 Service** (`file_meta` 보냄) | ✅ 정상 (`extra="ignore"` 로 키 폐기) | ✅ 의도된 동작 |
+
+→ **자연 호환** — 어떤 조합이어도 깨지지 않음. SDK + Service 는 atomic 동시 배포 권장 (시간 gap 회피).
+
 ---
 
 ## 5. 참고

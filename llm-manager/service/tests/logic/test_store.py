@@ -87,3 +87,35 @@ class TestFetchByCacheKey:
 
         assert "metadata" in meta
         assert meta["metadata"]["model"] == "flash"
+
+
+class TestFetchByCacheKeyFileMeta:
+    """fetch_by_cache_key 가 doc 의 file_meta 를 응답 meta 에 노출하는지 (Phase 1)."""
+
+    def test_returns_file_meta_when_doc_has_it(self, mock_collection):
+        file_metas = [{
+            "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+            "file_path": "abc-uuid.pdf",
+        }]
+        save_result(
+            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"},
+            COLLECTION, file_metas=file_metas,
+        )
+
+        _, meta = fetch_by_cache_key(CACHE_KEY)
+
+        assert "file_meta" in meta
+        assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+
+    def test_omits_file_meta_for_legacy_doc(self, mock_collection):
+        """file_meta 키 없는 옛 doc → 응답에도 키 없음."""
+        save_result(
+            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"},
+            COLLECTION,
+            # file_metas 인자 생략 → doc 에 file_meta 키 없음
+        )
+
+        _, meta = fetch_by_cache_key(CACHE_KEY)
+
+        assert "file_meta" not in meta

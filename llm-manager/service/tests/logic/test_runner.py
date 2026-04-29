@@ -458,3 +458,86 @@ class TestBuildLiveMetaFileMeta:
         assert "file_meta" in meta
         assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
         assert "data" not in meta["file_meta"][0]  # bytes 제외
+
+
+# ── Phase 1 — file_meta 응답 노출 (cache hit 경로) ──────────────
+
+
+class TestPrepareCachedMetaFileMeta:
+    """prepare()의 cache hit 분기가 doc 의 file_meta 를 cached_meta 에 노출하는지."""
+
+    def test_cached_doc_with_file_meta_exposed(self, monkeypatch):
+        from app.logic import runner
+        from app.logic.done_check import DoneCheckResult
+
+        cached_doc = {
+            "result": {
+                "text": "cached!",
+                "model": "gemini-2.5-flash",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                "finish_reason": "STOP",
+                "request_id": "r",
+            },
+            "metadata": {"service_name": "t", "model": "gemini-2.5-flash"},
+            "file_meta": [{
+                "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+                "mime_type": "application/pdf", "extension": ".pdf",
+                "file_path": "abc-uuid.pdf",
+            }],
+        }
+
+        def fake_done_check(llm_input, *, lookup_cache=True, database=None):
+            return DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=cached_doc,
+                cache_error=False,
+            )
+
+        monkeypatch.setattr(runner, "done_check", fake_done_check)
+
+        prep = runner.prepare(
+            {"contents": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=False,
+        )
+
+        assert prep.cached_output is not None
+        _, meta = prep.cached_output
+        assert "file_meta" in meta
+        assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+
+    def test_legacy_cached_doc_without_file_meta_omits_key(self, monkeypatch):
+        """Phase 1 적용 전 저장된 옛 doc — file_meta 키 자체 없음 → 응답에도 키 없음."""
+        from app.logic import runner
+        from app.logic.done_check import DoneCheckResult
+
+        cached_doc = {
+            "result": {
+                "text": "cached", "model": "gemini-2.5-flash",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                "finish_reason": "STOP", "request_id": "r",
+            },
+            "metadata": {"service_name": "t", "model": "gemini-2.5-flash"},
+            # file_meta 키 의도적 부재
+        }
+
+        def fake_done_check(llm_input, *, lookup_cache=True, database=None):
+            return DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=cached_doc,
+                cache_error=False,
+            )
+
+        monkeypatch.setattr(runner, "done_check", fake_done_check)
+
+        prep = runner.prepare(
+            {"contents": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=False,
+        )
+
+        assert prep.cached_output is not None
+        _, meta = prep.cached_output
+        assert "file_meta" not in meta

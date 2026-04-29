@@ -146,6 +146,9 @@ def prepare(
             "metadata": dc.cached.get("metadata", {}),
             "collection": dc.collection,
         }
+        file_metas = dc.cached.get("file_meta")
+        if file_metas is not None:
+            cached_meta["file_meta"] = file_metas
         if debug:
             cached_meta["route_reason"] = "cache_hit"
 
