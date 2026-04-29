@@ -723,8 +723,9 @@ except ServiceError as e:
 | `unsupported_file_type` | 422 | Gemini 지원 외 MIME 타입 |
 | `file_too_large` | 422 | 개별 파일 2GB 초과 |
 | `file` | 502 | Files API 업로드 실패 |
-| `cache` | 502 | MDB 캐시 조회/저장 실패 |
-| `handler` | 500 | LLM 호출 또는 내부 오류 |
+| `file_resolve` | 502 | stored_files resolve 실패 (file-manager에서 파일 못 찾음) |
+| `cache` | 502 | MDB / Redis 캐시 조회·저장 실패 |
+| `handler` | 500 | 그 외 미처리 예외의 fallback (LLM 호출 실패 포함) |
 
 ## 에러 응답 형식
 
@@ -744,7 +745,6 @@ except ServiceError as e:
 ## LLM 오류는 MDB에 저장되지 않음
 
 LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐시 문서가 생성되지 않는다.
-다음 요청 시 동일 입력으로 LLM을 다시 호출한다.
 
 
 # 12. v0.1.0 → v0.2.0 마이그레이션
@@ -860,17 +860,11 @@ async for chunk in stream:
 
 ---
 
-### inline 파일(≤20MB) 다수 첨부 시 요청 크기 주의
-
-파일은 base64로 인코딩되어 HTTP JSON body에 포함된다.
-base64 인코딩은 원본 대비 약 33% 크기가 증가하므로, 20MB 파일 5개를 동시에 보내면 요청 body가 약 135MB에 달할 수 있다.
-
----
-
-### 파일명은 캐시 키에 영향 없음
+### 파일명도 캐시 키에 영향
 
 파일의 캐시 키는 `file_name + file_mtime + file_size` 체크섬 기반이다.
-같은 내용의 파일이면 이름이 달라도 캐시 히트가 발생한다.
+세 값 중 하나라도 다르면 다른 체크섬 → 다른 캐시 키가 된다.
+같은 내용의 파일이라도 다른 이름으로 다시 보내면 cache miss.
 
 ---
 

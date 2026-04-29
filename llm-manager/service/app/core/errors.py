@@ -52,3 +52,17 @@ class FileTooLargeError(LLMRequestServiceError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, status_code=422, error_type="file_too_large")
+
+
+class FileResolveError(LLMRequestServiceError):
+    """stored_files resolve 단계에서 file-manager 가 파일을 찾을 수 없음 (Phase 2).
+
+    1차 get_file(file_path) 404 + 2차 check_cache(hashing 3 필드) miss →
+    file-manager 에 정말로 없는 상태. 호출자가 catch 후 data-mode (files=[..])
+    로 bytes 재업로드하는 것이 권장 복구 경로.
+
+    docs/18.file-meta-response-exposure.md Phase 2 §6.2 참고.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=502, error_type="file_resolve")

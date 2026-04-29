@@ -1,5 +1,7 @@
-"""SDK RequestMeta 모델 테스트."""
+"""SDK RequestMeta / StoredFile 모델 테스트."""
 from __future__ import annotations
+
+import pytest
 
 from llm_request.models import RequestMeta
 
@@ -27,3 +29,37 @@ class TestRequestMetaFileMeta:
         )
         assert m.cache_hit is True
         assert not hasattr(m, "unknown_future_key")
+
+
+class TestStoredFileSDK:
+    """SDK StoredFile — Service 측 정의와 동일 (동기 정책, Phase 2). 6 필드."""
+
+    def test_accepts_6_required_fields(self):
+        from llm_request.models import StoredFile
+
+        sf = StoredFile(
+            file_path="abc.pdf",
+            file_name="x.pdf",
+            file_size=1,
+            file_mtime=0,
+            mime_type="application/pdf",
+            extension=".pdf",
+        )
+        assert sf.file_path == "abc.pdf"
+
+    def test_extra_keys_forbid_raises(self):
+        """server-fill 필드 (resolved_via 등) 를 caller 가 실수로 넘기면 raise (의도)."""
+        from pydantic import ValidationError
+
+        from llm_request.models import StoredFile
+
+        with pytest.raises(ValidationError):
+            StoredFile(
+                file_path="abc.pdf",
+                file_name="x.pdf",
+                file_size=1,
+                file_mtime=0,
+                mime_type="application/pdf",
+                extension=".pdf",
+                resolved_via="primary",  # server-fill → forbid
+            )
