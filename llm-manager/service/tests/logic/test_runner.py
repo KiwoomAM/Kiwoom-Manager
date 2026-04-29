@@ -398,3 +398,63 @@ class TestApplyResolvedContentsTypeGuard:
         resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
         result = _apply_resolved({"model": "gemini-2.5-flash"}, resolved)
         assert result["contents"] == []
+
+
+# ── Phase 1 — file_meta 응답 노출 (live 경로) ──────────────────
+
+
+class TestBuildLiveMetaFileMeta:
+    """_build_live_meta 가 file_meta 키를 조건부로 노출하는지."""
+
+    def _make_prep(self, *, files):
+        from app.logic.runner import _Prepared
+        from app.logic.done_check import DoneCheckResult
+
+        return _Prepared(
+            llm_input={"contents": "test", "model": "gemini-2.5-flash"},
+            meta={"service_name": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=True,
+            ttl_seconds=None,
+            requested_at=datetime.now(UTC),
+            dc=DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=None,
+                cache_error=False,
+            ),
+            cached_output=None,
+            route_reason="cache_miss",
+            files=files,
+            context_cache_ttl=None,
+            standby_ttl_seconds=600,
+        )
+
+    def test_files_none_omits_file_meta_key(self):
+        from app.logic.runner import _build_live_meta
+
+        prep = self._make_prep(files=None)
+        meta = _build_live_meta(prep)
+
+        assert "file_meta" not in meta
+
+    def test_files_present_exposes_file_path(self):
+        from app.logic.runner import _build_live_meta
+        from app.models.requests import FileInput
+
+        fi = FileInput(
+            file_name="report.pdf",
+            file_size=12345,
+            file_mtime=1700000000,
+            mime_type="application/pdf",
+            extension=".pdf",
+            data=b"\x00\x01\x02",
+            file_path="abc-uuid.pdf",  # register_files 가 채운 상태 시뮬레이션
+        )
+        prep = self._make_prep(files=[fi])
+
+        meta = _build_live_meta(prep)
+
+        assert "file_meta" in meta
+        assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+        assert "data" not in meta["file_meta"][0]  # bytes 제외

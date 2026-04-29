@@ -187,6 +187,9 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
         "metadata": prep.meta,
         "collection": prep.dc.collection if prep.dc else None,
     }
+    file_metas = _dump_files_meta(prep.files)
+    if file_metas is not None:
+        meta["file_meta"] = file_metas
     if prep.debug and prep.route_reason:
         meta["route_reason"] = prep.route_reason
     return meta
