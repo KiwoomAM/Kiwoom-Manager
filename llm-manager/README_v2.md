@@ -172,6 +172,82 @@ print(response.text)
 print(meta.source)
 ```
 
+## 파일 재사용 — `stored_files`
+
+Phase 1 호출에서 받은 `meta.file_meta` 의 `file_path` 를 다시 입력으로 넘기면 **bytes 재전송 없이 file-manager 에서 직접 fetch** 한다. 같은 파일로 재호출 시 네트워크 + CPU + 메모리 비용 회피.
+
+`StoredFile` 은 `FileInput` 의 bytes 만 `file_path` 로 대체된 형태 — caller mental model 대칭.
+
+| 필드 | `FileInput` (data-mode) | `StoredFile` (path-mode) |
+| --- | --- | --- |
+| `file_name` / `file_size` / `file_mtime` / `mime_type` / `extension` | ✅ | ✅ |
+| `data` (bytes) | ✅ | ❌ |
+| `file_path` (file-manager UUID) | ❌ (서버가 채움) | ✅ (caller 가 Phase 1 응답에서 받은 값) |
+
+```python
+from llm_request import llm_request_async, FileInput, StoredFile
+
+# Phase 1 — 첫 호출
+response, meta = await llm_request_async(
+    {"contents": "이 파일을 요약해줘", "model": "gemini-2.5-flash"},
+    files=[make_file_input(Path("report.pdf"))],
+)
+# meta.file_meta = [{file_name, file_size, file_mtime, mime_type, extension,
+#                    file_path, resolved_via: "upload"}]
+
+# 호출자는 meta.file_meta 를 자기 DB 에 저장 (모니터링 / 재평가 등에 활용)
+saved = meta.file_meta
+
+# Phase 2 — 재호출 시 stored_files 로 file_path 재사용
+# (resolved_via 는 server-fill 필드라 StoredFile 의 forbid 정책상 드롭 필요)
+refs = [StoredFile(**{k: v for k, v in d.items() if k != "resolved_via"}) for d in saved]
+
+response2, meta2 = await llm_request_async(
+    {"contents": "두 줄로 다시 요약해줘", "model": "gemini-2.5-flash"},
+    stored_files=refs,
+)
+# meta2.file_meta[0]["resolved_via"] == "primary"  (file_path 1차 fetch 성공)
+```
+
+### `resolved_via` 값
+
+| 값 | 의미 |
+| --- | --- |
+| `"upload"` | data-mode (`files=[..]`) — 호출자 bytes 를 file-manager 에 신규 업로드 |
+| `"primary"` | path-mode (`stored_files=[..]`) — `file_path` 1차 fetch 성공 |
+| `"fallback"` | path-mode — `file_path` stale → `check_cache` 로 새 path 발견 후 fetch. 호출자가 자기 DB 의 `file_path` 를 새 값으로 갱신 권장 |
+
+### Mixed 호출 — 신규 + 재사용
+
+```python
+response, meta = await llm_request_async(
+    {"contents": "...", "model": "gemini-2.5-flash"},
+    files=[FileInput(data=new_bytes, ...)],         # 신규 업로드
+    stored_files=[StoredFile(file_path="...", ...)],  # 기존 파일 재사용
+)
+```
+
+내부 합치기 순서: **`files` 먼저, `stored_files` 나중** (결정적 — cache_key 일관 보장).
+
+### 에러 처리 — `FileResolveError` → SDK `ServiceError`
+
+서버: `get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → 서버가 `FileResolveError` raise (status_code=502, error_type='file_resolve').
+SDK: 위 응답을 `ServiceError` 로 변환하여 caller 에게 전파. caller 는 `error_type='file_resolve'` 로 식별 후 data-mode 로 재업로드 권장.
+
+```python
+from llm_request import llm_request_async, FileInput, StoredFile, ServiceError
+
+try:
+    response, meta = await llm_request_async(llm_input, stored_files=refs)
+except ServiceError as e:
+    if e.error_type == "file_resolve":
+        # file-manager 에 정말로 없음 → bytes 다시 들고 와서 재호출
+        files = [make_file_input(Path("...")) for ...]
+        response, meta = await llm_request_async(llm_input, files=files)
+    else:
+        raise
+```
+
 
 # 6. SDK
 

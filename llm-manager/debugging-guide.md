@@ -747,6 +747,74 @@ llm_request_async()
 
 ---
 
+## Phase 2 — `stored_files` 트러블슈팅
+
+### "stored_files 호출이 `ServiceError(error_type='file_resolve')` 로 실패"
+
+원인:
+- file-manager 의 `get_file(file_path)` 가 404 (파일이 정말로 없거나 stale)
+- 추가로 `check_cache(file_name/file_size/file_mtime)` 도 miss → 서버가 `FileResolveError` (502, error_type='file_resolve') raise
+- SDK 가 `ServiceError` 로 caller 에게 전파
+
+→ 복구: catch 후 data-mode (`files=[FileInput(...)]`) 로 bytes 다시 업로드.
+
+```python
+from llm_request import ServiceError, llm_request_async
+
+try:
+    response, meta = await llm_request_async(llm_input, stored_files=refs)
+except ServiceError as e:
+    if e.error_type == "file_resolve":
+        files = [make_file_input(...) for ...]
+        response, meta = await llm_request_async(llm_input, files=files)
+```
+
+### "응답 `resolved_via='fallback'` 이 떴어요"
+
+원인: `file_path` 가 stale (file-manager 측에서 같은 파일 재업로드 등으로 새 path 부여됨). `check_cache` 가 새 path 발견하여 정상 fetch.
+
+→ 액션: 자기 DB 의 `file_path` 를 응답의 새 값으로 갱신 권장. 다음 호출부터 `resolved_via='primary'` 로 돌아옴.
+
+```python
+for i, fm in enumerate(meta.file_meta):
+    if fm["resolved_via"] == "fallback":
+        db.update(eval_id, {f"file_meta.{i}.file_path": fm["file_path"]})
+```
+
+서버 로그에는 `[Phase2] stale file_path: input=..., resolved=..., file_name=...` 라인이 WARNING 으로 남음.
+
+### "StoredFile 생성 시 ValidationError"
+
+원인: `extra="forbid"` 정책 — 6 필드 외 키 (예: `resolved_via`) 가 들어가면 raise.
+
+→ 해결: Phase 1 응답 dict 그대로 넘기지 말고 `resolved_via` 만 드롭.
+
+```python
+refs = [StoredFile(**{k: v for k, v in d.items() if k != "resolved_via"}) for d in saved]
+```
+
+### "옛 Phase 1 doc 의 cache hit 응답에 `resolved_via` 가 없음"
+
+Phase 1 만 적용된 시기에 저장된 doc 은 `file_meta[i]` 에 `resolved_via` 키가 없음 (Phase 2 이전이라 추적 없음). cache hit 응답 시 키 부재.
+
+→ 안전 접근: `fm.get("resolved_via")` 사용. 직접 인덱싱 (`fm["resolved_via"]`) 은 KeyError 가능.
+
+### "stored_files 가 silent drop 됐어요" (옛 Service)
+
+옛 Service (`LLMRequestBody.stored_files` 필드 없음) 에 새 SDK 가 stored_files 보내면 `extra="ignore"` 로 silent 폐기 → 응답에 `meta.file_meta` 안 나옴.
+
+→ 해결: SDK + Service **atomic 동시 배포** (한 PR + 같은 CI/CD pipeline). 시간 gap 회피.
+
+### file-manager 통합 트러블슈팅
+
+| 증상 | 의심 |
+|------|------|
+| `ServiceError(error_type='file_resolve')` 빈발 | file-manager 측 dedup / TTL 정책 확인. file_path stale 빈도 높음 |
+| `ServiceError(status_code=5xx)` 그대로 전파 | file-manager 자체 장애 → 그쪽 로그 확인 (`192.7.9.45:8600`) |
+| `check_cache` 만 hit, `get_file` 은 매번 404 | path 발급은 되는데 fetch 가 안 됨 — file-manager 의 storage 파일 누락 |
+
+---
+
 ## 5. 참고
 
 - 로그 구현 이력: [docs/14.observability-backlog.md](docs/14.observability-backlog.md)
