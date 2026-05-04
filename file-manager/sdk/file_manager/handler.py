@@ -174,6 +174,35 @@ class FileManagerHandler:
         metadata = json.loads(unquote(metadata_header))
         return file_data, metadata
 
+    async def register_or_get(
+        self,
+        bytes_data: bytes,
+        metadata: dict,
+    ) -> dict:
+        """check_cache → miss 면 upload_file → 6 필드 dict 반환.
+
+        Phase 3 helper — agent 가 llm-request 호출 전에 file-manager 등록 책임을
+        직접 가져갈 때 사용. 결과 dict 를 그대로 StoredFile(**result) 로 변환 가능.
+
+        Args:
+            bytes_data: 파일 바이트
+            metadata: 5 필드 — file_name, file_size, file_mtime, mime_type, extension
+
+        Returns:
+            6 필드 dict — metadata + {"file_path": ...}
+        """
+        hash_meta = {
+            "file_name": metadata["file_name"],
+            "file_size": metadata["file_size"],
+            "file_mtime": metadata["file_mtime"],
+        }
+        result = await self.check_cache(hash_meta)
+        if result["hit"]:
+            file_path = result["file_path"]
+        else:
+            file_path = await self.upload_file(bytes_data, metadata)
+        return {**metadata, "file_path": file_path}
+
     async def close(self) -> None:
         """HTTP 클라이언트 연결 종료."""
         if self._client is not None:
