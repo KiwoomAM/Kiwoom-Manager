@@ -140,6 +140,7 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_MANAGER_URL로 대상 
 |--------|--------|------|
 | `await check_cache(metadata)` | `dict` | `{"hit": bool, "file_path": str \| None}` — 캐시 키 3개(`file_name`/`file_mtime`/`file_size`)로 MongoDB 조회 |
 | `await upload_file(file_data, metadata)` | `str` | 파일 저장 + MongoDB 레코드 생성. FM Service가 생성한 `file_path` 반환 |
+| `await register_or_get(bytes_data, metadata)` | `dict` (6필드) | `check_cache` + `upload_file` 합성 — miss 면 upload, hit 이면 skip. metadata + `{file_path}` 반환 |
 
 #### 조회
 
@@ -225,6 +226,18 @@ metadata["file_path"] = result["file_path"] or await fm.upload_file(...)
 # 후반부에서 실제 바이너리 필요 시
 file_bytes, stored_metadata = await fm.get_file(metadata["file_path"])
 ```
+
+### `register_or_get` — `check_cache` + `upload_file` 합성
+
+`check_cache → miss 면 upload_file` 패턴을 한 줄로 처리하는 헬퍼. 결과 6 필드 dict 를 그대로 외부 SDK 의 Pydantic 모델에 `**` unpack 해서 사용 가능 (변환 없음).
+
+```python
+metadata = fm.build_metadata(file_name="report.pdf", file_mtime=..., file_size=...)
+result = await fm.register_or_get(file_data, metadata)
+# {"file_name", "file_size", "file_mtime", "mime_type", "extension", "file_path"} (6 필드)
+```
+
+같은 파일에 여러 작업이 필요할 때 `result` 를 자기 DB 에 저장 후 재사용하면 bytes 재전송 / 재업로드 없이 `file_path` 로만 작업 가능.
 
 ## 주의사항
 
