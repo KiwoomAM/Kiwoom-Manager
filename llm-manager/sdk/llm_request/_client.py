@@ -12,7 +12,6 @@ import httpx
 from llm_request.exceptions import ServiceConnectionError, ServiceError
 from llm_request.models import (
     DoneCheckResult,
-    FileInput,
     FileKeyingMeta,
     RequestResult,
     StoredFile,
@@ -63,7 +62,6 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        files: list[FileInput] | None = None,
         stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
@@ -74,7 +72,7 @@ class AsyncClient:
         http_timeout: float | None = None,
         debug: bool = False,
     ) -> RequestResult:
-        """POST /v1/request — LLM 요청."""
+        """POST /v1/request — LLM 요청. Phase 3: stored_files 만 받음."""
         body: dict[str, Any] = {
             "llm_input": llm_input,
             "cache_mode": cache_mode,
@@ -82,9 +80,6 @@ class AsyncClient:
             "standby_ttl_seconds": standby_ttl_seconds,
             "debug": debug,
         }
-        if files:
-            # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
-            body["files"] = [f.model_dump(mode="json") for f in files]
         if stored_files:
             body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:
@@ -101,7 +96,6 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        files: list[FileInput] | None = None,
         stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
@@ -112,7 +106,7 @@ class AsyncClient:
         http_timeout: float | None = None,
         debug: bool = False,
     ) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
-        """POST /v1/request/stream — SSE 스트리밍 요청.
+        """POST /v1/request/stream — SSE 스트리밍 요청. Phase 3: stored_files 만 받음.
 
         (AsyncIterator[event_dict], meta) 튜플 반환. meta는 `X-LLM-Meta` 응답 헤더에서 파싱.
         """
@@ -123,8 +117,6 @@ class AsyncClient:
             "standby_ttl_seconds": standby_ttl_seconds,
             "debug": debug,
         }
-        if files:
-            body["files"] = [f.model_dump(mode="json") for f in files]
         if stored_files:
             body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:

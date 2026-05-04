@@ -38,7 +38,7 @@ packages/llm-request/
 │   │   ├── __init__.py        # 공개 API (llm_request_async)
 │   │   ├── _client.py         # HTTP 클라이언트 (httpx)
 │   │   ├── aio.py             # 비동기 헬퍼
-│   │   ├── models.py          # FileInput, Timings TypedDict
+│   │   ├── models.py          # StoredFile, RequestMeta, FileKeyingMeta 등 SDK 모델
 │   │   └── exceptions.py      # SDK 예외
 │   └── pyproject.toml
 ├── service/
@@ -129,9 +129,11 @@ print(response.text)
 print(meta.source)   # 'live' 또는 'cache'
 ```
 
-## 파일 첨부
+## 파일 첨부 — `register_or_get` + `stored_files`
 
-파일을 첨부할 때는 에이전트가 직접 `FileInput`을 구성해서 전달한다. `FileInput`은 아래 5개 필드로 이루어진다.
+agent 가 file-manager SDK 의 `register_or_get` 으로 파일을 등록한 후, 받은 6 필드 dict 를 `StoredFile` 로 변환해 `stored_files=` 인자로 전달한다. llm-request 는 `file_path` 만 받아 file-manager 에서 직접 fetch 한다.
+
+### `StoredFile` 6 필드
 
 | 필드 | 설명 |
 | --- | --- |
@@ -139,111 +141,83 @@ print(meta.source)   # 'live' 또는 'cache'
 | `file_size` | 파일 크기 (bytes) |
 | `file_mtime` | 파일 수정 시각 (Unix timestamp, int) |
 | `mime_type` | MIME 타입 (예: `application/pdf`) |
-| `extension` | 확장자 (예: `pdf`, 점 없이) |
-| `data` | 파일 바이트 (`bytes`) |
+| `extension` | 확장자 (예: `.pdf`, 점 포함) |
+| `file_path` | file-manager 가 부여한 UUID (`register_or_get` 결과) |
 
-> **⚠️ file_name, file_size, file_mtime은 실제 파일에서 추출한 값과 반드시 일치해야 한다.**
+> **⚠️ file_name, file_size, file_mtime 은 실제 파일에서 추출한 값과 반드시 일치해야 한다.**
 > 이 세 값은 캐시 키 생성에 직접 사용된다. 잘못된 값을 넣으면 캐시 미스가 반복 발생한다.
-
-파일이 여러 개인 경우 리스트에 담아서 전달한다.
 
 ```python
 from pathlib import Path
-import mimetypes
-from llm_request import llm_request_async, FileInput
+from file_manager import FileManagerHandler
+from llm_request import llm_request_async, StoredFile
 
-def make_file_input(p: Path) -> FileInput:
-    return FileInput(
-        file_name=p.name,
-        file_size=p.stat().st_size,
-        file_mtime=int(p.stat().st_mtime),
-        mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-        extension=p.suffix.lstrip("."),
-        data=p.read_bytes(),
-    )
+fm = FileManagerHandler()
 
-files = [make_file_input(Path("report.pdf")), make_file_input(Path("data.csv"))]
+# 1. file-manager 등록 — build_metadata 로 5 필드 dict 생성 후 register_or_get
+p = Path("report.pdf")
+bytes_data = p.read_bytes()
+metadata = fm.build_metadata(
+    file_name=p.name,
+    file_mtime=int(p.stat().st_mtime),
+    file_size=p.stat().st_size,
+)
+sf_dict = await fm.register_or_get(bytes_data, metadata)
+del bytes_data  # bytes release — agent 메모리 회수
 
-response, meta = await llm_request_async(
-    {"contents": "두 파일을 비교 분석해줘", "model": "gemini-2.5-flash"},
-    files=files,
+# 2. llm-request 호출 (file_path + 5 메타만 전송)
+response, meta_resp = await llm_request_async(
+    {"contents": "이 파일을 분석해줘", "model": "gemini-2.5-flash"},
+    stored_files=[StoredFile(**sf_dict)],
 )
 print(response.text)
-print(meta.source)
+print(meta_resp.file_meta[0]["resolved_via"])  # "primary"
 ```
 
-## 파일 재사용 — `stored_files`
+> **⚠️ Frontend 업로드 경로:** 위 예시는 서버 파일시스템에서 읽는 케이스. 브라우저 → 에이전트 backend 로 파일 업로드받는 경우 `file_mtime` 을 **frontend 가 명시 전달**해야 한다 (HTTP multipart 는 자동 전달 안 함). 빠뜨리면 같은 파일이 매 업로드마다 새 레코드로 쌓여 캐시 무의미. 상세는 [file-manager README](../file-manager/README.md#반드시-확인--frontend에서-파일을-받는-경우) 참고.
 
-Phase 1 호출에서 받은 `meta.file_meta` 의 `file_path` 를 다시 입력으로 넘기면 **bytes 재전송 없이 file-manager 에서 직접 fetch** 한다. 같은 파일로 재호출 시 네트워크 + CPU + 메모리 비용 회피.
+## 같은 파일 재호출
 
-`StoredFile` 은 `FileInput` 의 bytes 만 `file_path` 로 대체된 형태 — caller mental model 대칭.
-
-| 필드 | `FileInput` (data-mode) | `StoredFile` (path-mode) |
-| --- | --- | --- |
-| `file_name` / `file_size` / `file_mtime` / `mime_type` / `extension` | ✅ | ✅ |
-| `data` (bytes) | ✅ | ❌ |
-| `file_path` (file-manager UUID) | ❌ (서버가 채움) | ✅ (caller 가 Phase 1 응답에서 받은 값) |
+`register_or_get` 결과 dict 를 자기 DB 에 저장해두고 재호출 시 그대로 사용. file-manager 등록 / bytes 처리 모두 skip.
 
 ```python
-from llm_request import llm_request_async, FileInput, StoredFile
+# 첫 호출 시 sf_dict 자기 DB 에 저장
+db.evaluations.insert_one({"file_meta": sf_dict, ...})
 
-# Phase 1 — 첫 호출
-response, meta = await llm_request_async(
-    {"contents": "이 파일을 요약해줘", "model": "gemini-2.5-flash"},
-    files=[make_file_input(Path("report.pdf"))],
+# 재호출 — bytes 처리 자체가 없음
+saved = db.evaluations.find_one({...})["file_meta"]
+ref = StoredFile(**saved)
+response, _ = await llm_request_async(
+    {"contents": "다른 질문", "model": "gemini-2.5-flash"},
+    stored_files=[ref],
 )
-# meta.file_meta = [{file_name, file_size, file_mtime, mime_type, extension,
-#                    file_path, resolved_via: "upload"}]
-
-# 호출자는 meta.file_meta 를 자기 DB 에 저장 (모니터링 / 재평가 등에 활용)
-saved = meta.file_meta
-
-# Phase 2 — 재호출 시 stored_files 로 file_path 재사용
-# (resolved_via 는 server-fill 필드라 StoredFile 의 forbid 정책상 드롭 필요)
-refs = [StoredFile(**{k: v for k, v in d.items() if k != "resolved_via"}) for d in saved]
-
-response2, meta2 = await llm_request_async(
-    {"contents": "두 줄로 다시 요약해줘", "model": "gemini-2.5-flash"},
-    stored_files=refs,
-)
-# meta2.file_meta[0]["resolved_via"] == "primary"  (file_path 1차 fetch 성공)
 ```
 
 ### `resolved_via` 값
 
+응답 `meta.file_meta[i].resolved_via` 가 fetch 경로를 알려준다:
+
 | 값 | 의미 |
 | --- | --- |
-| `"upload"` | data-mode (`files=[..]`) — 호출자 bytes 를 file-manager 에 신규 업로드 |
-| `"primary"` | path-mode (`stored_files=[..]`) — `file_path` 1차 fetch 성공 |
-| `"fallback"` | path-mode — `file_path` stale → `check_cache` 로 새 path 발견 후 fetch. 호출자가 자기 DB 의 `file_path` 를 새 값으로 갱신 권장 |
-
-### Mixed 호출 — 신규 + 재사용
-
-```python
-response, meta = await llm_request_async(
-    {"contents": "...", "model": "gemini-2.5-flash"},
-    files=[FileInput(data=new_bytes, ...)],         # 신규 업로드
-    stored_files=[StoredFile(file_path="...", ...)],  # 기존 파일 재사용
-)
-```
-
-내부 합치기 순서: **`files` 먼저, `stored_files` 나중** (결정적 — cache_key 일관 보장).
+| `"primary"` | `file_path` 1차 fetch 성공 |
+| `"fallback"` | `file_path` stale → `check_cache` 로 새 path 발견 후 fetch. 호출자가 자기 DB 의 `file_path` 를 새 값으로 갱신 권장 |
 
 ### 에러 처리 — `FileResolveError` → SDK `ServiceError`
 
-서버: `get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → 서버가 `FileResolveError` raise (status_code=502, error_type='file_resolve').
-SDK: 위 응답을 `ServiceError` 로 변환하여 caller 에게 전파. caller 는 `error_type='file_resolve'` 로 식별 후 data-mode 로 재업로드 권장.
+`get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → 서버가 `FileResolveError` raise (status_code=502, error_type='file_resolve'). SDK 가 `ServiceError` 로 caller 에게 전파. caller 는 `error_type='file_resolve'` 로 식별 후 `register_or_get` 으로 재등록 후 재호출.
 
 ```python
-from llm_request import llm_request_async, FileInput, StoredFile, ServiceError
+from llm_request import llm_request_async, StoredFile, ServiceError
 
 try:
-    response, meta = await llm_request_async(llm_input, stored_files=refs)
+    response, _ = await llm_request_async(llm_input, stored_files=refs)
 except ServiceError as e:
     if e.error_type == "file_resolve":
-        # file-manager 에 정말로 없음 → bytes 다시 들고 와서 재호출
-        files = [make_file_input(Path("...")) for ...]
-        response, meta = await llm_request_async(llm_input, files=files)
+        # file-manager 에 정말로 없음 → 파일 재등록
+        sf_dict = await fm.register_or_get(p.read_bytes(), fm.build_metadata(...))
+        response, _ = await llm_request_async(
+            llm_input, stored_files=[StoredFile(**sf_dict)],
+        )
     else:
         raise
 ```
@@ -267,7 +241,7 @@ except ServiceError as e:
 
 ## llm_input 구조
 
-`llm_request_async`의 첫 번째 인자. **`llm_handler.call()`의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `files=[FileInput]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 `FileInput`으로 메타와 bytes를 구성해 `files=`로 넘기면 Service가 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
+`llm_request_async`의 첫 번째 인자. **`llm_handler.call()`의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 Service 가 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
 
 ```python
 response, meta = await llm_request_async(
@@ -281,7 +255,7 @@ response, meta = await llm_request_async(
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
     },
-    files=[...],           # 선택. list[FileInput]
+    stored_files=[...],    # 선택. list[StoredFile] — file-manager register_or_get 결과
     cache_mode=True,       # 기본 True
     save_mode=True,        # 기본 True
     timings={"mdb_ttl": 3600},  # 선택. Timings TypedDict
@@ -378,12 +352,12 @@ response, meta = await llm_request_async(
 | `metadata` | `dict` | `{"service_name": ..., "model": ...}` |
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
-| `file_meta` | `list[dict] \| None` | `files` 인자로 호출 시 file-manager 가 부여한 `file_path` 등 파일 메타가 담긴 list. files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
+| `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 각 `StoredFile` 의 6 필드(`file_path` 포함)가 담긴 list. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
 
 #### `file_meta` 활용 예시
 
 ```python
-response, meta = await llm_request_async(llm_input, files=[FileInput(...)])
+response, meta = await llm_request_async(llm_input, stored_files=[StoredFile(...)])
 
 if meta.file_meta:
     for fm in meta.file_meta:
@@ -391,7 +365,7 @@ if meta.file_meta:
         save_to_db(fm["file_path"])
 ```
 
-> 응답 shape — files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `RequestMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
+> 응답 shape — stored_files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `RequestMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
 
 ## done_check
 
@@ -430,18 +404,16 @@ print(meta.source)   # "cache"
 파일이 `llm_request_async`에 전달되면 Service 내부에서 아래 순서로 처리된다.
 
 ```
-FileInput 리스트
+StoredFile 리스트 (file_path + 5 메타)
   ↓
-① 유효성 검사 (validators)
+① 유효성 검사 (validators) — placeholder FileInput(data=b"") 으로 검증
   ↓
-② file-manager에 파일 등록
-  ↓
-③ 파일 분류 (resolver.classify_files)
+② 파일 분류 (resolver.classify_files)
      inline_pool / files_api_pool 분리
   ↓
-④ 처리 방식 결정 (resolver.resolve_files)
-     inline       → bytes 그대로 전달
-     files_api    → URI 캐시 확인 → 없으면 업로드
+③ 처리 방식 결정 (resolver.resolve_files) — bytes 가 필요한 시점에 file-manager 에서 lazy fetch
+     inline       → fetch → bytes 그대로 전달
+     files_api    → URI 캐시 확인 → 없으면 fetch → 업로드
      context_cache_ttl 지정 시 → Context Cache 생성
 ```
 
@@ -648,7 +620,7 @@ LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 | 필드 | 타입 | 기본값 | 설명 |
 | --- | --- | --- | --- |
 | `llm_input` | `dict` | — | llm-handler에 전달할 입력 |
-| `files` | `list[FileInput] \| null` | `null` | 파일 리스트 (meta + bytes, base64) |
+| `stored_files` | `list[StoredFile] \| null` | `null` | file-manager 등록 후 받은 6 필드 리스트. Service 가 `file_path` 로 bytes 를 lazy fetch |
 | `cache_mode` | `bool` | `true` | MDB 캐시 조회 여부 |
 | `save_mode` | `bool` | `true` | MDB 저장 여부 |
 | `ttl_seconds` | `int \| null` | `null` | MDB 캐시 수명 (현재 미동작) |
@@ -657,16 +629,16 @@ LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 | `standby_ttl_seconds` | `int` | `600` | Cache stampede dedup 대기 timeout (초) |
 | `debug` | `bool` | `false` | `true`면 응답 `meta.route_reason`에 처리 경로 포함 |
 
-**FileInput 구조**
+**StoredFile 구조** (6 필드)
 
 | 필드 | 설명 |
 | --- | --- |
+| `file_path` | file-manager 가 부여한 저장 경로 (`register_or_get` 결과) |
 | `file_name` | 파일 이름 |
 | `file_size` | 파일 크기 (bytes) |
 | `file_mtime` | 수정 시각 (unix timestamp) |
 | `mime_type` | MIME 타입 |
 | `extension` | 확장자 |
-| `data` | 파일 바이너리 (base64 인코딩) |
 
 **응답**
 
@@ -760,7 +732,7 @@ MDB에 해당 입력의 응답이 이미 저장되어 있는지 확인. LLM 호�
 | `created_at` | `str` | 저장 시각 (UTC ISO) |
 | `requested_at` | `str` | LLM 요청 시각 (UTC ISO, LLM 호출 시에만) |
 | `expires_at` | `str` | `mdb_ttl` 설정 시에만. **현재 필드만 기록, 자동 삭제 미동작** |
-| `file_meta` | `list[dict]` | 파일 포함 요청 시. `FileInput` meta 리스트 (data 제외, file-manager가 부여한 `file_path` 포함) |
+| `file_meta` | `list[dict]` | `stored_files` 포함 요청 시. 각 `StoredFile` 의 6 필드(`file_path` 포함) 리스트 |
 
 ## TTL 현황
 
@@ -835,7 +807,7 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | ⚠️ Service 실행 | 불필요 | **별도 FastAPI Service (port 8101) 실행 필수** |
 | 환경변수 | `MDB_HANDLER_URL`, `LLM_HANDLER_URL`, `MONGODB_DATABASE` 등 여러 개 | `LLM_REQUEST_URL` 하나 (기본값 내장) |
 | 초기화 코드 | `llm_handler.configure()`, `MongoDBHandler.reset()` 필요 | 불필요 |
-| ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `files=[FileInput(...)]` |
+| ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `stored_files=[StoredFile(...)]` (file-manager `register_or_get` 결과) |
 | ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `RequestMeta` (`meta.source`) |
 
 > **⚠️ 설치 경로 변경 주의**
@@ -878,22 +850,17 @@ response, meta = await llm_request_async(
 )
 
 # v0.2.0
-from pathlib import Path
-import mimetypes
-from llm_request import llm_request_async, FileInput
+from llm_request import llm_request_async, StoredFile
+from file_manager import FileManagerHandler
 
-p = Path("report.pdf")
-file_input = FileInput(
-    file_name=p.name,
-    file_size=p.stat().st_size,
-    file_mtime=int(p.stat().st_mtime),
-    mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-    extension=p.suffix.lstrip("."),
-    data=p.read_bytes(),
+fm = FileManagerHandler()
+sf_dict = await fm.register_or_get(
+    bytes_data=open("report.pdf", "rb").read(),
+    metadata=fm.build_metadata("report.pdf"),
 )
 response, meta = await llm_request_async(
     {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-    files=[file_input],
+    stored_files=[StoredFile(**sf_dict)],
 )
 ```
 

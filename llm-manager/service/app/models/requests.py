@@ -22,14 +22,23 @@ Base64Field = Annotated[
 
 
 class FileInput(BaseModel):
-    """에이전트가 서버에 넘기는 파일 입력.
+    """서버 내부에서 사용하는 파일 입력.
 
-    file_path / resolved_via 는 에이전트가 세팅하지 않는다 (Service 내부에서 채움).
-    - file_path: register_files 또는 file_resolver 가 file-manager 응답으로 채움
-    - resolved_via (Phase 2): bytes 가 어느 경로로 확보됐는지 추적
-        - "upload": data-mode (files=[..]) — 호출자 bytes 를 file-manager 에 신규 업로드
-        - "primary": path-mode (stored_files=[..]) — file_path 1차 fetch 성공
-        - "fallback": path-mode — file_path stale → check_cache 로 새 path 발견 후 fetch
+    Phase 3 부터 agent 는 직접 FileInput 을 만들지 않는다 (`stored_files=[StoredFile]` 만 받음).
+    file_resolver 가 StoredFile → FileInput 으로 변환.
+
+    `data` 는 진입 시 비어있는 빈 bytes (`b""`) 로 두고, 실제 파일 내용은 4·5단계 (resolver.py) 에서
+    필요할 때 file-manager 에서 가져와 채운다 (lazy fetch). 4·5단계 진입 전까진 메타 정보만 사용 —
+    cache_key 계산 / dedup standby 등 hashing 3 메타로 충분.
+
+    `file_path`:
+    - 정상: file_resolver 가 stored_files 의 ref.file_path 그대로 복사 (agent 입력 값)
+    - fallback (stale): 4·5단계 lazy fetch 시 file-manager 가 404 → check_cache 응답의
+                        새 file_path 로 갱신
+
+    `resolved_via` (Phase 2): bytes 가 어느 경로로 확보됐는지 추적
+    - "primary": file_path 1차 fetch 성공
+    - "fallback": file_path stale → check_cache 로 새 path 발견 후 fetch
 
     두 필드 모두 `_dump_files_meta` 가 dump 시 응답·MDB doc 에 노출.
     """
@@ -39,7 +48,7 @@ class FileInput(BaseModel):
     file_mtime: Union[str, int]
     mime_type: str
     extension: str
-    data: Base64Field
+    data: Base64Field = b""
     file_path: str | None = None
     resolved_via: str | None = None
 
@@ -81,15 +90,16 @@ class StoredFile(BaseModel):
 class LLMRequestBody(BaseModel):
     """POST /v1/request 요청 바디.
 
-    files: 에이전트가 제공하는 파일 리스트 (meta + bytes). 서버가 내부에서
-    file-manager에 등록 후 파이프라인에 그대로 전달한다.
+    Phase 3: `files` 인자 (Method 1, bytes 직접 전송) 폐기. `stored_files` 만 받는다.
+    `extra='forbid'` — 옛 SDK 가 실수로 `files` 보내면 명시적 ValidationError (silent drop 방지).
 
-    stored_files (Phase 2): 이미 file-manager 에 등록된 파일 참조. 서버가
-    file-manager 에서 fetch 하여 bytes 로딩 후 파이프라인에 합친다.
+    stored_files: 이미 file-manager 에 등록된 파일 참조. agent 가 file-manager SDK 의
+    `register_or_get` 으로 등록한 후 받은 6 필드 dict 를 StoredFile 로 변환해 전달.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     llm_input: dict
-    files: list[FileInput] | None = None
     stored_files: list[StoredFile] | None = None
     cache_mode: bool = True
     save_mode: bool = True

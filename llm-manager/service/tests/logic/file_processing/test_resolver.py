@@ -8,6 +8,8 @@ dedup standby 통합 테스트는 test_resolver_standby.py 참고.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from llm_handler.models import CacheRef, FileRef
 
@@ -279,17 +281,119 @@ class TestFilesApiBytesRelease:
         assert fi.data == b""
         assert len(uri_parts) == 1
 
-    async def test_upload_with_empty_data_raises(self, fake_redis):
-        """fi.data == b'' 인 FileInput 재사용 시 FileUploadError raise (C1 회귀 방지).
+    # NOTE: test_upload_with_empty_data_raises (Phase 1 가드) — Phase 3 에서 삭제.
+    # Phase 3 의 lazy fetch 가 fi.data 비어있을 때 fetch_with_fallback 으로 채움 → raise 안 함.
 
-        404 자동 복구 경로에서 동일 FileInput 객체를 재사용하면 fi.data 가
-        이미 회수된 상태 → 0바이트 업로드/silent corruption 방지를 위해
-        진입 가드에서 raise. docs/16.memory-cleanup-plan.md §6 참조.
-        """
-        fi = _file(file_name="empty.pdf", file_size=30 * 1024 * 1024)
+
+class TestProcessInlineLazyFetch:
+    """Phase 3: _process_inline 이 fi.data 비어있으면 fetch_with_fallback 호출."""
+
+    async def test_empty_data_triggers_lazy_fetch(self, monkeypatch):
+        """fi.data == b"" → fetch_with_fallback 호출 → bytes 채워짐 → Part 생성."""
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="lazy.pdf", file_size=100)
         fi.data = b""
+        fi.file_path = "abc.pdf"
+
+        # FileManagerHandler() 도 mock
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # fetch_with_fallback mock
+        fetch_count = 0
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_count
+            fetch_count += 1
+            assert fm is fm_instance
+            assert fi_arg is fi
+            return b"\x00\x01\x02"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        parts = await _process_inline([fi])
+
+        assert fetch_count == 1
+        assert fi.data == b"\x00\x01\x02"
+        assert len(parts) == 1
+
+    async def test_existing_data_skips_fetch(self, monkeypatch):
+        """fi.data 가 채워있으면 (404 복구 경로) fetch 안 함."""
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="filled.pdf", file_size=100)
+        fi.data = b"\x10\x20"
+
+        fetch_called = False
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_called
+            fetch_called = True
+            return b"shouldnt be called"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        parts = await _process_inline([fi])
+
+        assert not fetch_called
+        assert fi.data == b"\x10\x20"
+        assert len(parts) == 1
+
+
+class TestUploadAndCacheFileLazyFetch:
+    """Phase 3: _upload_and_cache_file 의 leader 분기에서 fi.data 비어있으면 fetch."""
+
+    async def test_empty_data_triggers_lazy_fetch(self, fake_redis, monkeypatch):
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="lazy_upload.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b""
+        fi.file_path = "uuid.pdf"
+
+        # FileManagerHandler() mock
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # fetch_with_fallback mock
+        fetch_count = 0
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_count
+            fetch_count += 1
+            return b"fetched-bytes"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        # upload_file mock
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
 
         uri_parts: list = []
         file_refs: list = []
-        with pytest.raises(FileUploadError, match="bytes 가 이미 회수"):
-            await _upload_and_cache_file(fi, "checksum-x", uri_parts, file_refs)
+        await _upload_and_cache_file(fi, "checksum-lazy", uri_parts, file_refs)
+
+        assert fetch_count == 1
+        assert len(uri_parts) == 1

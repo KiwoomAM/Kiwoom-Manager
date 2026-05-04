@@ -19,11 +19,6 @@ from app.logic.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
-from app.logic.file_processing.validators import (
-    validate_file_sizes,
-    validate_mime_types,
-)
-from app.logic.file_register import register_files
 from app.logic.file_resolver import resolve_stored_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
@@ -207,33 +202,15 @@ def _dump_files_meta(files: list[FileInput] | None) -> list[dict] | None:
 
 
 async def _prepare_files(
-    files: list[FileInput] | None,
     stored_files: list[StoredFile] | None,
 ) -> list[FileInput] | None:
-    """Phase 2: stored_files resolve + files register → combined list 반환.
+    """Phase 3: stored_files → placeholder FileInput list. Method 1 폐기로 단일 인자.
 
-    - stored_files: file-manager 에서 bytes fetch → bytes 로딩된 FileInput 반환.
-                    file-manager 가 우리 SUPPORTED_MIME_TYPES 모름 → resolve 후 재검증 (G2).
-    - files: 기존 data-mode — validate → register_files. P2-5 로 resolved_via='upload' 강제.
-    - combined: G4 결정적 순서 — files 먼저, stored 나중. 빈 리스트면 None.
-
-    설계: docs/18.file-meta-response-exposure.md Phase 2 §3.3, §4
+    resolve_stored_files 가 validators 까지 처리. 실제 fetch 는 4·5단계에서 lazy.
     """
-    resolved: list[FileInput] = []
-    if stored_files:
-        resolved = await resolve_stored_files(stored_files)
-        validate_mime_types(resolved)
-        validate_file_sizes(resolved)
-
-    if files:
-        validate_mime_types(files)
-        validate_file_sizes(files)
-        await register_files(files)
-        for fi in files:
-            fi.resolved_via = "upload"  # P2-5
-
-    combined = (files or []) + resolved  # G4
-    return combined or None
+    if not stored_files:
+        return None
+    return await resolve_stored_files(stored_files)
 
 
 def finalize(
@@ -472,7 +449,6 @@ async def _do_llm_call(
 async def llm_request_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -482,22 +458,11 @@ async def llm_request_async(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[LLMResponse, dict[str, Any]]:
-    """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
-
-    files (FileInput): 호출자 bytes → file-manager 신규 업로드.
-    stored_files (StoredFile, Phase 2): 이미 등록된 파일 참조 → file-manager 에서 fetch.
-    둘 다 동시 사용 가능 (mixed). cache/save 모두 off면 파일 자체를 처리하지 않는다.
-
-    Args:
-        standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
-        debug: True면 meta에 route_reason을 포함한다 (기본 False).
-    """
-    # 둘 다 off면 파일 처리 전체 스킵 (file-manager 호출도 안 함)
+    """단일 LLM 요청 실행 (async). Phase 3: stored_files 만 받음 (Method 1 폐기)."""
     if not (cache_mode or save_mode):
-        files = None
         stored_files = None
 
-    combined = await _prepare_files(files, stored_files)
+    combined = await _prepare_files(stored_files)
 
     prep = prepare(
         llm_input,
@@ -545,7 +510,6 @@ async def llm_request_async(
 def llm_request(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -559,7 +523,6 @@ def llm_request(
     import asyncio
     return asyncio.run(llm_request_async(
         llm_input,
-        files=files,
         stored_files=stored_files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, database=database,
@@ -616,7 +579,6 @@ async def _do_llm_stream(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -626,17 +588,11 @@ async def llm_request_stream_async(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). (AsyncIterator[StreamChunk], meta) 튜플 반환.
-
-    캐시 히트 시 단일 StreamChunk 1개만 yield하는 AsyncIterator 반환.
-    standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield하는 AsyncIterator.
-    스트림 완료 후 MDB에 결과 자동 저장.
-    """
+    """스트리밍 LLM 요청 (async). Phase 3: stored_files 만 받음."""
     if not (cache_mode or save_mode):
-        files = None
         stored_files = None
 
-    combined = await _prepare_files(files, stored_files)
+    combined = await _prepare_files(stored_files)
 
     prep = prepare(
         llm_input,
@@ -702,7 +658,6 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -712,13 +667,12 @@ def llm_request_stream(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). (Iterator[StreamChunk], meta) 튜플 반환."""
+    """스트리밍 LLM 요청 (sync). Phase 3: stored_files 만 받음."""
     import asyncio
 
     async def _collect() -> tuple[list[StreamChunk], dict[str, Any]]:
         stream, meta = await llm_request_stream_async(
             llm_input,
-            files=files,
             stored_files=stored_files,
             cache_mode=cache_mode, save_mode=save_mode,
             ttl_seconds=ttl_seconds, database=database,

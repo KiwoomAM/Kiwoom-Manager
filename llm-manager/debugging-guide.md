@@ -756,17 +756,22 @@ llm_request_async()
 - 추가로 `check_cache(file_name/file_size/file_mtime)` 도 miss → 서버가 `FileResolveError` (502, error_type='file_resolve') raise
 - SDK 가 `ServiceError` 로 caller 에게 전파
 
-→ 복구: catch 후 data-mode (`files=[FileInput(...)]`) 로 bytes 다시 업로드.
+→ 복구: agent 가 file-manager 에 다시 등록 (`register_or_get`) 후 새 `file_path` 로 재호출.
 
 ```python
-from llm_request import ServiceError, llm_request_async
+from llm_request import ServiceError, StoredFile, llm_request_async
+from file_manager import FileManagerHandler
 
 try:
     response, meta = await llm_request_async(llm_input, stored_files=refs)
 except ServiceError as e:
     if e.error_type == "file_resolve":
-        files = [make_file_input(...) for ...]
-        response, meta = await llm_request_async(llm_input, files=files)
+        fm = FileManagerHandler()
+        fresh = [
+            StoredFile(**(await fm.register_or_get(bytes_data, fm.build_metadata(name))))
+            for ...
+        ]
+        response, meta = await llm_request_async(llm_input, stored_files=fresh)
 ```
 
 ### "응답 `resolved_via='fallback'` 이 떴어요"
@@ -812,6 +817,50 @@ Phase 1 만 적용된 시기에 저장된 doc 은 `file_meta[i]` 에 `resolved_v
 | `ServiceError(error_type='file_resolve')` 빈발 | file-manager 측 dedup / TTL 정책 확인. file_path stale 빈도 높음 |
 | `ServiceError(status_code=5xx)` 그대로 전파 | file-manager 자체 장애 → 그쪽 로그 확인 (`192.7.9.45:8600`) |
 | `check_cache` 만 hit, `get_file` 은 매번 404 | path 발급은 되는데 fetch 가 안 됨 — file-manager 의 storage 파일 누락 |
+
+---
+
+## Phase 3 — Method 1 폐기 + Lazy Fetch 트러블슈팅
+
+### "옛 SDK 가 `files=[FileInput(...)]` 로 호출하는데 422 에러"
+
+원인: Phase 3 에서 `LLMRequestBody.files` 제거 + `model_config = ConfigDict(extra="forbid")` 적용. 옛 SDK 가 `files` 를 보내면 명시적 `ValidationError` (extra fields not permitted).
+
+→ 해결: agent 측 코드를 Phase 3 흐름으로 마이그레이션 — `file_manager.register_or_get(bytes, meta)` 으로 등록 후 받은 6 필드를 `StoredFile` 로 만들어 `stored_files=` 로 전달.
+
+### "동시 요청 N 개인데 file-manager 가 N 회 fetch"
+
+기대: leader 1 명만 fetch → bytes 메모리 1 회만 적재. 70 동시 요청에서도 `get_file_count == 1`.
+
+원인:
+- Redis 연결 끊김 → standby 획득 자체 실패 → 모두 자기가 fetch
+- `standby_ttl_seconds` 너무 짧아 leader release 전에 만료 → waiter 가 timeout 후 자기 fetch (Y' Hybrid)
+- standby key prefix 불일치 — `file_cache:files_api_standby:{checksum}` 또는 inline 경로 standby
+
+→ 확인:
+- Redis 로그 — 위 prefix 키 존재 여부 / TTL
+- `[dedup] role=standby_timeout` 로그 빈도 ([dedup.py:133](service/app/logic/file_processing/dedup.py#L133), [resolver.py:364/406](service/app/logic/file_processing/resolver.py#L364))
+- `standby_ttl_seconds` 를 LLM 응답 시간 + file-manager fetch 시간 합보다 길게 설정
+
+### "stored_files 호출인데 first call 에서 5xx"
+
+원인: leader 분기에서 `fetch_with_fallback(fm, fi)` 가 file-manager 를 호출하는데 file-manager 자체가 다운되었거나 네트워크 단절. lazy fetch 가 leader 분기에서 발생하므로 5xx 가 그대로 LLM 호출 측까지 전파.
+
+→ 확인:
+- [file_resolver.py::fetch_with_fallback](service/app/logic/file_resolver.py) 의 `FMServiceError` 메시지
+- `_process_inline` / `_upload_and_cache_file` 에서 lazy fetch 호출 위치
+- file-manager 측 (`192.7.9.45:8600`) 헬스체크
+
+### "stored_files 가 silent drop 됐어요" (옛 Service)
+
+옛 Service 에 새 SDK 가 stored_files 보내면 옛 Service 의 `LLMRequestBody` 에 `extra="forbid"` 가 없어 silent 폐기 → 응답에 `meta.file_meta` 안 나옴. (Phase 3 이전 호환성 표 §3.2 참고)
+
+→ 해결: SDK + Service + agent 코드 **atomic 동시 배포**. 옛/새 매트릭스:
+
+| | 옛 SDK (`files`) | 새 SDK (`stored_files`) |
+|---|---|---|
+| **옛 Service** | ✅ Method 1 동작 | ⚠️ stored_files silent drop |
+| **새 Service** | ❌ 422 ValidationError | ✅ 의도된 동작 |
 
 ---
 
