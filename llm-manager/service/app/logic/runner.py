@@ -19,7 +19,7 @@ from app.logic.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
-from app.logic.file_resolver import resolve_stored_files
+from app.logic.stored_file_resolver import resolve_stored_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
 from app.logic.store import cache_get, save_result

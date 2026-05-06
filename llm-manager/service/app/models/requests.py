@@ -25,14 +25,14 @@ class FileInput(BaseModel):
     """서버 내부에서 사용하는 파일 입력.
 
     Phase 3 부터 agent 는 직접 FileInput 을 만들지 않는다 (`stored_files=[StoredFile]` 만 받음).
-    file_resolver 가 StoredFile → FileInput 으로 변환.
+    stored_file_resolver 가 StoredFile → FileInput 으로 변환.
 
     `data` 는 진입 시 비어있는 빈 bytes (`b""`) 로 두고, 실제 파일 내용은 4·5단계 (resolver.py) 에서
     필요할 때 file-manager 에서 가져와 채운다 (lazy fetch). 4·5단계 진입 전까진 메타 정보만 사용 —
     cache_key 계산 / dedup standby 등 hashing 3 메타로 충분.
 
     `file_path`:
-    - 정상: file_resolver 가 stored_files 의 ref.file_path 그대로 복사 (agent 입력 값)
+    - 정상: stored_file_resolver 가 stored_files 의 ref.file_path 그대로 복사 (agent 입력 값)
     - fallback (stale): 4·5단계 lazy fetch 시 file-manager 가 404 → check_cache 응답의
                         새 file_path 로 갱신
 

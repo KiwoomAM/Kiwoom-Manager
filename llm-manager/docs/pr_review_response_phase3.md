@@ -318,7 +318,43 @@ class StoredFile(BaseModel):
     """
 ```
 
+
 **[FileInput docstring 의 resolved_via 설명]**
 
 before: `` `resolved_via` (Phase 2): bytes 가 어느 경로로 확보됐는지 추적``
 after: `` `resolved_via`: bytes 가 어느 경로로 확보됐는지 추적``
+
+
+## Summary
+
+Phase 3 PR 리뷰의 follow-up — 별도 PR 로 분리한 두 항목.
+
+- **I6**: `_estimate_non_file_bytes` 의 `except Exception` 을 `except (TypeError, ValueError, RecursionError)` 로 좁힘. `json.dumps(default=str)` 가 실제로 발생시킬 수 있는 예외만 잡고 그 외는 전파 (silent swallow 방지).
+- **S2**: `service/app/logic/file_resolver.py` → `stored_file_resolver.py` 개명. 같은 디렉터리 트리에 있는 `file_processing/resolver.py` 와 이름이 거의 동일해 검색·import 시 혼동 → 진입점 의미 (`stored_files` → placeholder `FileInput`) 가 드러나도록 변경.
+
+related: #<Phase3-PR-#>
+
+## Changes
+
+### I6
+- [`service/app/logic/file_processing/resolver.py:64-78`](service/app/logic/file_processing/resolver.py#L64-L78) — `except` 절 좁힘
+- [`service/tests/logic/file_processing/test_resolver.py:112-120`](service/tests/logic/file_processing/test_resolver.py#L112-L120) — 테스트 케이스를 circular reference (현실적인 `ValueError`) 로 교체. 좁힌 except 와 정합.
+
+### S2
+- `service/app/logic/file_resolver.py` → `stored_file_resolver.py` (rename)
+- `service/tests/logic/test_file_resolver.py` → `test_stored_file_resolver.py` (rename, monkeypatch 경로 6 곳 갱신)
+- import 갱신:
+  - [`service/app/logic/runner.py:22`](service/app/logic/runner.py#L22)
+  - [`service/app/logic/file_processing/resolver.py:33`](service/app/logic/file_processing/resolver.py#L33)
+- docstring / 사용자 문서:
+  - [`service/app/models/requests.py:28,35`](service/app/models/requests.py#L28)
+  - [`README_v2.md:62`](README_v2.md#L62) — 디렉터리 트리
+  - [`debugging-guide.md:811`](debugging-guide.md#L811) — 트러블슈팅 링크
+
+historical 설계 문서 (`docs/18.*.md`, `docs/22.*.md`, `docs/pull_request_v6.md`, `docs/pr_review_response_phase3.md`) 는 작성 시점 코드 묘사라 의도적으로 유지.
+
+## Test plan
+
+- [x] `pytest service/tests/logic/test_stored_file_resolver.py -v` — 8/8 PASS (rename 후 import 정상)
+- [x] `pytest service/tests/logic/file_processing/test_resolver.py -v` — 21/21 PASS (`_estimate_non_file_bytes` 좁힘 + 새 circular ref 케이스 포함)
+- [x] `pytest service/tests/` — 216/216 PASS (전체 회귀 없음)

@@ -59,7 +59,7 @@ packages/llm-request/
 │   │       ├── done_check.py   # 캐시 조회
 │   │       ├── store.py        # MongoDB 캐시 저장
 │   │       ├── meta.py         # 저장용 메타 생성
-│   │       ├── file_resolver.py       # stored_files → placeholder FileInput (lazy fetch)
+│   │       ├── stored_file_resolver.py # stored_files → placeholder FileInput (lazy fetch)
 │   │       └── file_processing/
 │   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
 │   │           ├── uploader.py    # Files API 업로드
