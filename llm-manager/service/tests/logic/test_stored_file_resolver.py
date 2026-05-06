@@ -1,4 +1,4 @@
-"""file_resolver.py 단위 테스트 — Phase 3.
+"""stored_file_resolver.py 단위 테스트 — Phase 3.
 
 Phase 3 변경:
 - resolve_stored_files: lazy — fetch 안 함, placeholder + validators 만
@@ -23,7 +23,7 @@ def mock_fm(monkeypatch):
     fm_instance.check_cache = AsyncMock()
 
     fm_class = MagicMock(return_value=fm_instance)
-    monkeypatch.setattr("app.logic.file_resolver.FileManagerHandler", fm_class)
+    monkeypatch.setattr("app.logic.stored_file_resolver.FileManagerHandler", fm_class)
     return fm_instance
 
 
@@ -61,7 +61,7 @@ class TestResolveStoredFilesLazy:
 
     async def test_no_fetch_during_resolve(self, mock_fm):
         """fm.get_file / fm.check_cache 가 호출되지 않음."""
-        from app.logic.file_resolver import resolve_stored_files
+        from app.logic.stored_file_resolver import resolve_stored_files
 
         result = await resolve_stored_files([_ref("abc.pdf")])
 
@@ -79,7 +79,7 @@ class TestResolveStoredFilesLazy:
         """validators 가 file-manager 호출 전 (fail-fast) 동작."""
         from app.core.errors import UnsupportedFileTypeError
 
-        from app.logic.file_resolver import resolve_stored_files
+        from app.logic.stored_file_resolver import resolve_stored_files
 
         # mime_type 화이트리스트 외
         bad_ref = StoredFile(
@@ -100,7 +100,7 @@ class TestFetchWithFallbackPrimary:
     """fetch_with_fallback: get_file 1차 성공 → bytes 반환, fi 변경 없음."""
 
     async def test_primary_success_returns_bytes(self, mock_fm):
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         mock_fm.get_file.return_value = (b"\x00\x01\x02", {})
         fi = _fi("abc.pdf")
@@ -119,7 +119,7 @@ class TestFetchWithFallbackFallback:
     async def test_stale_path_recovers(self, mock_fm, caplog):
         from file_manager.exceptions import FMServiceError
 
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         new_path = "new-uuid.pdf"
         mock_fm.get_file.side_effect = [
@@ -146,7 +146,7 @@ class TestFetchWithFallbackBothMiss:
     async def test_raises_file_resolve_error(self, mock_fm):
         from file_manager.exceptions import FMServiceError
 
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         mock_fm.get_file.side_effect = FMServiceError("not found", status_code=404)
         mock_fm.check_cache.return_value = {"hit": False, "file_path": None}
@@ -162,7 +162,7 @@ class TestFetchWithFallbackNon404:
     async def test_500_propagates(self, mock_fm):
         from file_manager.exceptions import FMServiceError
 
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         mock_fm.get_file.side_effect = FMServiceError("server error", status_code=500)
 
@@ -180,7 +180,7 @@ class TestFetchWithFallbackRace:
         """1차 404 → check_cache hit → 2차도 404 (race) → FileResolveError."""
         from file_manager.exceptions import FMServiceError
 
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         mock_fm.get_file.side_effect = [
             FMServiceError("not found", status_code=404),
@@ -198,7 +198,7 @@ class TestFetchWithFallbackRace:
         """1차 404 → check_cache hit → 2차 5xx → 동일하게 FileResolveError 로 wrap."""
         from file_manager.exceptions import FMServiceError
 
-        from app.logic.file_resolver import fetch_with_fallback
+        from app.logic.stored_file_resolver import fetch_with_fallback
 
         mock_fm.get_file.side_effect = [
             FMServiceError("not found", status_code=404),

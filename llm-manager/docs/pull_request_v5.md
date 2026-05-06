@@ -13,7 +13,7 @@
 2. `cache_store.make_context_cache_key` 의 키 재료에 `tools` / `tool_config` 포함 — 같은 파일·모델·system 이라도 tools 다르면 별도 cache 로 분리 (오염된 HIT 방지)
 3. `resolver._create_and_save_context_cache` / `_process_files_api` / `resolve_files` / `resolve_files_after_404` 모두 파라미터 통과
 4. `runner._build_server_call_input` 이 `llm_input.get("tools" / "tool_config")` 추출해 `resolve_files` 로 전달 (404-retry 2곳 포함)
-5. `README_v2.md` Context Cache 섹션 → 5-key cache makeup (file_checksums + model + system_instruction + tools + tool_config) 명시
+5. `README.md` Context Cache 섹션 → 5-key cache makeup (file_checksums + model + system_instruction + tools + tool_config) 명시
 
 회귀 방지 테스트:
 - `test_uploader.py::TestCreateContextCache` — `tools` / `tool_config` 가 `_aio_create_cache` 까지 전달되는지 + None 기본값 명시 전달 (2)
@@ -37,9 +37,9 @@
 
 ### I-3. `pyproject.toml` readme — 삭제 대신 경로 수정
 
-**주장:** "README → README_v2 리네이밍 잔재" 라면 `readme = "README_v2.md"` 가 정답. 메타데이터 삭제는 PyPI 디스커버리 약화.
+**주장:** "README → README_v2 리네이밍 잔재" 라면 `readme = "README.md"` 가 정답. 메타데이터 삭제는 PyPI 디스커버리 약화.
 
-**반영:** 권장안 채택. `readme = "README_v2.md"` 로 명시.
+**반영:** 권장안 채택. `readme = "README.md"` 로 명시.
 
 ### I-4. 테스트 공백
 
