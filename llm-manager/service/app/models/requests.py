@@ -36,7 +36,7 @@ class FileInput(BaseModel):
     - fallback (stale): 4·5단계 lazy fetch 시 file-manager 가 404 → check_cache 응답의
                         새 file_path 로 갱신
 
-    `resolved_via` (Phase 2): bytes 가 어느 경로로 확보됐는지 추적
+    `resolved_via`: bytes 가 어느 경로로 확보됐는지 추적
     - "primary": file_path 1차 fetch 성공
     - "fallback": file_path stale → check_cache 로 새 path 발견 후 fetch
 
@@ -62,16 +62,16 @@ class FileKeyingMeta(BaseModel):
 
 
 class StoredFile(BaseModel):
-    """이미 file-manager 에 등록된 파일 참조 (Phase 2 입력).
+    """이미 file-manager 에 등록된 파일 참조.
 
     FileInput 의 5 메타 필드 + file_path 로 구성 — bytes 만 file_path 로 대체된 형태.
-    Phase 1 ↔ Phase 2 caller mental model 대칭 (caller 는 Phase 1 응답의 6 필드를 그대로 다시 사용).
+    caller 는 file-manager `register_or_get` 결과 6 필드 dict 를 그대로 받아 StoredFile 로 변환.
 
     서버는 이 값들을 신뢰하여 FileInput 으로 변환 + file-manager get_file 로는 bytes 만
     가져온다. mime/extension 의 권위는 처음 등록한 caller 에 있고, file-manager 도
     등록 시점 caller 값을 그대로 보관하므로 권위 차이 없음.
 
-    extra="forbid": Phase 1 응답에 있는 server-fill 필드 (`resolved_via` 등) 를 caller 가
+    extra="forbid": 응답에 박힌 server-fill 필드 (`resolved_via` 등) 를 caller 가
     실수로 함께 넘기면 ValidationError. 의도된 strict — 키 오타 / 잘못된 입력 즉시 잡기 (P2-4).
 
     ⚠️ 의도된 중복: sdk/llm_request/models.py 에도 동일 정의 존재.

@@ -11,7 +11,8 @@ Method 1 (data-mode `files=[FileInput(bytes)]`) 폐기. agent 가 file-manager �
 
 핵심 효과:
 - **agent 메모리**: 같은 파일 N 회 호출에도 bytes 1 회만 적재 (이후 release)
-- **llm-request 메모리**: leader 1 명만 fetch — 동시 N 요청에서도 bytes 1 회만 메모리 적재 (기존 standby dedup 활용)
+- **llm-request 메모리 (files_api 경로)**: leader 1 명만 업로드 + URI 를 Redis 에 캐시 → waiter 재사용. 동시 N 요청에서도 bytes 1 회만 메모리 적재
+- **llm-request 메모리 (inline 경로)**: standby 보호 없음 — 결과 (bytes) 가 Redis 에 캐시 안 되므로 dedup 무효익. 동시 N 요청 시 N 회 fetch (의도된 trade-off, 작은 파일 한정)
 - **네트워크**: agent → llm-request 의 bytes 전송 0 (file_path 만)
 
 # 🔗 관련 이슈
@@ -32,9 +33,10 @@ llm-request:
        — placeholder FileInput(data=b"") 만 만들고 validators 호출 (mime/size 만 검증)
   ② resolver.classify_files / resolve_files
        — 분류만 진행, bytes 는 아직 fetch 안 함
-  ③ leader 분기에서 lazy fetch (`_process_inline` / `_upload_and_cache_file`)
+  ③ lazy fetch (`_process_inline` / `_upload_and_cache_file`)
        — `if not fi.data: fi.data = await fetch_with_fallback(fm, fi)`
-       — 기존 `try_acquire_standby` 가 leader 1 명만 진입시켜 dedup
+       — files_api 경로: try_acquire_standby 가 leader 1 명만 진입시켜 dedup
+       — inline 경로: standby 없음, 동시 N 요청 시 N 회 fetch (의도)
   ④ LLM 호출 + finalize
 ```
 
@@ -77,8 +79,9 @@ llm-request:
 
 | | 옛 SDK (`files=[FileInput]`) | 새 SDK (`stored_files=[StoredFile]`) |
 |---|---|---|
-| **옛 Service** | ✅ Phase 2 동작 (Method 1) | ⚠️ silent drop (옛 Service 는 stored_files 모름) |
-| **새 Service** | ❌ 422 ValidationError (extra='forbid') | ✅ 의도된 동작 |
+| **pre-Phase-2 Service** (stored_files 필드 모름) | ✅ Method 1 동작 | ⚠️ silent drop (Pydantic 기본 `extra="ignore"`) |
+| **Phase 2 Service** (stored_files 받지만 files 도 받음) | ✅ Method 1 동작 | ✅ 정상 동작 |
+| **새 Service (Phase 3)** | ❌ 422 ValidationError (`extra="forbid"`) | ✅ 의도된 동작 |
 
 → **agent (ESG 등) 측 코드 마이그레이션 필수**. SDK + Service + agent **atomic 동시 배포** 권장.
 

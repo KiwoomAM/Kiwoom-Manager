@@ -140,6 +140,8 @@ async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
     for fi in inline_pool:
         if not fi.data:
             fi.data = await fetch_with_fallback(fm, fi)
+            if fi.resolved_via is None:
+                fi.resolved_via = "primary"  # fetch 검증 완료
         inline_parts.append(
             Part.from_bytes(data=fi.data, mime_type=fi.mime_type)
         )
@@ -179,6 +181,8 @@ async def _upload_and_cache_file(
     if not fi.data:
         fm = FileManagerHandler()
         fi.data = await fetch_with_fallback(fm, fi)
+        if fi.resolved_via is None:
+            fi.resolved_via = "primary"  # fetch 검증 완료
     if not fi.extension:
         logger.warning(
             "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",

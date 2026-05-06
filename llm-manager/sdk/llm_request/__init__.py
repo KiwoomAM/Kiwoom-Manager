@@ -2,21 +2,22 @@
 
 사용법:
     from pathlib import Path
-    import mimetypes
-    from llm_request import llm_request_async, FileInput
+    from file_manager import FileManagerHandler
+    from llm_request import llm_request_async, StoredFile
 
+    fm = FileManagerHandler()
     p = Path("report.pdf")
-    file_input = FileInput(
-        file_name=p.name,
-        file_size=p.stat().st_size,
-        file_mtime=int(p.stat().st_mtime),
-        mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-        extension=p.suffix.lstrip("."),
-        data=p.read_bytes(),
+    sf_dict = await fm.register_or_get(
+        bytes_data=p.read_bytes(),
+        metadata=fm.build_metadata(
+            file_name=p.name,
+            file_mtime=int(p.stat().st_mtime),
+            file_size=p.stat().st_size,
+        ),
     )
     response, meta = await llm_request_async(
         {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-        files=[file_input],
+        stored_files=[StoredFile(**sf_dict)],
     )
 """
 

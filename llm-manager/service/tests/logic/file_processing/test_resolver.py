@@ -397,3 +397,66 @@ class TestUploadAndCacheFileLazyFetch:
 
         assert fetch_count == 1
         assert len(uri_parts) == 1
+
+
+class TestResolvedViaPropagation:
+    """C2 회귀 보호 — fetch 검증된 분기만 resolved_via='primary' 갱신, 그 외 None 유지."""
+
+    async def test_inline_lazy_fetch_sets_primary(self, monkeypatch):
+        """_process_inline 이 fetch 직후 resolved_via=None → 'primary' 로 갱신."""
+        fi = _file(file_name="inline.pdf", file_size=100)
+        fi.data = b""
+        fi.file_path = "abc.pdf"
+        assert fi.resolved_via is None
+
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        async def fake_fetch(fm, fi_arg):
+            return b"\x00\x01"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        await _process_inline([fi])
+        assert fi.resolved_via == "primary"
+
+    async def test_inline_fallback_preserved(self, monkeypatch):
+        """fetch_with_fallback 이 'fallback' 으로 갱신했으면 _process_inline 이 'primary' 로 덮지 않음."""
+        fi = _file(file_name="stale.pdf", file_size=100)
+        fi.data = b""
+        fi.file_path = "old.pdf"
+
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        async def fake_fetch(fm, fi_arg):
+            fi_arg.resolved_via = "fallback"  # fetch_with_fallback 이 갱신한 상황 시뮬
+            return b"\x00\x01"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        await _process_inline([fi])
+        assert fi.resolved_via == "fallback"
+
+    def test_cache_hit_leaves_resolved_via_none(self):
+        """_reuse_files_api_uris (Files API Redis HIT) 분기는 fetch 안 하므로 resolved_via 갱신 안 함."""
+        fi = _file(file_name="cached.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b"original-bytes"
+        assert fi.resolved_via is None
+
+        existing = {"uris": ["https://example.com/cached"]}
+        _reuse_files_api_uris(fi, existing, [], [])
+
+        assert fi.resolved_via is None  # 검증되지 않음 — silent 'primary' 박제 방지

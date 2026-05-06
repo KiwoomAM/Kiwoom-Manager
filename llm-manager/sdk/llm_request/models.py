@@ -58,12 +58,12 @@ class FileKeyingMeta(BaseModel):
 
 
 class StoredFile(BaseModel):
-    """이미 file-manager 에 등록된 파일 참조 (Phase 2 입력).
+    """이미 file-manager 에 등록된 파일 참조.
 
     FileInput 의 5 메타 필드 + file_path — bytes 만 file_path 로 대체된 형태.
-    Phase 1 ↔ Phase 2 caller mental model 대칭 (caller 는 Phase 1 응답의 6 필드를 그대로 사용).
+    caller 는 file-manager `register_or_get` 결과 6 필드 dict 를 그대로 받아 StoredFile 로 변환.
 
-    extra="forbid": server-fill 필드 (`resolved_via` 등) 를 실수로 넘기면 ValidationError.
+    extra="forbid": 응답에 박힌 server-fill 필드 (`resolved_via` 등) 를 실수로 넘기면 ValidationError.
     의도된 strict — 키 오타 / 잘못된 입력 즉시 잡기 (P2-4).
 
     ⚠️ 의도된 중복: service/app/models/requests.py 에도 동일 정의 존재.

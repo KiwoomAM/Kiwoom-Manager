@@ -71,7 +71,7 @@ class TestResolveStoredFilesLazy:
         assert fi.file_path == "abc.pdf"
         assert fi.file_name == "x.pdf"
         assert fi.mime_type == "application/pdf"
-        assert fi.resolved_via == "primary"
+        assert fi.resolved_via is None     # placeholder 단계 — fetch 검증 전
         mock_fm.get_file.assert_not_awaited()
         mock_fm.check_cache.assert_not_awaited()
 
@@ -171,3 +171,41 @@ class TestFetchWithFallbackNon404:
             await fetch_with_fallback(mock_fm, fi)
 
         mock_fm.check_cache.assert_not_awaited()
+
+
+class TestFetchWithFallbackRace:
+    """C4 회귀 보호 — check_cache hit 후 새 path 도 fetch 실패 시 FileResolveError 로 통일."""
+
+    async def test_second_get_file_404_raises_file_resolve_error(self, mock_fm):
+        """1차 404 → check_cache hit → 2차도 404 (race) → FileResolveError."""
+        from file_manager.exceptions import FMServiceError
+
+        from app.logic.file_resolver import fetch_with_fallback
+
+        mock_fm.get_file.side_effect = [
+            FMServiceError("not found", status_code=404),
+            FMServiceError("race delete", status_code=404),
+        ]
+        mock_fm.check_cache.return_value = {"hit": True, "file_path": "new.pdf"}
+
+        fi = _fi("stale.pdf")
+        with pytest.raises(FileResolveError, match="also unfetchable"):
+            await fetch_with_fallback(mock_fm, fi)
+
+        assert mock_fm.get_file.await_count == 2
+
+    async def test_second_get_file_500_raises_file_resolve_error(self, mock_fm):
+        """1차 404 → check_cache hit → 2차 5xx → 동일하게 FileResolveError 로 wrap."""
+        from file_manager.exceptions import FMServiceError
+
+        from app.logic.file_resolver import fetch_with_fallback
+
+        mock_fm.get_file.side_effect = [
+            FMServiceError("not found", status_code=404),
+            FMServiceError("internal", status_code=500),
+        ]
+        mock_fm.check_cache.return_value = {"hit": True, "file_path": "new.pdf"}
+
+        fi = _fi("stale.pdf")
+        with pytest.raises(FileResolveError, match="also unfetchable"):
+            await fetch_with_fallback(mock_fm, fi)

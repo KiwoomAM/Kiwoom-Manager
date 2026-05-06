@@ -1,8 +1,11 @@
 """Phase 3 — stored_files 를 placeholder FileInput 으로 변환 (lazy fetch).
 
 Phase 2 에선 여기서 file-manager fetch + 404 fallback 진행했으나, Phase 3 에선
-fetch 자체를 4·5단계 (resolver.py) 로 이전 — `try_acquire_standby` 메커니즘이
-fetch 까지 자동으로 dedup. 70 동시 요청에서도 leader 1 명만 fetch.
+fetch 자체를 4·5단계 (resolver.py) 로 이전.
+
+dedup 범위: files_api 경로만 — leader 가 업로드한 URI 가 Redis 에 저장되어
+waiter 가 재사용. inline 경로는 결과 (bytes) 가 Redis 에 캐시되지 않아 dedup
+효익 없음 → N 회 fetch 허용 (의도된 trade-off, 작은 파일 한정).
 
 설계: docs/21.method1-deprecation-lazy-fetch.md §5.4
 """
@@ -39,7 +42,8 @@ async def resolve_stored_files(refs: list[StoredFile]) -> list[FileInput]:
             extension=ref.extension,
             data=b"",                        # placeholder — lazy fetch 전제
             file_path=ref.file_path,
-            resolved_via="primary",
+            # resolved_via 는 placeholder 단계에선 미정 (None) — 실제 fetch 한 분기에서 갱신.
+            # cache HIT / standby waiter 분기는 fetch 안 하므로 None 유지 (= 검증되지 않음).
         )
         for ref in refs
     ]
@@ -69,6 +73,10 @@ async def fetch_with_fallback(fm: FileManagerHandler, fi: FileInput) -> bytes:
         return data
     except FMServiceError as e:
         if e.status_code != 404:
+            logger.exception(
+                "file-manager get_file 실패 (비-404, 전파): file_path=%s, status=%s",
+                fi.file_path, e.status_code,
+            )
             raise  # 비-404 (network / 5xx) 그대로 전파
 
         cache = await fm.check_cache({
@@ -84,10 +92,17 @@ async def fetch_with_fallback(fm: FileManagerHandler, fi: FileInput) -> bytes:
 
         new_path = cache["file_path"]
         logger.warning(
-            "[Phase3] stale file_path: input=%s, resolved=%s, file_name=%s",
+            "stale file_path: input=%s, resolved=%s, file_name=%s",
             fi.file_path, new_path, fi.file_name,
         )
         fi.file_path = new_path
         fi.resolved_via = "fallback"
-        data, _ = await fm.get_file(new_path)
+        try:
+            data, _ = await fm.get_file(new_path)
+        except FMServiceError as e2:
+            # race: check_cache hit 후 새 path 도 삭제됨. miss 와 동일 의미로 통일.
+            raise FileResolveError(
+                f"check_cache hit but new_path '{new_path}' also unfetchable "
+                f"(file_name={fi.file_name}): {e2}"
+            ) from e2
         return data

@@ -310,7 +310,7 @@ llm_request_async()
 > ```
 
 - **응답**: 502, `error_type="file"`
-- **언제**: Phase 1 메모리 정리 후(`fi.data = b""`) 동일 FileInput 객체로 재업로드 시도. 거의 유일한 발생 경로는 Gemini 404 자동 복구 흐름
+- **언제**: 메모리 정리 후(`fi.data = b""`) 동일 FileInput 객체로 재업로드 시도. 거의 유일한 발생 경로는 Gemini 404 자동 복구 흐름
 - **확인할 것**: 진입 가드는 의도된 차단 — silent corruption 방지. 사용자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 
 #### 🔴 Files API 업로드 실패
@@ -376,7 +376,7 @@ llm_request_async()
 > ```
 
 - **언제**: LLM 호출 중 Gemini가 Files API URI 404 반환 → runner가 이 함수 호출
-- **의미**: Redis 캐시는 invalidate 되지만, Phase 1 메모리 정리(`fi.data = b""`)로 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+- **의미**: Redis 캐시는 invalidate 되지만, 메모리 정리(`fi.data = b""`)로 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 - **확인할 것**: Redis TTL < Gemini TTL 이슈가 반복되면 `FILES_API_TTL_FLOOR` 조정
 
 #### 🟡 404 복구 중 Redis 삭제 실패 (무시)
@@ -687,7 +687,7 @@ llm_request_async()
 ### "Gemini 404가 나와요"
 - 흐름: 대용량 파일의 Files API URI가 Gemini에서 만료 (Redis TTL < Gemini TTL)
 - 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:416, 552](service/app/logic/runner.py#L416)) → `Gemini 404 자동 복구` ([resolver.py:477](service/app/logic/file_processing/resolver.py#L477)) → 진입 가드에서 `FileUploadError` raise ([resolver.py:183](service/app/logic/file_processing/resolver.py#L183))
-- 자동 복구는 폐지 — Phase 1 메모리 정리(`fi.data = b""`)와 양립 불가. 사용자에게 502 raise 됨 → 새 요청으로 재시도 필요. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+- 자동 복구는 폐지 — 메모리 정리(`fi.data = b""`)와 양립 불가. 사용자에게 502 raise 됨 → 새 요청으로 재시도 필요. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 - 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:147](service/app/logic/file_processing/cache_store.py#L147) 경고 체크
 
 ### "SDK에서 ServiceError error_type=file"
@@ -728,26 +728,13 @@ llm_request_async()
 
 ### "응답 `meta.file_meta` 가 없는데?"
 
-세 가지 원인:
+`stored_files` 인자가 없거나 빈 list 면 `meta.file_meta` 키 자체 부재 (MongoDB doc 의 `file_meta` 동작과 거울). **의도된 동작.**
 
-1. **호출에 `files` 인자가 없음** — `meta.file_meta` 키는 `files=[..]` 일 때만 노출 (files=None / 빈 list 면 키 자체 부재). MongoDB doc 의 `file_meta` 동작과 거울. **의도된 동작**
-2. **Phase 1 적용 전 저장된 옛 doc 의 cache hit** — 옛 doc 에는 `file_meta` 가 없어 cache hit 응답에도 키 없음. 새 호출 또는 캐시 갱신 후 노출
-3. **옛 SDK 사용** — `RequestMeta` 모델에 `file_meta` 필드가 정의된 SDK 버전인지 확인. 옛 SDK 는 Pydantic v2 기본 `extra="ignore"` 로 키 폐기
-
-→ 안전 접근: dict 면 `meta.get("file_meta")`, RequestMeta 면 `getattr(meta, "file_meta", None)`.
-
-### SDK ↔ Service 버전 매트릭스 (Phase 1)
-
-| | 옛 SDK (`RequestMeta` 에 필드 없음) | 새 SDK (필드 있음) |
-|---|---|---|
-| **옛 Service** (`file_meta` 안 보냄) | ✅ 정상 | ✅ 정상 (default `None`) |
-| **새 Service** (`file_meta` 보냄) | ✅ 정상 (`extra="ignore"` 로 키 폐기) | ✅ 의도된 동작 |
-
-→ **자연 호환** — 어떤 조합이어도 깨지지 않음. SDK + Service 는 atomic 동시 배포 권장 (시간 gap 회피).
+→ 안전 접근: `meta.file_meta or []` 또는 `getattr(meta, "file_meta", None)`.
 
 ---
 
-## Phase 2 — `stored_files` 트러블슈팅
+## stored_files 트러블슈팅
 
 ### "stored_files 호출이 `ServiceError(error_type='file_resolve')` 로 실패"
 
@@ -778,7 +765,7 @@ except ServiceError as e:
 
 원인: `file_path` 가 stale (file-manager 측에서 같은 파일 재업로드 등으로 새 path 부여됨). `check_cache` 가 새 path 발견하여 정상 fetch.
 
-→ 액션: 자기 DB 의 `file_path` 를 응답의 새 값으로 갱신 권장. 다음 호출부터 `resolved_via='primary'` 로 돌아옴.
+→ 액션: 자기 DB 의 `file_path` 를 응답의 새 값으로 갱신. 다음 호출부터 `resolved_via='primary'` 로 돌아옴.
 
 ```python
 for i, fm in enumerate(meta.file_meta):
@@ -786,56 +773,30 @@ for i, fm in enumerate(meta.file_meta):
         db.update(eval_id, {f"file_meta.{i}.file_path": fm["file_path"]})
 ```
 
-서버 로그에는 `[Phase2] stale file_path: input=..., resolved=..., file_name=...` 라인이 WARNING 으로 남음.
+서버 로그에 `stale file_path: input=..., resolved=..., file_name=...` 라인이 WARNING 으로 남음.
 
 ### "StoredFile 생성 시 ValidationError"
 
-원인: `extra="forbid"` 정책 — 6 필드 외 키 (예: `resolved_via`) 가 들어가면 raise.
+원인: `extra="forbid"` 정책 — 6 필드 외 키 (예: 응답에 박힌 `resolved_via`) 가 들어가면 raise.
 
-→ 해결: Phase 1 응답 dict 그대로 넘기지 말고 `resolved_via` 만 드롭.
+→ 해결: 응답 dict 에서 6 필드만 픽킹.
 
 ```python
-refs = [StoredFile(**{k: v for k, v in d.items() if k != "resolved_via"}) for d in saved]
+ref = StoredFile(**{k: saved[k] for k in StoredFile.model_fields})
 ```
-
-### "옛 Phase 1 doc 의 cache hit 응답에 `resolved_via` 가 없음"
-
-Phase 1 만 적용된 시기에 저장된 doc 은 `file_meta[i]` 에 `resolved_via` 키가 없음 (Phase 2 이전이라 추적 없음). cache hit 응답 시 키 부재.
-
-→ 안전 접근: `fm.get("resolved_via")` 사용. 직접 인덱싱 (`fm["resolved_via"]`) 은 KeyError 가능.
-
-### "stored_files 가 silent drop 됐어요" (옛 Service)
-
-옛 Service (`LLMRequestBody.stored_files` 필드 없음) 에 새 SDK 가 stored_files 보내면 `extra="ignore"` 로 silent 폐기 → 응답에 `meta.file_meta` 안 나옴.
-
-→ 해결: SDK + Service **atomic 동시 배포** (한 PR + 같은 CI/CD pipeline). 시간 gap 회피.
-
-### file-manager 통합 트러블슈팅
-
-| 증상 | 의심 |
-|------|------|
-| `ServiceError(error_type='file_resolve')` 빈발 | file-manager 측 dedup / TTL 정책 확인. file_path stale 빈도 높음 |
-| `ServiceError(status_code=5xx)` 그대로 전파 | file-manager 자체 장애 → 그쪽 로그 확인 (`192.7.9.45:8600`) |
-| `check_cache` 만 hit, `get_file` 은 매번 404 | path 발급은 되는데 fetch 가 안 됨 — file-manager 의 storage 파일 누락 |
-
----
-
-## Phase 3 — Method 1 폐기 + Lazy Fetch 트러블슈팅
-
-### "옛 SDK 가 `files=[FileInput(...)]` 로 호출하는데 422 에러"
-
-원인: Phase 3 에서 `LLMRequestBody.files` 제거 + `model_config = ConfigDict(extra="forbid")` 적용. 옛 SDK 가 `files` 를 보내면 명시적 `ValidationError` (extra fields not permitted).
-
-→ 해결: agent 측 코드를 Phase 3 흐름으로 마이그레이션 — `file_manager.register_or_get(bytes, meta)` 으로 등록 후 받은 6 필드를 `StoredFile` 로 만들어 `stored_files=` 로 전달.
 
 ### "동시 요청 N 개인데 file-manager 가 N 회 fetch"
 
-기대: leader 1 명만 fetch → bytes 메모리 1 회만 적재. 70 동시 요청에서도 `get_file_count == 1`.
+기대: **files_api 경로** 한정으로 leader 1 명만 fetch. inline 경로는 standby 없어 N 회 fetch 가 정상.
 
-원인:
+먼저 분류 확인:
+- 작은 파일 (이미지/오디오 ≤20MB, PDF/text ≤50MB) → inline → N 회 fetch 가 의도된 동작
+- 위 한도 초과 / 비디오 → files_api → leader 1 명만 fetch 기대
+
+files_api 인데 N 회 fetch 가 발생하는 경우 원인:
 - Redis 연결 끊김 → standby 획득 자체 실패 → 모두 자기가 fetch
 - `standby_ttl_seconds` 너무 짧아 leader release 전에 만료 → waiter 가 timeout 후 자기 fetch (Y' Hybrid)
-- standby key prefix 불일치 — `file_cache:files_api_standby:{checksum}` 또는 inline 경로 standby
+- standby key prefix 불일치 — `file_cache:files_api_standby:{checksum}` 확인
 
 → 확인:
 - Redis 로그 — 위 prefix 키 존재 여부 / TTL
@@ -851,16 +812,13 @@ Phase 1 만 적용된 시기에 저장된 doc 은 `file_meta[i]` 에 `resolved_v
 - `_process_inline` / `_upload_and_cache_file` 에서 lazy fetch 호출 위치
 - file-manager 측 (`192.7.9.45:8600`) 헬스체크
 
-### "stored_files 가 silent drop 됐어요" (옛 Service)
+### file-manager 통합 트러블슈팅
 
-옛 Service 에 새 SDK 가 stored_files 보내면 옛 Service 의 `LLMRequestBody` 에 `extra="forbid"` 가 없어 silent 폐기 → 응답에 `meta.file_meta` 안 나옴. (Phase 3 이전 호환성 표 §3.2 참고)
-
-→ 해결: SDK + Service + agent 코드 **atomic 동시 배포**. 옛/새 매트릭스:
-
-| | 옛 SDK (`files`) | 새 SDK (`stored_files`) |
-|---|---|---|
-| **옛 Service** | ✅ Method 1 동작 | ⚠️ stored_files silent drop |
-| **새 Service** | ❌ 422 ValidationError | ✅ 의도된 동작 |
+| 증상 | 의심 |
+|------|------|
+| `ServiceError(error_type='file_resolve')` 빈발 | file-manager 측 dedup / TTL 정책 확인. file_path stale 빈도 높음 |
+| `ServiceError(status_code=5xx)` 그대로 전파 | file-manager 자체 장애 → 그쪽 로그 확인 (`192.7.9.45:8600`) |
+| `check_cache` 만 hit, `get_file` 은 매번 404 | path 발급은 되는데 fetch 가 안 됨 — file-manager 의 storage 파일 누락 |
 
 ---
 

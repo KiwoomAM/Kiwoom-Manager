@@ -1,4 +1,4 @@
-"""service/app/models/requests.py — Phase 2 모델 변경 검증."""
+"""service/app/models/requests.py — 모델 검증."""
 from __future__ import annotations
 
 import pytest
@@ -39,7 +39,7 @@ class TestStoredFile:
 
 
 class TestFileInputResolvedVia:
-    """FileInput.resolved_via — Phase 2 추적 필드."""
+    """FileInput.resolved_via — fetch 경로 추적 필드."""
 
     def test_default_none(self):
         from app.models.requests import FileInput
@@ -51,10 +51,11 @@ class TestFileInputResolvedVia:
         )
         assert fi.resolved_via is None
 
-    def test_accepts_upload_primary_fallback(self):
+    def test_accepts_primary_fallback(self):
+        """resolved_via 가 'primary' / 'fallback' 받음."""
         from app.models.requests import FileInput
 
-        for value in ("upload", "primary", "fallback"):
+        for value in ("primary", "fallback"):
             fi = FileInput(
                 file_name="x.pdf", file_size=1, file_mtime=0,
                 mime_type="application/pdf", extension=".pdf",
@@ -64,7 +65,7 @@ class TestFileInputResolvedVia:
 
 
 class TestLLMRequestBodyStoredFiles:
-    """LLMRequestBody.stored_files — Phase 2 신규 인자."""
+    """LLMRequestBody.stored_files — file-manager 에 등록된 파일 참조 인자."""
 
     def test_default_none(self):
         from app.models.requests import LLMRequestBody
@@ -88,7 +89,7 @@ class TestLLMRequestBodyStoredFiles:
 
 
 class TestLLMRequestBodyFilesRemoved:
-    """Phase 3: LLMRequestBody 에서 files 인자 제거 + extra='forbid' 적용."""
+    """LLMRequestBody.files 인자 제거 + extra='forbid' 적용."""
 
     def test_files_arg_no_longer_accepted(self):
         """옛 SDK 가 files 보내면 ValidationError (extra='forbid')."""
@@ -117,7 +118,7 @@ class TestLLMRequestBodyFilesRemoved:
 
 
 class TestFileInputDataDefault:
-    """Phase 3: FileInput.data default b'' (lazy fetch 전제)."""
+    """FileInput.data default b'' (lazy fetch 전제)."""
 
     def test_data_default_is_empty_bytes(self):
         from app.models.requests import FileInput

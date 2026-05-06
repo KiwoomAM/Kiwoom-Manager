@@ -59,7 +59,7 @@ packages/llm-request/
 │   │       ├── done_check.py   # 캐시 조회
 │   │       ├── store.py        # MongoDB 캐시 저장
 │   │       ├── meta.py         # 저장용 메타 생성
-│   │       ├── file_register.py       # file-manager에 파일 등록 (Service 진입 시점)
+│   │       ├── file_resolver.py       # stored_files → placeholder FileInput (lazy fetch)
 │   │       └── file_processing/
 │   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
 │   │           ├── uploader.py    # Files API 업로드
@@ -193,14 +193,27 @@ response, _ = await llm_request_async(
 )
 ```
 
+> ⚠️ **응답 `meta.file_meta` 를 저장한 경우 — `StoredFile(**...)` 시 422**
+>
+> 응답 `meta.file_meta[i]` 에는 server-fill `resolved_via` 가 박혀서 내려옴. agent 가 응답 dict 를 자기 DB 에 저장했다가 재호출 시 그대로 `StoredFile(**dict)` 로 넣으면 `extra="forbid"` 정책상 ValidationError. 6 필드만 픽킹 필요:
+>
+> ```python
+> saved = db.evaluations.find_one({...})["meta_file_meta"]
+> ref = StoredFile(**{k: saved[k] for k in StoredFile.model_fields})
+> ```
+>
+> `register_or_get` 결과 (`sf_dict`) 를 저장했다면 6 필드만 있으므로 `StoredFile(**saved)` 로 바로 사용 가능 (위 예시).
+
 ### `resolved_via` 값
 
-응답 `meta.file_meta[i].resolved_via` 가 fetch 경로를 알려준다:
+응답 `meta.file_meta[i].resolved_via` 가 fetch 경로를 알려준다 (디버깅 용도).
 
 | 값 | 의미 |
 | --- | --- |
 | `"primary"` | `file_path` 1차 fetch 성공 |
 | `"fallback"` | `file_path` stale → `check_cache` 로 새 path 발견 후 fetch. 호출자가 자기 DB 의 `file_path` 를 새 값으로 갱신 권장 |
+
+> ⚠️ `resolved_via` 필드 도입 이전에 MDB 에 저장된 옛 doc 의 cache hit 응답에는 이 키가 없을 수 있다. 직접 인덱싱 (`fm["resolved_via"]`) 대신 `fm.get("resolved_via")` 사용 권장.
 
 ### 에러 처리 — `FileResolveError` → SDK `ServiceError`
 
@@ -412,8 +425,8 @@ StoredFile 리스트 (file_path + 5 메타)
      inline_pool / files_api_pool 분리
   ↓
 ③ 처리 방식 결정 (resolver.resolve_files) — bytes 가 필요한 시점에 file-manager 에서 lazy fetch
-     inline       → fetch → bytes 그대로 전달
-     files_api    → URI 캐시 확인 → 없으면 fetch → 업로드
+     inline       → fetch → bytes 그대로 전달 (standby 없음, 동시 N 요청 시 N 회 fetch)
+     files_api    → URI 캐시 확인 → 없으면 standby leader 1 명만 fetch + 업로드
      context_cache_ttl 지정 시 → Context Cache 생성
 ```
 
