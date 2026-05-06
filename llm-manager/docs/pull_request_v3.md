@@ -31,7 +31,7 @@ C/D/E/I-Q*/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메�
 - **Fix J** — `cache_store.py` 의 모듈 함수 6개를 `FileCacheStore(BaseJsonStore)` 클래스 메서드로 이동 (I-Q5). `BaseJsonStore` 의 protected 메서드를 외부에서 호출하지 않도록 캡슐화 회복. 모듈 함수는 호출자 호환성을 위해 위임 형태로 유지
 - **Fix K** — `context_cache` 생성 분기에서 `model is None` 일 때 명시적 `ValueError` raise (I-Q7). 기존 타입 흐름이 좁아지면서 모호한 Gemini API 에러로 터지던 경로를 fail-fast 한국어 에러로 대체
 - **Fix L** — 신규 단위 테스트 파일 3개 / 총 29 tests 추가 (I-Q11). `test_validators.py` · `test_resolver.py` · `test_file_register.py` — 본 PR 의 Fix C/D/I/J/K 회귀 방지
-- **Fix M** — SDK `async def close()` 공개 함수 추가 + `README_v2.md` 안내 (I-Q3). agent 프로세스 종료 시 `await close()` 호출로 httpx 커넥션 풀 정리
+- **Fix M** — SDK `async def close()` 공개 함수 추가 + `README.md` 안내 (I-Q3). agent 프로세스 종료 시 `await close()` 호출로 httpx 커넥션 풀 정리
 - **Fix N** — `_estimate_non_file_bytes` 예외 블록에 `logger.exception` 추가 (I-Q6). silent failure 해소. fallback 값(`return 0`) 자체는 유지 — 실패 케이스 자체가 극히 드문 edge 라 fallback 변경의 실익 미미
 
 ## 리뷰 외 추가 정리
@@ -54,7 +54,7 @@ C/D/E/I-Q*/I-A6 는 이 교체와 무관한 **llm-request 코드·패키지 메�
 
 llm-request v0.2.0은 라이브러리에서 SDK + Service 2-tier로의 서버화를 수반한다. Service가 진입 시점에 file-manager에 파일을 등록(side-effect)하는 흐름이 설계에 포함되어 있어 (설계 문서 10.§1 "새 구조"), 개발을 진행하려면 file-manager 쪽 서비스가 필요했다.
 
-그 시점에 **file-manager 담당자의 공식 구현은 아직 준비되지 않은 상태**였다. llm-request 측은 개발과 테스트를 계속 진행하기 위해 **최소한의 시연용 stub**을 `packages/file-manager/` 에 넣어두고 포트 8102로 써왔다. `README_v2.md`가 이 상태를 명시하고 있었다:
+그 시점에 **file-manager 담당자의 공식 구현은 아직 준비되지 않은 상태**였다. llm-request 측은 개발과 테스트를 계속 진행하기 위해 **최소한의 시연용 stub**을 `packages/file-manager/` 에 넣어두고 포트 8102로 써왔다. `README.md`가 이 상태를 명시하고 있었다:
 
 > `packages/file-manager`는 llm-request 개발·테스트용으로 간단히 구현한 임시 버전이다.
 > 추후 file-manager 전담 담당자가 완성하면 해당 서비스로 대체·연결할 예정이다.
@@ -159,7 +159,7 @@ async def register_files(inputs: list[FileInput]) -> list[FileInput]:
 #### 3. 포트 이관 (8102 → 8600) 및 연관 문서 갱신
 
 - **`packages/llm-request/service/app/config.py`** — `file_manager_url` 기본값 `http://192.7.9.45:8102` → `http://192.7.9.45:8600`. "(포트는 TBD — 담당자 협의 후 확정)" 주석 제거 (담당자 확정됨)
-- **`packages/llm-request/README_v2.md`**
+- **`packages/llm-request/README.md`**
   - 환경변수 표의 `FILE_MANAGER_URL` 기본값 업데이트 (`8102` → `8600`)
   - "## file-manager 실행" 섹션(stub 직접 띄우기 가이드) 전체 삭제. 이제 file-manager 실행 방법은 **공식 이미지가 표준** (`docker compose --profile handlers up -d file-manager`). 로컬 개발 시엔 `cd packages/file-manager/service && uv run uvicorn app.main:app --port 8600` 로 직접 실행도 가능 (`verify_all.ipynb` 가 이 방식 사용)
 - **`packages/llm-request/quickstarts/verify_all.ipynb`** — 서비스 표 / 헬스체크 / 환경값의 포트 `8102` → `8600`, Redis 실행 커맨드도 main 기준(`predixy` 7617)으로 갱신
@@ -196,7 +196,7 @@ stub이 존재했던 시절의 파일이 브랜치에 남아있었다. `git ls-t
 | 신규 흡수 | `packages/file-handler/` | v1이 스토리지를 위임하는 동반 패키지 |
 | 변경 | `packages/llm-request/service/app/logic/file_register.py` | SDK 호출부 stub → v1 |
 | 변경 | `packages/llm-request/service/app/config.py` | `file_manager_url` 기본값 8600 |
-| 변경 | `packages/llm-request/README_v2.md` | 포트 갱신 + "file-manager 실행" 섹션 제거 |
+| 변경 | `packages/llm-request/README.md` | 포트 갱신 + "file-manager 실행" 섹션 제거 |
 | 변경 | `packages/llm-request/quickstarts/verify_all.ipynb` | 서비스 표 포트/URL 갱신 |
 | 삭제 | `packages/file-manager/pyproject.toml` | stub workspace root |
 | 삭제 | `packages/file-manager/sdk/file_manager/{client,models}.py` | stub SDK |
@@ -661,7 +661,7 @@ SDK `__init__.py` 의 두 공개 함수는 내부 `_client.request_stream` 의 �
 
 - `service/tests/logic/test_runner_standby.py` — `async for chunk in runner.llm_request_stream_async(...)` → `stream, _meta = await runner.llm_request_stream_async(...); async for chunk in stream:`
 - `quickstarts/verify_all.ipynb` §7, §8 셀 — 동일 패턴. meta 에서 `cache_hit` 출력 추가
-- `README_v2.md` — 공개 API 표 반환 타입(`tuple[..., dict]`) + 주의사항 예시 업데이트
+- `README.md` — 공개 API 표 반환 타입(`tuple[..., dict]`) + 주의사항 예시 업데이트
 
 ### 파일 변경 목록
 
@@ -673,7 +673,7 @@ SDK `__init__.py` 의 두 공개 함수는 내부 `_client.request_stream` 의 �
 | 변경 | `sdk/llm_request/__init__.py` | `llm_request_stream_async` · `llm_request_stream` tuple 반환 |
 | 변경 | `service/tests/logic/test_runner_standby.py` | stream 테스트 tuple unpack 패턴 마이그레이션 |
 | 변경 | `quickstarts/verify_all.ipynb` | §7, §8 셀 tuple unpack 패턴 |
-| 변경 | `README_v2.md` | 공개 API 표 + 주의사항 예시 |
+| 변경 | `README.md` | 공개 API 표 + 주의사항 예시 |
 
 ### 영향 범위
 
@@ -1027,7 +1027,7 @@ agent 프로세스 종료 전 `close()` 호출이 표준. SDK 가 `close` 를 �
 - 모듈 레벨 공개 `async def close()` 함수 추가 — 내부에서 싱글톤 `_instance.close()` 호출 후 `_instance = None` 으로 리셋
 - `__all__` 에 `"close"` 추가
 
-**`README_v2.md`**:
+**`README.md`**:
 - 공개 API 표에 `close` 행 추가
 - "주의사항" 섹션에 "agent 프로세스 종료 전 `close()` 호출" 안내
 
@@ -1036,7 +1036,7 @@ agent 프로세스 종료 전 `close()` 호출이 표준. SDK 가 `close` 를 �
 | 유형 | 경로 | 비고 |
 |------|------|------|
 | 변경 | `packages/llm-request/sdk/llm_request/__init__.py` | 공개 `async def close()` 함수 + `__all__` 등록 |
-| 변경 | `packages/llm-request/README_v2.md` | API 표에 `close` 행 + 주의사항 안내 추가 |
+| 변경 | `packages/llm-request/README.md` | API 표에 `close` 행 + 주의사항 안내 추가 |
 
 ### 영향 범위
 
@@ -1166,7 +1166,7 @@ Fix A의 stub→v1 교체에서 `FileManagerHandler.check_cache` / `upload_file`
 |---|---|---|
 | 변경 | `packages/llm-request/service/app/models/requests.py` | `FileInput`에 `file_path: str \| None = None` 필드 추가 + docstring 업데이트 |
 | 변경 | `packages/llm-request/service/app/logic/file_register.py` | `check_cache` hit 시 `fi.file_path = result["file_path"]`, miss 시 `fi.file_path = await fm.upload_file(...)` 로 반환값 캐치 + 모듈 docstring 업데이트 |
-| 변경 | `packages/llm-request/README_v2.md` | §10 문서 스키마 표의 `file_meta` 설명에 `file_path` 포함 명시 |
+| 변경 | `packages/llm-request/README.md` | §10 문서 스키마 표의 `file_meta` 설명에 `file_path` 포함 명시 |
 
 `runner.py` / `store.py` / `_dump_files_meta` 는 변경 불필요 — `_dump_files_meta` 는 `FileInput.model_dump(exclude={"data"})` 결과를 그대로 사용하므로, 새로 추가된 `file_path` 필드가 자동으로 dump되어 MDB 문서의 `file_meta` list 각 원소에 포함된다.
 

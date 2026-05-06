@@ -120,7 +120,7 @@ localhost llm-request + 192.7.9.45 file-manager 환경에서 sample.txt 로 흐�
 
 # 📄 문서
 
-- `README_v2.md` — 파일 첨부 섹션을 `register_or_get` + `stored_files` 흐름으로 재작성. `StoredFile` 6 필드 표 / `resolved_via` enum (`primary` / `fallback`) / 프론트엔드 업로드 가이드 / 마이그레이션 표 갱신
+- `README.md` — 파일 첨부 섹션을 `register_or_get` + `stored_files` 흐름으로 재작성. `StoredFile` 6 필드 표 / `resolved_via` enum (`primary` / `fallback`) / 프론트엔드 업로드 가이드 / 마이그레이션 표 갱신
 - `debugging-guide.md` — Phase 3 트러블슈팅 추가 (422 / 동시 요청 dedup / lazy fetch 5xx / 옛 Service silent drop)
 - `docs/21.method1-deprecation-lazy-fetch.md` — Spec
 - `docs/22.phase3-plan.md` — 14 task 실행 plan

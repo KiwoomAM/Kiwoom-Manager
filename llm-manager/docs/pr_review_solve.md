@@ -77,7 +77,7 @@
 - **수정:** [sdk/__init__.py](../sdk/llm_request/__init__.py) — `_instance_lock = asyncio.Lock()` 모듈 레벨 추가, `_get_client()` 를 `async def` 로 변환 + double-checked locking. 호출자 4곳(`llm_request_async`, `llm_request_stream_async`, `done_check`, `fetch_by_cache_key`) 에 `await` 추가. sync wrapper(`llm_request`, `llm_request_stream`) 는 `asyncio.run` 안에서 async 버전 호출하므로 변경 없음. 개념 정리: `docs/00.concepts.md` §"Race Condition, Lock, Single-flight / Standby"
 ### [x] I-Q3. `AsyncClient.aclose()` 미호출 @ `_client.py:24`
 - **주장:** `sdk/_client.py` 에 `async def close(self)` 정의는 있지만 어디서도 호출 안 함. 프로세스 종료 시 `ResourceWarning: unclosed <AsyncClient>` + 커넥션 풀 리소스 누수
-- **수정:** [sdk/__init__.py](../sdk/llm_request/__init__.py) 에 공개 `async def close()` 함수 추가 (싱글톤 `_instance.close()` 호출 + `_instance = None` 리셋). `__all__` 에 `"close"` 추가하여 `from llm_request import close` 사용 가능. [README_v2.md](../README_v2.md) 공개 API 표에 `close` 행 추가 + 주의사항에 "agent 프로세스 종료 전 `close()` 호출" 섹션 추가
+- **수정:** [sdk/__init__.py](../sdk/llm_request/__init__.py) 에 공개 `async def close()` 함수 추가 (싱글톤 `_instance.close()` 호출 + `_instance = None` 리셋). `__all__` 에 `"close"` 추가하여 `from llm_request import close` 사용 가능. [README.md](../README.md) 공개 API 표에 `close` 행 추가 + 주의사항에 "agent 프로세스 종료 전 `close()` 호출" 섹션 추가
 ### [x] I-Q4. Async 함수에서 sync Redis 사용 @ `dedup.py` — 이벤트 루프 블로킹
 - **검증:** `redis-handler` 가 sync-only (`async/AsyncRedis/aioredis` 0건). `dedup.py` 의 `async def` 함수 3곳 (`try_acquire_standby`, `wait_for_standby_release`, `release_standby`) 이 raw `client.set/get/delete` 직접 호출. 같은 워커의 다른 코루틴이 5ms씩 못 깨어남. LLM 호출(2~30초) 대비 영향 0.02% 수준이지만 Redis 응답 느려질 때 비선형 증폭 위험
 - **수정:** [dedup.py](../service/app/logic/file_processing/dedup.py) 3곳 모두 `await asyncio.to_thread(client.<method>, ...)` 로 감쌈. `import asyncio` 는 이미 존재해서 추가 불필요. `redis-handler` 는 손대지 않음 (다른 패키지) — sync 인터페이스가 미래에 헬퍼로 정리되어도 동일 패턴 유효
@@ -111,7 +111,7 @@
 
 ### [x] I-C1. `packages/llm-request/pyproject.toml` 설치 패키지 → 워크스페이스 루트 변경 안내
 - **주장:** v0.1.0 에서 `pip install -e packages/llm-request` 로 SDK 설치하던 사용자가 v0.2.0 에 같은 명령을 실행하면 **빈 워크스페이스 루트** 만 설치되어 SDK 기능 없음. 이주 안내 필수
-- **수정:** [README_v2.md §12 v0.1.0 → v0.2.0 마이그레이션](../README_v2.md) 의 변경 요약 표 바로 뒤에 "⚠️ 설치 경로 변경 주의" 경고 블록 추가 — (1) 증상 설명, (2) 새 경로 `pip install -e packages/llm-request/sdk` 또는 루트 `uv sync`, (3) 구 버전 환경에서 업그레이드 시 `pip uninstall kiwoom-llm-request` 선행 안내
+- **수정:** [README.md §12 v0.1.0 → v0.2.0 마이그레이션](../README.md) 의 변경 요약 표 바로 뒤에 "⚠️ 설치 경로 변경 주의" 경고 블록 추가 — (1) 증상 설명, (2) 새 경로 `pip install -e packages/llm-request/sdk` 또는 루트 `uv sync`, (3) 구 버전 환경에서 업그레이드 시 `pip uninstall kiwoom-llm-request` 선행 안내
 ### [x] I-C2. docker-compose MongoDB DB/컬렉션 이름 정합 (`kw_ai`/`file_cache` vs `kw_ai_dev`/`file_manager`)
 > Fix A 에 흡수 — stub 폐기하고 v1 기준 `kw_ai` / `file_cache` 로 통일 (`pull_request_v3.md § Fix A` 참고)
 ### [x] I-C3. `packages/file-handler/` 고아 여부 결정
@@ -138,7 +138,7 @@
 - **주장:** `if context_cache_ttl:` 이 `0` 을 False 로 처리. 사용자가 의도적으로 `0` 을 "비활성" 의미로 주면 암묵적으로만 동작 — 명시적이지 않음
 - **수정:**
   - [resolver.py:369-373](../service/app/logic/file_processing/resolver.py#L369-L373) — 조건을 `ctx_cache_active = context_cache_ttl is not None and context_cache_ttl > 0` 로 로컬 변수 추출, 아래 두 `if` 조건에서 재사용. "None 도 0 도 아닌 양수만" 이 코드로 명시됨
-  - [README_v2.md Timings 표 `context_cache_ttl` 행](../README_v2.md) — "`None` 또는 `0` 이면 비활성, 양수(`>0`) 값만 생성 트리거" 로 설명 보강
+  - [README.md Timings 표 `context_cache_ttl` 행](../README.md) — "`None` 또는 `0` 이면 비활성, 양수(`>0`) 값만 생성 트리거" 로 설명 보강
 ### [-] S4. `NamedTemporaryFile(delete=False)` → `with ... delete=True` @ `resolver.py:163-170`
 - **주장:** 스타일 제안 — `delete=True` + `with` 문이 정리 자동화 측면에서 깔끔
 - **검증:** 해당 위치는 이미 `tmp.close()` 후 `upload_file` 호출 + `finally os.unlink(tmp.name)` 으로 정리 보장 중 (Fix D 분석에서 확정). 리뷰어 제안대로 `delete=True` 로 바꾸면 `with` 블록 종료 시점까지 fd 가 열려있어 upload 중 이중 핸들 문제 재현 — Windows 에서 D 블로커와 동일한 `PermissionError` 위험
@@ -178,8 +178,8 @@
 - **결정:** 거부 — 의도된 사내망 fallback (v3 §S1 결론과 동일 정책). quickstart 는 zero-config 우선
 
 ### [x] I-3. `pyproject.toml` readme — 삭제보다 경로 수정이 근본
-- **주장:** `readme = "README_v2.md"` 로 수정이 정답. 메타데이터 삭제는 PyPI 디스커버리 약화
-- **반영:** `readme = "README_v2.md"` 로 명시
+- **주장:** `readme = "README.md"` 로 수정이 정답. 메타데이터 삭제는 PyPI 디스커버리 약화
+- **반영:** `readme = "README.md"` 로 명시
 
 ### [x] I-4. 테스트 공백 — 순서·mutation·call-site wiring
 - **주장:** 순서 invariant 미검증 (`len()` / `[-1]` 만), shallow copy mutation 안전성 미검증, `_apply_resolved` 호출 3군데 wiring 통합 테스트 없음

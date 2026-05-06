@@ -671,7 +671,7 @@ SDK 공개 함수 4개를 엔드포인트 4개로 매핑한다.
 | `POST /v1/done-check` | `done_check` | 캐시 존재 여부만 확인 (LLM 호출 X) | `DoneCheckBody` | `DoneCheckResponse` |
 | `POST /v1/fetch` | `fetch_by_cache_key` | 캐시 키로 직접 조회 | `FetchBody` | `FetchResponse` |
 
-각 DTO의 필드 상세는 [README_v2.md 섹션 9](../README_v2.md)를 참고.
+각 DTO의 필드 상세는 [README.md 섹션 9](../README.md)를 참고.
 
 ##### SSE 응답 형식 (`/v1/request/stream`)
 

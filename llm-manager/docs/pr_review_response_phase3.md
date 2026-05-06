@@ -33,7 +33,7 @@ waiter 가 재사용. inline 경로는 결과 (bytes) 가 Redis 에 캐시되지
 
 다른 수정 위치:
 - [pull_request_v6.md](./pull_request_v6.md) 핵심 효과 / 핵심 흐름
-- [README_v2.md](../README_v2.md) File Handler 도식
+- [README.md](../README.md) File Handler 도식
 - [debugging-guide.md](../debugging-guide.md) "동시 요청 N 개" 섹션
 
 ---
@@ -176,7 +176,7 @@ after:
 
 > 응답에는 resolved_via / 갱신된 file_path 등이 박혀서 내려가는데, agent 가 Phase 1 응답 dict 를 그대로 StoredFile(**dict) 로 다시 넣으면 422 가 납니다 (입력 6 필드 ↔ 응답 7+ 필드).
 
-→ **README 안내 추가**. [README_v2.md "같은 파일 재호출" 섹션](../README_v2.md) 에 ⚠️ 박스 추가 — 응답 dict 그대로 `StoredFile(**...)` 시 422 발생, 6 필드 픽킹 one-liner 안내:
+→ **README 안내 추가**. [README.md "같은 파일 재호출" 섹션](../README.md) 에 ⚠️ 박스 추가 — 응답 dict 그대로 `StoredFile(**...)` 시 422 발생, 6 필드 픽킹 one-liner 안내:
 ```python
 ref = StoredFile(**{k: saved[k] for k in StoredFile.model_fields})
 ```
@@ -229,15 +229,15 @@ logger.warning(
 
 ### I7. cache hit dump 경로 Phase 1 시기 MDB doc 의 `resolved_via` 키 누락 보정
 
-→ **README 안내 추가**. `resolved_via` 는 디버깅 용도 필드라 코드는 손 안 대고 (caller 가 `fm.get("resolved_via")` 로 안전 접근하면 됨), [README_v2.md "resolved_via 값" 섹션](../README_v2.md) 에 옛 doc 호환 안내 ⚠️ 박스 추가.
+→ **README 안내 추가**. `resolved_via` 는 디버깅 용도 필드라 코드는 손 안 대고 (caller 가 `fm.get("resolved_via")` 로 안전 접근하면 됨), [README.md "resolved_via 값" 섹션](../README.md) 에 옛 doc 호환 안내 ⚠️ 박스 추가.
 
 ---
 
 ## Suggestions
 
-### S1. README_v2.md 디렉터리 트리에 삭제된 `file_register.py` 잔존, 새 `file_resolver.py` 누락
+### S1. README.md 디렉터리 트리에 삭제된 `file_register.py` 잔존, 새 `file_resolver.py` 누락
 
-→ **수정**. [README_v2.md:62](../README_v2.md#L62) 디렉터리 트리 갱신.
+→ **수정**. [README.md:62](../README.md#L62) 디렉터리 트리 갱신.
 
 before:
 ```
@@ -348,7 +348,7 @@ related: #<Phase3-PR-#>
   - [`service/app/logic/file_processing/resolver.py:33`](service/app/logic/file_processing/resolver.py#L33)
 - docstring / 사용자 문서:
   - [`service/app/models/requests.py:28,35`](service/app/models/requests.py#L28)
-  - [`README_v2.md:62`](README_v2.md#L62) — 디렉터리 트리
+  - [`README.md:62`](README.md#L62) — 디렉터리 트리
   - [`debugging-guide.md:811`](debugging-guide.md#L811) — 트러블슈팅 링크
 
 historical 설계 문서 (`docs/18.*.md`, `docs/22.*.md`, `docs/pull_request_v6.md`, `docs/pr_review_response_phase3.md`) 는 작성 시점 코드 묘사라 의도적으로 유지.
