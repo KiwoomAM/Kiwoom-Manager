@@ -310,7 +310,7 @@ llm_request_async()
 > ```
 
 - **응답**: 502, `error_type="file"`
-- **언제**: Phase 1 메모리 정리 후(`fi.data = b""`) 동일 FileInput 객체로 재업로드 시도. 거의 유일한 발생 경로는 Gemini 404 자동 복구 흐름
+- **언제**: 메모리 정리 후(`fi.data = b""`) 동일 FileInput 객체로 재업로드 시도. 거의 유일한 발생 경로는 Gemini 404 자동 복구 흐름
 - **확인할 것**: 진입 가드는 의도된 차단 — silent corruption 방지. 사용자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 
 #### 🔴 Files API 업로드 실패
@@ -376,7 +376,7 @@ llm_request_async()
 > ```
 
 - **언제**: LLM 호출 중 Gemini가 Files API URI 404 반환 → runner가 이 함수 호출
-- **의미**: Redis 캐시는 invalidate 되지만, Phase 1 메모리 정리(`fi.data = b""`)로 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+- **의미**: Redis 캐시는 invalidate 되지만, 메모리 정리(`fi.data = b""`)로 재업로드는 진입 가드에서 `FileUploadError` raise. 자동 복구 폐지 — 호출자는 새 요청으로 재시도. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 - **확인할 것**: Redis TTL < Gemini TTL 이슈가 반복되면 `FILES_API_TTL_FLOOR` 조정
 
 #### 🟡 404 복구 중 Redis 삭제 실패 (무시)
@@ -687,7 +687,7 @@ llm_request_async()
 ### "Gemini 404가 나와요"
 - 흐름: 대용량 파일의 Files API URI가 Gemini에서 만료 (Redis TTL < Gemini TTL)
 - 로그: `Gemini 404 감지 — 자동 복구 시도` ([runner.py:416, 552](service/app/logic/runner.py#L416)) → `Gemini 404 자동 복구` ([resolver.py:477](service/app/logic/file_processing/resolver.py#L477)) → 진입 가드에서 `FileUploadError` raise ([resolver.py:183](service/app/logic/file_processing/resolver.py#L183))
-- 자동 복구는 폐지 — Phase 1 메모리 정리(`fi.data = b""`)와 양립 불가. 사용자에게 502 raise 됨 → 새 요청으로 재시도 필요. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
+- 자동 복구는 폐지 — 메모리 정리(`fi.data = b""`)와 양립 불가. 사용자에게 502 raise 됨 → 새 요청으로 재시도 필요. 상세 [`docs/16.memory-cleanup-plan.md`](docs/16.memory-cleanup-plan.md) §6
 - 반복되면: `FILES_API_TTL_FLOOR` 조정, [cache_store.py:147](service/app/logic/file_processing/cache_store.py#L147) 경고 체크
 
 ### "SDK에서 ServiceError error_type=file"
@@ -725,6 +725,100 @@ llm_request_async()
 - 위치: [main.py:93](service/app/main.py#L93)
 - 의미: `LLMRequestServiceError`로 감싸지지 않은 예외 = 버그 신호
 - 후속: 같은 `request_id`의 다른 로그를 따라가고, traceback을 errors.py 계층으로 매핑
+
+### "응답 `meta.file_meta` 가 없는데?"
+
+`stored_files` 인자가 없거나 빈 list 면 `meta.file_meta` 키 자체 부재 (MongoDB doc 의 `file_meta` 동작과 거울). **의도된 동작.**
+
+→ 안전 접근: `meta.file_meta or []` 또는 `getattr(meta, "file_meta", None)`.
+
+---
+
+## stored_files 트러블슈팅
+
+### "stored_files 호출이 `ServiceError(error_type='file_resolve')` 로 실패"
+
+원인:
+- file-manager 의 `get_file(file_path)` 가 404 (파일이 정말로 없거나 stale)
+- 추가로 `check_cache(file_name/file_size/file_mtime)` 도 miss → 서버가 `FileResolveError` (502, error_type='file_resolve') raise
+- SDK 가 `ServiceError` 로 caller 에게 전파
+
+→ 복구: agent 가 file-manager 에 다시 등록 (`register_or_get`) 후 새 `file_path` 로 재호출.
+
+```python
+from llm_request import ServiceError, StoredFile, llm_request_async
+from file_manager import FileManagerHandler
+
+try:
+    response, meta = await llm_request_async(llm_input, stored_files=refs)
+except ServiceError as e:
+    if e.error_type == "file_resolve":
+        fm = FileManagerHandler()
+        fresh = [
+            StoredFile(**(await fm.register_or_get(bytes_data, fm.build_metadata(name))))
+            for ...
+        ]
+        response, meta = await llm_request_async(llm_input, stored_files=fresh)
+```
+
+### "응답 `resolved_via='fallback'` 이 떴어요"
+
+원인: `file_path` 가 stale (file-manager 측에서 같은 파일 재업로드 등으로 새 path 부여됨). `check_cache` 가 새 path 발견하여 정상 fetch.
+
+→ 액션: 자기 DB 의 `file_path` 를 응답의 새 값으로 갱신. 다음 호출부터 `resolved_via='primary'` 로 돌아옴.
+
+```python
+for i, fm in enumerate(meta.file_meta):
+    if fm["resolved_via"] == "fallback":
+        db.update(eval_id, {f"file_meta.{i}.file_path": fm["file_path"]})
+```
+
+서버 로그에 `stale file_path: input=..., resolved=..., file_name=...` 라인이 WARNING 으로 남음.
+
+### "StoredFile 생성 시 ValidationError"
+
+원인: `extra="forbid"` 정책 — 6 필드 외 키 (예: 응답에 박힌 `resolved_via`) 가 들어가면 raise.
+
+→ 해결: 응답 dict 에서 6 필드만 픽킹.
+
+```python
+ref = StoredFile(**{k: saved[k] for k in StoredFile.model_fields})
+```
+
+### "동시 요청 N 개인데 file-manager 가 N 회 fetch"
+
+기대: **files_api 경로** 한정으로 leader 1 명만 fetch. inline 경로는 standby 없어 N 회 fetch 가 정상.
+
+먼저 분류 확인:
+- 작은 파일 (이미지/오디오 ≤20MB, PDF/text ≤50MB) → inline → N 회 fetch 가 의도된 동작
+- 위 한도 초과 / 비디오 → files_api → leader 1 명만 fetch 기대
+
+files_api 인데 N 회 fetch 가 발생하는 경우 원인:
+- Redis 연결 끊김 → standby 획득 자체 실패 → 모두 자기가 fetch
+- `standby_ttl_seconds` 너무 짧아 leader release 전에 만료 → waiter 가 timeout 후 자기 fetch (Y' Hybrid)
+- standby key prefix 불일치 — `file_cache:files_api_standby:{checksum}` 확인
+
+→ 확인:
+- Redis 로그 — 위 prefix 키 존재 여부 / TTL
+- `[dedup] role=standby_timeout` 로그 빈도 ([dedup.py:133](service/app/logic/file_processing/dedup.py#L133), [resolver.py:364/406](service/app/logic/file_processing/resolver.py#L364))
+- `standby_ttl_seconds` 를 LLM 응답 시간 + file-manager fetch 시간 합보다 길게 설정
+
+### "stored_files 호출인데 first call 에서 5xx"
+
+원인: leader 분기에서 `fetch_with_fallback(fm, fi)` 가 file-manager 를 호출하는데 file-manager 자체가 다운되었거나 네트워크 단절. lazy fetch 가 leader 분기에서 발생하므로 5xx 가 그대로 LLM 호출 측까지 전파.
+
+→ 확인:
+- [file_resolver.py::fetch_with_fallback](service/app/logic/file_resolver.py) 의 `FMServiceError` 메시지
+- `_process_inline` / `_upload_and_cache_file` 에서 lazy fetch 호출 위치
+- file-manager 측 (`192.7.9.45:8600`) 헬스체크
+
+### file-manager 통합 트러블슈팅
+
+| 증상 | 의심 |
+|------|------|
+| `ServiceError(error_type='file_resolve')` 빈발 | file-manager 측 dedup / TTL 정책 확인. file_path stale 빈도 높음 |
+| `ServiceError(status_code=5xx)` 그대로 전파 | file-manager 자체 장애 → 그쪽 로그 확인 (`192.7.9.45:8600`) |
+| `check_cache` 만 hit, `get_file` 은 매번 404 | path 발급은 되는데 fetch 가 안 됨 — file-manager 의 storage 파일 누락 |
 
 ---
 

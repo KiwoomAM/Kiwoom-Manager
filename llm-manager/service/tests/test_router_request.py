@@ -121,3 +121,168 @@ def test_fetch_not_found(test_client, mock_collection):
         "cache_key": "0" * 64,
     })
     assert resp.status_code == 500  # KeyError → 500
+
+
+# ── Phase 1 — file_meta 응답 노출 (endpoint 통합) ──────────────
+
+
+def test_request_cache_hit_exposes_file_meta_in_response(test_client, mock_collection):
+    """/v1/request 응답 JSON 에 meta.file_meta 가 포함되는지 (cache hit 경로 end-to-end)."""
+    from app.logic.keying import canonicalize_input, make_cache_key
+
+    llm_input = {"contents": "Phase1 통합 테스트", "model": "gemini-2.5-flash"}
+    canonical = canonicalize_input(llm_input)
+    cache_key = make_cache_key(canonical)
+
+    mock_collection[cache_key] = {
+        "_id": cache_key,
+        "result": {
+            "text": "캐시된 응답",
+            "model": "gemini-2.5-flash",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "finish_reason": "STOP",
+            "request_id": "r",
+        },
+        "metadata": {"model": "gemini-2.5-flash"},
+        "file_meta": [{
+            "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+            "file_path": "abc-uuid.pdf",
+        }],
+    }
+
+    resp = test_client.post("/v1/request", json={
+        "llm_input": llm_input,
+        "cache_mode": True, "save_mode": True,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "file_meta" in data["meta"]
+    assert data["meta"]["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+
+
+def test_request_cache_hit_legacy_doc_omits_file_meta(test_client, mock_collection):
+    """cache hit + 옛 doc (file_meta 키 없음) → 응답에도 키 없음."""
+    from app.logic.keying import canonicalize_input, make_cache_key
+
+    llm_input = {"contents": "Phase1 legacy 테스트", "model": "gemini-2.5-flash"}
+    canonical = canonicalize_input(llm_input)
+    cache_key = make_cache_key(canonical)
+
+    mock_collection[cache_key] = {
+        "_id": cache_key,
+        "result": {
+            "text": "캐시", "model": "gemini-2.5-flash",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "finish_reason": "STOP", "request_id": "r",
+        },
+        "metadata": {},
+        # file_meta 키 의도적 부재
+    }
+
+    resp = test_client.post("/v1/request", json={
+        "llm_input": llm_input,
+        "cache_mode": True, "save_mode": True,
+    })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "file_meta" not in data["meta"]
+
+
+def test_fetch_endpoint_exposes_file_meta(test_client, mock_collection):
+    """/v1/fetch 응답에 file_meta 노출."""
+    cache_key = "fetch" + "0" * 59
+    mock_collection[cache_key] = {
+        "_id": cache_key,
+        "result": {
+            "text": "fetched", "model": "gemini-2.5-flash",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "finish_reason": "STOP", "request_id": "r",
+        },
+        "metadata": {},
+        "file_meta": [{
+            "file_name": "y.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+            "file_path": "fetched-uuid.pdf",
+        }],
+    }
+
+    resp = test_client.post("/v1/fetch", json={"cache_key": cache_key})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["meta"]["file_meta"][0]["file_path"] == "fetched-uuid.pdf"
+
+
+# ── Phase 2 — router 가 stored_files 를 runner 로 전달하는지 ──────
+
+
+def test_request_routes_stored_files_to_runner(test_client, monkeypatch):
+    """/v1/request 가 body.stored_files 를 llm_request_async 로 전달."""
+    from llm_handler.models import LLMResponse, TokenUsage
+
+    captured = {}
+
+    async def spy_llm_request_async(llm_input, **kwargs):
+        captured["llm_input"] = llm_input
+        captured.update(kwargs)
+        return (
+            LLMResponse(
+                text="ok", model="gemini-2.5-flash",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+                finish_reason="STOP", request_id="r",
+            ),
+            {"source": "live", "cache_hit": False},
+        )
+
+    # 라우터가 import 한 reference 를 patch
+    monkeypatch.setattr("app.routers.request.llm_request_async", spy_llm_request_async)
+
+    resp = test_client.post("/v1/request", json={
+        "llm_input": {"contents": "test", "model": "gemini-2.5-flash"},
+        "stored_files": [{
+            "file_path": "abc.pdf", "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+        }],
+    })
+
+    assert resp.status_code == 200
+    assert captured["stored_files"] is not None
+    assert len(captured["stored_files"]) == 1
+    assert captured["stored_files"][0].file_path == "abc.pdf"
+    assert captured["stored_files"][0].mime_type == "application/pdf"
+
+
+def test_request_stream_routes_stored_files_to_runner(test_client, monkeypatch):
+    """/v1/request/stream 동일 — body.stored_files 를 llm_request_stream_async 로 전달."""
+    from llm_handler.models import StreamChunk, TokenUsage
+
+    captured = {}
+
+    async def spy_stream_async(llm_input, **kwargs):
+        captured["llm_input"] = llm_input
+        captured.update(kwargs)
+
+        async def _empty_stream():
+            yield StreamChunk(
+                text="ok", finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+        return _empty_stream(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "test", "model": "gemini-2.5-flash"},
+        "stored_files": [{
+            "file_path": "abc.pdf", "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+            "mime_type": "application/pdf", "extension": ".pdf",
+        }],
+    })
+
+    assert resp.status_code == 200
+    assert captured["stored_files"] is not None
+    assert captured["stored_files"][0].file_path == "abc.pdf"

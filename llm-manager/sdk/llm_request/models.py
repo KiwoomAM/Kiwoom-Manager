@@ -10,6 +10,7 @@ from pydantic import BaseModel, BeforeValidator, PlainSerializer
 __all__ = [
     "FileInput",
     "FileKeyingMeta",
+    "StoredFile",
     "RequestMeta",
     "RequestResult",
     "DoneCheckResult",
@@ -56,6 +57,28 @@ class FileKeyingMeta(BaseModel):
     file_mtime: Union[str, int]
 
 
+class StoredFile(BaseModel):
+    """이미 file-manager 에 등록된 파일 참조.
+
+    FileInput 의 5 메타 필드 + file_path — bytes 만 file_path 로 대체된 형태.
+    caller 는 file-manager `register_or_get` 결과 6 필드 dict 를 그대로 받아 StoredFile 로 변환.
+
+    extra="forbid": 응답에 박힌 server-fill 필드 (`resolved_via` 등) 를 실수로 넘기면 ValidationError.
+    의도된 strict — 키 오타 / 잘못된 입력 즉시 잡기 (P2-4).
+
+    ⚠️ 의도된 중복: service/app/models/requests.py 에도 동일 정의 존재.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    file_path: str
+    file_name: str
+    file_size: int
+    file_mtime: Union[str, int]
+    mime_type: str
+    extension: str
+
+
 class RequestMeta(BaseModel):
     """llm_request_async 반환 meta 객체."""
 
@@ -65,6 +88,7 @@ class RequestMeta(BaseModel):
     metadata: dict[str, Any] = {}
     collection: str | None = None
     route_reason: str | None = None
+    file_meta: list[dict] | None = None
 
 
 class RequestResult(TypedDict):

@@ -398,3 +398,188 @@ class TestApplyResolvedContentsTypeGuard:
         resolved = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
         result = _apply_resolved({"model": "gemini-2.5-flash"}, resolved)
         assert result["contents"] == []
+
+
+# ── Phase 1 — file_meta 응답 노출 (live 경로) ──────────────────
+
+
+class TestBuildLiveMetaFileMeta:
+    """_build_live_meta 가 file_meta 키를 조건부로 노출하는지."""
+
+    def _make_prep(self, *, files):
+        from app.logic.runner import _Prepared
+        from app.logic.done_check import DoneCheckResult
+
+        return _Prepared(
+            llm_input={"contents": "test", "model": "gemini-2.5-flash"},
+            meta={"service_name": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=True,
+            ttl_seconds=None,
+            requested_at=datetime.now(UTC),
+            dc=DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=None,
+                cache_error=False,
+            ),
+            cached_output=None,
+            route_reason="cache_miss",
+            files=files,
+            context_cache_ttl=None,
+            standby_ttl_seconds=600,
+        )
+
+    def test_files_none_omits_file_meta_key(self):
+        from app.logic.runner import _build_live_meta
+
+        prep = self._make_prep(files=None)
+        meta = _build_live_meta(prep)
+
+        assert "file_meta" not in meta
+
+    def test_files_present_exposes_file_path(self):
+        from app.logic.runner import _build_live_meta
+        from app.models.requests import FileInput
+
+        fi = FileInput(
+            file_name="report.pdf",
+            file_size=12345,
+            file_mtime=1700000000,
+            mime_type="application/pdf",
+            extension=".pdf",
+            data=b"\x00\x01\x02",
+            file_path="abc-uuid.pdf",  # register_files 가 채운 상태 시뮬레이션
+        )
+        prep = self._make_prep(files=[fi])
+
+        meta = _build_live_meta(prep)
+
+        assert "file_meta" in meta
+        assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+        assert "data" not in meta["file_meta"][0]  # bytes 제외
+
+
+# ── Phase 1 — file_meta 응답 노출 (cache hit 경로) ──────────────
+
+
+class TestPrepareCachedMetaFileMeta:
+    """prepare()의 cache hit 분기가 doc 의 file_meta 를 cached_meta 에 노출하는지."""
+
+    def test_cached_doc_with_file_meta_exposed(self, monkeypatch):
+        from app.logic import runner
+        from app.logic.done_check import DoneCheckResult
+
+        cached_doc = {
+            "result": {
+                "text": "cached!",
+                "model": "gemini-2.5-flash",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                "finish_reason": "STOP",
+                "request_id": "r",
+            },
+            "metadata": {"service_name": "t", "model": "gemini-2.5-flash"},
+            "file_meta": [{
+                "file_name": "x.pdf", "file_size": 1, "file_mtime": 0,
+                "mime_type": "application/pdf", "extension": ".pdf",
+                "file_path": "abc-uuid.pdf",
+            }],
+        }
+
+        def fake_done_check(llm_input, *, lookup_cache=True, database=None):
+            return DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=cached_doc,
+                cache_error=False,
+            )
+
+        monkeypatch.setattr(runner, "done_check", fake_done_check)
+
+        prep = runner.prepare(
+            {"contents": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=False,
+        )
+
+        assert prep.cached_output is not None
+        _, meta = prep.cached_output
+        assert "file_meta" in meta
+        assert meta["file_meta"][0]["file_path"] == "abc-uuid.pdf"
+
+    def test_legacy_cached_doc_without_file_meta_omits_key(self, monkeypatch):
+        """Phase 1 적용 전 저장된 옛 doc — file_meta 키 자체 없음 → 응답에도 키 없음."""
+        from app.logic import runner
+        from app.logic.done_check import DoneCheckResult
+
+        cached_doc = {
+            "result": {
+                "text": "cached", "model": "gemini-2.5-flash",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                "finish_reason": "STOP", "request_id": "r",
+            },
+            "metadata": {"service_name": "t", "model": "gemini-2.5-flash"},
+            # file_meta 키 의도적 부재
+        }
+
+        def fake_done_check(llm_input, *, lookup_cache=True, database=None):
+            return DoneCheckResult(
+                collection="agent_llm",
+                cache_key="k" * 64,
+                canonical_json="{}",
+                cached=cached_doc,
+                cache_error=False,
+            )
+
+        monkeypatch.setattr(runner, "done_check", fake_done_check)
+
+        prep = runner.prepare(
+            {"contents": "test", "model": "gemini-2.5-flash"},
+            cache_mode=True, save_mode=False,
+        )
+
+        assert prep.cached_output is not None
+        _, meta = prep.cached_output
+        assert "file_meta" not in meta
+
+
+# ── Phase 2 — _prepare_files 헬퍼 (files + stored_files) ────────
+
+
+class TestPrepareFiles:
+    """Phase 3: _prepare_files 가 stored_files 만 받음 (Method 1 폐기)."""
+
+    async def test_stored_files_only(self, monkeypatch):
+        """stored_files=[..] → resolve_stored_files 호출 → placeholder list 반환."""
+        from app.logic import runner
+        from app.models.requests import FileInput, StoredFile
+
+        async def fake_resolve(refs):
+            return [FileInput(
+                file_name="y.pdf", file_size=2, file_mtime=0,
+                mime_type="application/pdf", extension=".pdf",
+                data=b"",
+                file_path="primary-uuid.pdf",
+                resolved_via="primary",
+            )]
+
+        monkeypatch.setattr(runner, "resolve_stored_files", fake_resolve)
+
+        refs = [StoredFile(
+            file_path="primary-uuid.pdf",
+            file_name="y.pdf", file_size=2, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+        )]
+
+        combined = await runner._prepare_files(refs)
+
+        assert combined is not None
+        assert len(combined) == 1
+        assert combined[0].resolved_via == "primary"
+
+    async def test_none_returns_none(self):
+        """stored_files=None → combined=None (파일 없는 호출)."""
+        from app.logic import runner
+
+        combined = await runner._prepare_files(None)
+        assert combined is None

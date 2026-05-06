@@ -23,12 +23,14 @@ import tempfile
 import time
 from dataclasses import dataclass
 
+from file_manager import FileManagerHandler
 from llm_handler.aio import upload_file
 from llm_handler.models import FileRef, Part
 
 from app.core.errors import CacheError, FileUploadError
 from app.logic.file_processing import cache_store, dedup
 from app.logic.file_processing.uploader import create_context_cache, upload_pdf_parts
+from app.logic.file_resolver import fetch_with_fallback
 from app.logic.keying import make_file_checksum
 from app.models.requests import FileInput
 
@@ -128,15 +130,18 @@ def classify_files(
 
 
 async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
-    """inline 분류 파일을 bytes로 Part.from_bytes 구성.
+    """inline 분류 파일을 bytes로 Part.from_bytes 구성. fi.data 비었으면 file-manager 에서 fetch.
 
     Redis 전혀 접근 안 함 (inline은 Files API URI/context_cache 와 무관).
-    tempfile 불필요 — Part.from_bytes는 메모리 bytes 직접 수용.
-
     상세: docs/inline-vs-files-api-strategy.md §6.1
     """
+    fm = FileManagerHandler()
     inline_parts: list[Part] = []
     for fi in inline_pool:
+        if not fi.data:
+            fi.data = await fetch_with_fallback(fm, fi)
+            if fi.resolved_via is None:
+                fi.resolved_via = "primary"  # fetch 검증 완료
         inline_parts.append(
             Part.from_bytes(data=fi.data, mime_type=fi.mime_type)
         )
@@ -172,18 +177,12 @@ async def _upload_and_cache_file(
     uri_parts: list[Part],
     file_refs: list[FileRef],
 ) -> None:
-    """에이전트가 준 bytes로 Files API 업로드 + Redis 저장 (분기 C).
-
-    standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
-    양쪽에서 호출된다.
-    """
+    """Files API Redis 조회 후 miss 면 호출 — file-manager 에서 fetch → 업로드 → Redis 저장."""
     if not fi.data:
-        # 동일 FileInput 재사용 방지 — Phase 1 이후 첫 업로드로 fi.data 가 회수되면
-        # 404 자동 복구 경로에서 0바이트 업로드/silent corruption 발생 가능 (docs/16 §6)
-        raise FileUploadError(
-            f"Files API 업로드 실패: bytes 가 이미 회수된 FileInput 재사용 "
-            f"(file_name={fi.file_name}). 자동 복구 미지원 — 호출자가 새 요청으로 재시도 필요"
-        )
+        fm = FileManagerHandler()
+        fi.data = await fetch_with_fallback(fm, fi)
+        if fi.resolved_via is None:
+            fi.resolved_via = "primary"  # fetch 검증 완료
     if not fi.extension:
         logger.warning(
             "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",

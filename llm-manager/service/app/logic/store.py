@@ -145,5 +145,8 @@ def fetch_by_cache_key(
         "metadata": doc.get("metadata", {}),
         "collection": DEFAULT_COLLECTION,
     }
+    file_metas = doc.get("file_meta")
+    if file_metas is not None:
+        meta["file_meta"] = file_metas
 
     return response, meta

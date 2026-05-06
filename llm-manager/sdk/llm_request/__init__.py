@@ -2,21 +2,22 @@
 
 사용법:
     from pathlib import Path
-    import mimetypes
-    from llm_request import llm_request_async, FileInput
+    from file_manager import FileManagerHandler
+    from llm_request import llm_request_async, StoredFile
 
+    fm = FileManagerHandler()
     p = Path("report.pdf")
-    file_input = FileInput(
-        file_name=p.name,
-        file_size=p.stat().st_size,
-        file_mtime=int(p.stat().st_mtime),
-        mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-        extension=p.suffix.lstrip("."),
-        data=p.read_bytes(),
+    sf_dict = await fm.register_or_get(
+        bytes_data=p.read_bytes(),
+        metadata=fm.build_metadata(
+            file_name=p.name,
+            file_mtime=int(p.stat().st_mtime),
+            file_size=p.stat().st_size,
+        ),
     )
     response, meta = await llm_request_async(
         {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-        files=[file_input],
+        stored_files=[StoredFile(**sf_dict)],
     )
 """
 
@@ -69,6 +70,7 @@ from llm_request.models import (
     FileKeyingMeta,
     RequestMeta,
     RequestResult,
+    StoredFile,
 )
 
 __all__ = [
@@ -83,6 +85,7 @@ __all__ = [
     "Timings",
     "FileInput",
     "FileKeyingMeta",
+    "StoredFile",
     "RequestMeta",
     "SDKError",
     "ServiceConnectionError",
@@ -208,17 +211,18 @@ def _resolve_timings(timings: Timings | None) -> Timings:
 async def llm_request_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[LLMResponse, RequestMeta]:
-    """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
+    """단일 LLM 요청 실행 (async). Phase 3: stored_files 만 받음 (Method 1 폐기).
 
-    files: 에이전트가 구성한 FileInput 리스트 (meta + bytes).
-    서버가 내부에서 file-manager에 등록 후 처리한다.
+    stored_files: 이미 file-manager 에 등록된 파일 참조 (StoredFile, 6 필드).
+    agent 가 file-manager SDK 의 `register_or_get` 으로 등록 후 받은 dict 를
+    StoredFile 로 변환해 전달. 서버가 file-manager 에서 bytes 만 fetch.
 
     Args:
         timings: 시간 관련 설정 묶음. 일부 키만 지정하면 나머지는 기본값 적용.
@@ -229,7 +233,7 @@ async def llm_request_async(
     client = await _get_client()
     result = await client.request(
         llm_input,
-        files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
@@ -245,7 +249,7 @@ async def llm_request_async(
 def llm_request(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
@@ -255,7 +259,7 @@ def llm_request(
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
-        files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         database=database,
@@ -267,26 +271,19 @@ def llm_request(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). (AsyncIterator[event_dict], meta) 튜플 반환.
-
-    사용 예:
-        stream, meta = await llm_request_stream_async(llm_input)
-        print(meta["cache_hit"])
-        async for event in stream:
-            print(event["text"], end="")
-    """
+    """스트리밍 LLM 요청 (async). Phase 3: stored_files 만 받음."""
     t = _resolve_timings(timings)
     client = await _get_client()
     return await client.request_stream(
         llm_input,
-        files=files,
+        stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
         ttl_seconds=t["mdb_ttl"],
@@ -301,21 +298,18 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
+    stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). (Iterator[event_dict], meta) 튜플 반환.
-
-    llm_request_stream_async 의 동기 래퍼. 전체 이벤트를 수집 후 iterator로 감싸 반환.
-    """
+    """스트리밍 LLM 요청 (sync). Phase 3: stored_files 만 받음."""
     async def _collect() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         stream, meta = await llm_request_stream_async(
             llm_input,
-            files=files,
+            stored_files=stored_files,
             cache_mode=cache_mode,
             save_mode=save_mode,
             database=database,

@@ -254,3 +254,75 @@ class TestStreamFunctionCallsAccumulation:
         saved = next(iter(mock_collection.values()))
         assert saved["result"]["function_calls"] == [fc.model_dump()]
         assert saved["result"]["text"] == "abc"
+
+
+# ── Phase 3 lazy fetch dedup 통합 ──────────────────────────
+
+
+class TestPhase3LazyFetchDedup:
+    """같은 stored_files 동시 요청 시 file-manager.get_file 이 1 회만 호출됨."""
+
+    async def test_concurrent_stored_files_fetch_once(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.logic import runner
+        from app.models.requests import StoredFile
+
+        # fm.get_file mock + counter
+        get_file_count = 0
+
+        async def fake_get_file(file_path: str):
+            nonlocal get_file_count
+            get_file_count += 1
+            await asyncio.sleep(0.05)  # leader fetch 시뮬레이션
+            return (b"\x00\x01\x02", {})
+
+        fm_instance = MagicMock()
+        fm_instance.get_file = AsyncMock(side_effect=fake_get_file)
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # llm_handler.upload_file mock — Files API URI 1개만 반환
+        async def fake_upload(path, mime_type):
+            from llm_handler.models import FileRef
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        # aio_call mock — LLM 응답
+        monkeypatch.setattr(runner, "aio_call", AsyncMock(
+            return_value=_make_response("ok"),
+        ))
+
+        # Files API 분기 가도록 — audio 25MB (image/audio inline 한도 20MB 초과, split 안 타는 mime)
+        ref = StoredFile(
+            file_path="shared.mp3",
+            file_name="shared.mp3",
+            file_size=25 * 1024 * 1024,
+            file_mtime=0,
+            mime_type="audio/mp3",
+            extension=".mp3",
+        )
+
+        async def one_call():
+            return await runner.llm_request_async(
+                {"contents": "test", "model": "gemini-2.5-flash"},
+                stored_files=[ref],
+                cache_mode=True, save_mode=True,
+                standby_ttl_seconds=10, database="test_db",
+            )
+
+        results = await asyncio.gather(*[one_call() for _ in range(10)])
+
+        # leader 1 명만 fetch
+        assert get_file_count == 1, f"expected 1 fetch, got {get_file_count}"
+        assert len(results) == 10
+        assert all(r[0].text == "ok" for r in results)
