@@ -110,13 +110,9 @@ class TestEstimateNonFileBytes:
         assert size > 0
 
     def test_unserializable_returns_zero(self):
-        """직렬화 실패 시 현재 동작은 0 반환 (I-Q6 follow-up 대상 — logger 추가 예정)."""
-
-        class _NotJSONable:
-            def __repr__(self):
-                raise RuntimeError("no repr")
-
-        bad = {"obj": _NotJSONable()}
+        """직렬화 실패 시 0 반환 (낙관적 fallback). circular ref → ValueError."""
+        bad: dict = {}
+        bad["self"] = bad
         assert _estimate_non_file_bytes(bad) == 0
 
 

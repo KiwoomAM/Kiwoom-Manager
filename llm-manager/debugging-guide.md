@@ -808,7 +808,7 @@ files_api 인데 N 회 fetch 가 발생하는 경우 원인:
 원인: leader 분기에서 `fetch_with_fallback(fm, fi)` 가 file-manager 를 호출하는데 file-manager 자체가 다운되었거나 네트워크 단절. lazy fetch 가 leader 분기에서 발생하므로 5xx 가 그대로 LLM 호출 측까지 전파.
 
 → 확인:
-- [file_resolver.py::fetch_with_fallback](service/app/logic/file_resolver.py) 의 `FMServiceError` 메시지
+- [stored_file_resolver.py::fetch_with_fallback](service/app/logic/stored_file_resolver.py) 의 `FMServiceError` 메시지
 - `_process_inline` / `_upload_and_cache_file` 에서 lazy fetch 호출 위치
 - file-manager 측 (`192.7.9.45:8600`) 헬스체크
 

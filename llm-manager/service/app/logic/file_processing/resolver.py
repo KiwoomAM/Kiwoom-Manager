@@ -30,7 +30,7 @@ from llm_handler.models import FileRef, Part
 from app.core.errors import CacheError, FileUploadError
 from app.logic.file_processing import cache_store, dedup
 from app.logic.file_processing.uploader import create_context_cache, upload_pdf_parts
-from app.logic.file_resolver import fetch_with_fallback
+from app.logic.stored_file_resolver import fetch_with_fallback
 from app.logic.keying import make_file_checksum
 from app.models.requests import FileInput
 
@@ -69,7 +69,7 @@ def _estimate_non_file_bytes(llm_input: dict) -> int:
     """
     try:
         return len(json.dumps(llm_input, default=str).encode("utf-8"))
-    except Exception:
+    except (TypeError, ValueError, RecursionError):
         logger.exception(
             "_estimate_non_file_bytes 실패 — llm_input JSON 직렬화 불가. "
             "0 반환 (inline 한도 계산이 낙관적이 될 수 있음). "
