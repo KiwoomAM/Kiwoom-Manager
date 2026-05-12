@@ -43,6 +43,7 @@ class _Prepared:
     files: list[FileInput] | None
     context_cache_ttl: int | None
     standby_ttl_seconds: int
+    context_cache_id: str | None = None
     debug: bool = False
 
 
@@ -189,6 +190,8 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
     file_metas = _dump_files_meta(prep.files)
     if file_metas is not None:
         meta["file_meta"] = file_metas
+    if prep.context_cache_id is not None:
+        meta["context_cache_id"] = prep.context_cache_id
     if prep.debug and prep.route_reason:
         meta["route_reason"] = prep.route_reason
     return meta
@@ -369,6 +372,7 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
         tools=prep.llm_input.get("tools"),
         tool_config=prep.llm_input.get("tool_config"),
     )
+    prep.context_cache_id = resolved.context_cache_id
     return _apply_resolved(prep.llm_input, resolved)
 
 
@@ -437,6 +441,7 @@ async def _do_llm_call(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
         else:
@@ -561,6 +566,7 @@ async def _do_llm_stream(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
                 text_parts.append(chunk.text or "")
