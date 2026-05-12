@@ -77,15 +77,20 @@ class AsyncMongoDBHandler:
             )
 
     # Create
-    async def insert_one(self, document: Dict) -> str:
+    async def insert_one(self, document: Dict, ttl: int | None = None) -> str:
         self._ensure_open()
-        return await self._default.insert_one(document)
+        return await self._default.insert_one(document, ttl=ttl)
 
     async def insert_many(
-        self, documents: List[Dict], ordered: bool = True
+        self,
+        documents: List[Dict],
+        ordered: bool = True,
+        ttl: int | None = None,
     ) -> List[str]:
         self._ensure_open()
-        return await self._default.insert_many(documents, ordered=ordered)
+        return await self._default.insert_many(
+            documents, ordered=ordered, ttl=ttl
+        )
 
     # Read
     async def get_all(self) -> List[Dict]:

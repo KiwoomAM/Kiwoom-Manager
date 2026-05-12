@@ -86,13 +86,18 @@ class MongoDBHandler:
     # Create
     # =====================================================================
 
-    def insert_one(self, document: Dict) -> str:
-        return self._default_collection.insert_one(document)
+    def insert_one(self, document: Dict, ttl: int | None = None) -> str:
+        return self._default_collection.insert_one(document, ttl=ttl)
 
     def insert_many(
-        self, documents: List[Dict], ordered: bool = True
+        self,
+        documents: List[Dict],
+        ordered: bool = True,
+        ttl: int | None = None,
     ) -> List[str]:
-        return self._default_collection.insert_many(documents, ordered=ordered)
+        return self._default_collection.insert_many(
+            documents, ordered=ordered, ttl=ttl
+        )
 
     # =====================================================================
     # Read
