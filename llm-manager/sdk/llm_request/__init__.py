@@ -66,6 +66,8 @@ from llm_request._client import AsyncClient
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
 from llm_request.models import (
     DoneCheckResult,
+    ExpireFailure,
+    ExpireResult,
     FileInput,
     FileKeyingMeta,
     RequestMeta,
@@ -81,12 +83,15 @@ __all__ = [
     "llm_request_stream",
     "done_check",
     "fetch_by_cache_key",
+    "expire_context_cache_async",
     "close",
     "Timings",
     "FileInput",
     "FileKeyingMeta",
     "StoredFile",
     "RequestMeta",
+    "ExpireResult",
+    "ExpireFailure",
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
@@ -352,3 +357,24 @@ async def fetch_by_cache_key(
     client = await _get_client()
     result = await client.fetch(cache_key, database=database)
     return LLMResponse(**result["result"]), RequestMeta(**result["meta"])
+
+
+async def expire_context_cache_async(
+    cache_ids: list[str],
+    *,
+    grace_seconds: int = 60,
+) -> ExpireResult:
+    """Context Cache TTL 을 grace_seconds 로 단축한다.
+
+    Args:
+        cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자 리스트.
+        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 60).
+
+    Returns:
+        ExpireResult — `expired` (성공 또는 idempotent), `failed` (Gemini 5xx 등).
+    """
+    client = await _get_client()
+    result = await client.expire_context_cache(
+        cache_ids, grace_seconds=grace_seconds,
+    )
+    return ExpireResult(**result)

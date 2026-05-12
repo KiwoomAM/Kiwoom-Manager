@@ -72,3 +72,43 @@ class TestRequestStoredFilesSerialization:
 
         body = client._request.call_args.kwargs["json"]
         assert "stored_files" not in body
+
+
+class TestExpireContextCache:
+    """_client.expire_context_cache — body 직렬화 + 응답 파싱."""
+
+    async def test_sends_correct_payload(self):
+        from llm_request._client import AsyncClient
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"expired": ["h1"], "failed": []}
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._request = AsyncMock(return_value=mock_resp)
+
+        result = await client.expire_context_cache(
+            ["h1", "h2"], grace_seconds=30,
+        )
+
+        call_args = client._request.call_args
+        assert call_args.args == ("POST", "/v1/context-cache/expire")
+        assert call_args.kwargs["json"] == {
+            "cache_ids": ["h1", "h2"],
+            "grace_seconds": 30,
+        }
+        assert result == {"expired": ["h1"], "failed": []}
+
+    async def test_default_grace_seconds_60(self):
+        from llm_request._client import AsyncClient
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"expired": [], "failed": []}
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._request = AsyncMock(return_value=mock_resp)
+
+        await client.expire_context_cache(["h1"])
+
+        assert client._request.call_args.kwargs["json"]["grace_seconds"] == 60
