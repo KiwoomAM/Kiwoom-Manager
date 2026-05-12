@@ -43,20 +43,37 @@ class BlocksCollection:
         return self._route.prefix
 
     # Create
-    def insert_one(self, document: Dict) -> str:
+    def insert_one(self, document: Dict, ttl: int | None = None) -> str:
+        """문서를 삽입한다.
+
+        Args:
+            document: 저장할 문서.
+            ttl: 문서 만료까지의 시간(초). None이면 만료 없음.
+        """
         resp = self._client.post(
-            self._route.path("insert_one"), json=build_insert_one_body(document)
+            self._route.path("insert_one"),
+            json=build_insert_one_body(document, ttl=ttl),
         )
         return resp["inserted_id"]
 
     def insert_many(
-        self, documents: List[Dict], ordered: bool = True
+        self,
+        documents: List[Dict],
+        ordered: bool = True,
+        ttl: int | None = None,
     ) -> List[str]:
+        """문서 다건을 삽입한다.
+
+        Args:
+            documents: 저장할 문서 리스트.
+            ordered: 순차 처리 여부 (실패 시 중단).
+            ttl: 각 문서 만료까지의 시간(초). 모든 문서에 동일하게 적용. None이면 만료 없음.
+        """
         if not documents:
             return []
         resp = self._client.post(
             self._route.path("insert_many"),
-            json=build_insert_many_body(documents, ordered=ordered),
+            json=build_insert_many_body(documents, ordered=ordered, ttl=ttl),
         )
         return resp["inserted_ids"]
 
