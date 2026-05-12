@@ -519,10 +519,12 @@ class ResolvedFiles:
 
     - inline_parts + uri_parts → call_input['contents'] 앞쪽에 삽입
     - cached_content → 있으면 call_input['cached_content']에 별도 세팅
+    - context_cache_id → Context Cache 생성/HIT 시 hash_key (응답 노출용)
     """
     inline_parts: list[Part]
     uri_parts: list[Part]
     cached_content: str | None
+    context_cache_id: str | None = None
 
 
 async def resolve_files(
