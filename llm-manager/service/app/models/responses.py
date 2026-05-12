@@ -38,3 +38,21 @@ class ErrorResponse(BaseModel):
     detail: str | None = None
     error_type: str = "handler"
     request_id: str = ""
+
+
+class ExpireFailure(BaseModel):
+    """release 실패 항목 — Gemini 5xx / 네트워크 등."""
+
+    cache_id: str
+    error: str
+
+
+class ExpireContextCacheResponse(BaseModel):
+    """POST /v1/context-cache/expire 응답.
+
+    `expired` 는 단축 성공 (또는 idempotent — Redis miss / Gemini 404 포함).
+    `failed` 는 진짜 실패 항목만.
+    """
+
+    expired: list[str]
+    failed: list[ExpireFailure]
