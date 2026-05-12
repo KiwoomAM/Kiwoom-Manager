@@ -89,6 +89,7 @@ class RequestMeta(BaseModel):
     collection: str | None = None
     route_reason: str | None = None
     file_meta: list[dict] | None = None
+    context_cache_id: str | None = None
 
 
 class RequestResult(TypedDict):

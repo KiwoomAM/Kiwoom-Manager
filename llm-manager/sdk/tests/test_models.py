@@ -31,6 +31,21 @@ class TestRequestMetaFileMeta:
         assert not hasattr(m, "unknown_future_key")
 
 
+class TestRequestMetaContextCacheId:
+    """RequestMeta 가 context_cache_id 필드를 받고 노출하는지."""
+
+    def test_context_cache_id_default_none(self):
+        m = RequestMeta(source="live", cache_hit=False)
+        assert m.context_cache_id is None
+
+    def test_context_cache_id_accepts_string(self):
+        m = RequestMeta(
+            source="live", cache_hit=False,
+            context_cache_id="a" * 64,  # SHA-256 hex 형태
+        )
+        assert m.context_cache_id == "a" * 64
+
+
 class TestStoredFileSDK:
     """SDK StoredFile — Service 측 정의와 동일 (동기 정책, Phase 2). 6 필드."""
 
