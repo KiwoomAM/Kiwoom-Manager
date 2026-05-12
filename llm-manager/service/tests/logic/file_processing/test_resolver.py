@@ -150,6 +150,7 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert result.uri_parts == []
         assert result.cached_content is None
+        assert result.context_cache_id is None
 
     async def test_model_none_with_context_cache_ttl_raises(
         self, fake_redis, fast_backoff, monkeypatch,
@@ -230,6 +231,8 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert len(result.uri_parts) == 1
         assert result.cached_content == "cachedContents/x"
+        assert result.context_cache_id is not None
+        assert len(result.context_cache_id) == 64  # SHA-256 hex
         assert upload_count == 1
 
 

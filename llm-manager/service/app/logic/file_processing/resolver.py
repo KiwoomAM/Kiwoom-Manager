@@ -314,8 +314,11 @@ async def _process_files_api(
     standby_ttl_seconds: int,
     tools: list[dict] | None = None,
     tool_config: str | None = None,
-) -> tuple[list[Part], str | None]:
+) -> tuple[list[Part], str | None, str | None]:
     """Files API 분류 파일 처리 — A/B/C miss 3단계 분기 + standby dedup.
+
+    반환: (uri_parts, cached_content, hash_key).
+    hash_key 는 context_cache 식별자 — files_api_pool 이 비면 None.
 
     A: Redis context_cache HIT → cached_content만 반환 (uri_parts=[])
     B: Redis files_api 모두 HIT → 기존 URI로 Part.from_uri 구성
@@ -328,7 +331,7 @@ async def _process_files_api(
          docs/cache-stampede-dedup.md §6
     """
     if not files_api_pool:
-        return [], None
+        return [], None, None
 
     # ── ① 분기 A: Redis context_cache 조회 ─────────────────
     hash_key = cache_store.make_context_cache_key(
@@ -346,7 +349,7 @@ async def _process_files_api(
 
     if cached:
         logger.info("[route] mode=context_cache source=cached name=%s", cached["cached_content_name"])
-        return [], cached["cached_content_name"]
+        return [], cached["cached_content_name"], hash_key
 
     # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 standby → 업로드 ──
     uri_parts: list[Part] = []
@@ -439,7 +442,7 @@ async def _process_files_api(
                     tool_config=tool_config,
                 )
 
-    return uri_parts, cached_content
+    return uri_parts, cached_content, hash_key
 
 
 # ── Gemini 404 자동 복구 (§9) ─────────────────────────────────
@@ -565,7 +568,7 @@ async def resolve_files(
     # Step 3: 두 풀 병렬 처리
     checksums = [make_file_checksum(fi) for fi in files_api_pool]
 
-    inline_parts, (uri_parts, cached_content) = await asyncio.gather(
+    inline_parts, fa_result = await asyncio.gather(
         _process_inline(inline_pool),
         _process_files_api(
             files_api_pool,
@@ -578,9 +581,11 @@ async def resolve_files(
             tool_config=tool_config,
         ),
     )
+    uri_parts, cached_content, context_cache_id = fa_result
 
     return ResolvedFiles(
         inline_parts=inline_parts,
         uri_parts=uri_parts,
         cached_content=cached_content,
+        context_cache_id=context_cache_id,
     )
