@@ -203,6 +203,28 @@ result = mdb.aggregate([
 ])
 ```
 
+### TTL — 문서 자동 만료
+
+`insert_one`/`insert_many`에 `ttl: int`(단위: **초**)를 넘기면 MongoDB가 해당 문서를 자동 삭제한다.
+
+```python
+# 1시간 후 자동 삭제
+mdb.insert_one({"block_id": "p1", "content": "..."}, ttl=3600)
+
+# 다건 — 모든 문서에 동일 TTL 적용
+mdb.insert_many([doc1, doc2], ttl=86400)
+
+# 비동기도 동일
+await aio_mdb.insert_one({"a": 1}, ttl=600)
+```
+
+내부 동작:
+- 문서에 `_expires_at` Date 필드가 자동 추가됨 (`utcnow() + ttl`)
+- 컬렉션에 `expireAfterSeconds: 0` TTL 인덱스가 자동 생성됨 (Service 측 메모리 캐시로 중복 호출 방지, 첫 호출에서만 실제 createIndex)
+- `ttl=None`(기본)이면 기존 동작과 완전히 동일 — 만료 없음
+- MongoDB TTL 모니터는 약 60초 주기로 동작 → 실제 삭제는 만료 시각 +α초 지연 가능
+- `ttl<=0`은 422로 거부됨
+
 ## 주의사항
 
 - **`uri` 파라미터**: v2에서 Deprecated. 전달 시 무시되며 DeprecationWarning 발생

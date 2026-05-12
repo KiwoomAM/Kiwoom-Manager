@@ -56,14 +56,25 @@ def build_find_one_body(
     return body
 
 
-def build_insert_one_body(document: dict) -> dict[str, Any]:
-    return {"document": document}
+def build_insert_one_body(
+    document: dict, *, ttl: int | None = None
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"document": document}
+    if ttl is not None:
+        body["ttl"] = ttl
+    return body
 
 
 def build_insert_many_body(
-    documents: list[dict], *, ordered: bool = True
+    documents: list[dict],
+    *,
+    ordered: bool = True,
+    ttl: int | None = None,
 ) -> dict[str, Any]:
-    return {"documents": documents, "ordered": ordered}
+    body: dict[str, Any] = {"documents": documents, "ordered": ordered}
+    if ttl is not None:
+        body["ttl"] = ttl
+    return body
 
 
 def build_update_body(
