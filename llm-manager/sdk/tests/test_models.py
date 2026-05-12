@@ -78,3 +78,24 @@ class TestStoredFileSDK:
                 extension=".pdf",
                 resolved_via="primary",  # server-fill → forbid
             )
+
+
+class TestExpireResult:
+    """ExpireResult / ExpireFailure shape."""
+
+    def test_basic_shape(self):
+        from llm_request.models import ExpireFailure, ExpireResult
+
+        r = ExpireResult(
+            expired=["h1"],
+            failed=[ExpireFailure(cache_id="h2", error="boom")],
+        )
+        assert r.expired == ["h1"]
+        assert r.failed[0].cache_id == "h2"
+        assert r.failed[0].error == "boom"
+
+    def test_from_dict(self):
+        from llm_request.models import ExpireResult
+
+        r = ExpireResult(**{"expired": ["h1"], "failed": []})
+        assert r.failed == []
