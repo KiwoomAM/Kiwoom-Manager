@@ -10,6 +10,7 @@ from typing import Any
 
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
+from llm_handler.exceptions import HandlerError
 from llm_handler.models import LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
@@ -376,12 +377,19 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
     return _apply_resolved(prep.llm_input, resolved)
 
 
-def _is_gemini_404(exc: Exception) -> bool:
-    """Gemini 에러가 '리소스 없음(404)' 신호인지 추정.
+def is_gemini_404(exc: Exception) -> bool:
+    """Gemini 호출에서 '리소스 없음 (404)' 신호인지 판정.
 
-    llm-handler가 정확한 예외 타입을 노출하지 않아 메시지 기반 판정 (보수적).
-    llm-handler 담당자에게 예외 타입 세분화 요청 (docs/inline-vs-files-api-strategy.md §12 백로그).
+    public — 다른 모듈 (context_cache_lifecycle 등) 에서도 같은 분기 검사용.
+
+    우선순위:
+      1. HandlerError 의 status_code == 404 (정확 — llm-handler 가 Gemini HTTP
+         status 그대로 전파).
+      2. 그 외 raw 예외는 메시지 substring fallback ("404" / "not found") —
+         llm-handler 가 wrap 하지 못한 경로 / 옛 코드 호환.
     """
+    if isinstance(exc, HandlerError) and exc.status_code == 404:
+        return True
     msg = str(exc).lower()
     return "404" in msg or "not found" in msg
 
@@ -430,7 +438,7 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if _is_gemini_404(e) and prep.files:
+        if is_gemini_404(e) and prep.files:
             logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -555,7 +563,7 @@ async def _do_llm_stream(
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if _is_gemini_404(e) and prep.files and last is None:
+        if is_gemini_404(e) and prep.files and last is None:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,

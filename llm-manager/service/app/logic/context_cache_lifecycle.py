@@ -14,7 +14,7 @@ import logging
 from llm_handler import aio as llm_aio
 
 from app.logic.file_processing import cache_store
-from app.logic.runner import _is_gemini_404
+from app.logic.runner import is_gemini_404
 from app.models.responses import ExpireContextCacheResponse, ExpireFailure
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ async def _expire_one(cache_id: str, grace_seconds: int) -> dict:
     try:
         await llm_aio.update_cache(name, grace_seconds)
     except Exception as e:
-        if _is_gemini_404(e):
+        if is_gemini_404(e):
             return {"cache_id": cache_id, "status": "expired"}
         logger.exception("Gemini update_cache 실패: cache_id=%s", cache_id[:16])
         return {"cache_id": cache_id, "status": "failed", "error": str(e)}

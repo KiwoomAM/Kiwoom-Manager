@@ -29,6 +29,9 @@ from llm_request import (
 SAMPLE_PDF = (
     Path(__file__).resolve().parents[3] / "quickstarts" / "medium_file.pdf"
 )
+# medium_file.pdf ≈ 24MB / 약 12K tokens — gemini-2.5-flash 의 Context Cache
+# 최소 토큰치 (4096) 를 넘는 것으로 검증됨 (2026-05 기준 통합 테스트 PASS).
+# 모델이나 최소치가 바뀌어 cache 생성이 안 되면 SAMPLE_PDF 를 더 큰 파일로 교체.
 
 
 @pytest.mark.asyncio

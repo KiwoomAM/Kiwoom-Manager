@@ -524,6 +524,8 @@ print(result.failed)    # []
 
 > ⚠️ `context_cache_id` 는 **영구 식별자가 아니다.** Gemini 측 TTL 이 만료되면 cache 가 자동 파괴되고, 같은 입력으로 다시 호출하면 새 cache (새 id) 가 생성된다. agent 가 옛 id 를 DB 에 저장해두고 나중에 `expire_context_cache_async` 로 호출해도 이미 만료된 cache 라면 `expired` 분류로 idempotent 처리되니 안전 — 다만 옛 id 가 살아있다고 가정한 동작은 만들지 말 것.
 
+> ⚠️ **expire 가 필요한 워크플로는 live 호출 직후의 `meta.context_cache_id` 를 보관할 것.** MDB cache HIT 응답에서는 노출되지 않으므로, 같은 입력으로 재호출하면 ID 를 받을 수 없어 그 시점에 expire 가 불가능하다 (옛 cache 가 살아있어도 호출자 측에서 ID 모르는 상태).
+
 ## Cache Stampede Dedup
 
 동일 파일을 동시에 여러 요청이 업로드하려 할 때 중복 업로드를 방지한다.

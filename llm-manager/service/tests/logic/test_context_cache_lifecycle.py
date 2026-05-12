@@ -24,8 +24,8 @@ async def test_redis_miss_is_idempotent_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gemini_404_is_expired(monkeypatch):
-    """Gemini 404 → expired (idempotent)."""
+async def test_gemini_404_message_fallback_is_expired(monkeypatch):
+    """raw 예외 메시지 fallback — '404 Not Found' substring → expired."""
     monkeypatch.setattr(
         "app.logic.file_processing.cache_store.find_context_cache",
         lambda h: {"cached_content_name": "cachedContents/abc"},
@@ -41,6 +41,51 @@ async def test_gemini_404_is_expired(monkeypatch):
     resp = await expire_caches(["h1"], 60)
     assert resp.expired == ["h1"]
     assert resp.failed == []
+
+
+@pytest.mark.asyncio
+async def test_handler_error_404_type_based_is_expired(monkeypatch):
+    """HandlerError(status_code=404) 타입 기반 정식 경로 — expired."""
+    from llm_handler.exceptions import HandlerError
+
+    monkeypatch.setattr(
+        "app.logic.file_processing.cache_store.find_context_cache",
+        lambda h: {"cached_content_name": "cachedContents/abc"},
+    )
+
+    async def fake_update(name, ttl):
+        raise HandlerError("cache not found", status_code=404)
+
+    monkeypatch.setattr(
+        "app.logic.context_cache_lifecycle.llm_aio.update_cache",
+        fake_update,
+    )
+    resp = await expire_caches(["h1"], 60)
+    assert resp.expired == ["h1"]
+    assert resp.failed == []
+
+
+@pytest.mark.asyncio
+async def test_handler_error_500_type_based_is_failed(monkeypatch):
+    """HandlerError(status_code=500) — 404 아님 → failed."""
+    from llm_handler.exceptions import HandlerError
+
+    monkeypatch.setattr(
+        "app.logic.file_processing.cache_store.find_context_cache",
+        lambda h: {"cached_content_name": "cachedContents/abc"},
+    )
+
+    async def fake_update(name, ttl):
+        raise HandlerError("internal error", status_code=500)
+
+    monkeypatch.setattr(
+        "app.logic.context_cache_lifecycle.llm_aio.update_cache",
+        fake_update,
+    )
+    resp = await expire_caches(["h1"], 60)
+    assert resp.expired == []
+    assert len(resp.failed) == 1
+    assert resp.failed[0].cache_id == "h1"
 
 
 @pytest.mark.asyncio
