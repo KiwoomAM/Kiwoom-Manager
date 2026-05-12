@@ -286,3 +286,76 @@ def test_request_stream_routes_stored_files_to_runner(test_client, monkeypatch):
     assert resp.status_code == 200
     assert captured["stored_files"] is not None
     assert captured["stored_files"][0].file_path == "abc.pdf"
+
+
+# ── /v1/context-cache/expire ─────────────────────────────────
+
+
+def test_expire_endpoint_returns_200(test_client, monkeypatch):
+    """expire_caches monkeypatch — 라우터 자체만 검증."""
+    from app.models.responses import ExpireContextCacheResponse, ExpireFailure
+
+    async def fake_expire(ids, grace):
+        return ExpireContextCacheResponse(
+            expired=[ids[0]],
+            failed=[ExpireFailure(cache_id=ids[1], error="x")] if len(ids) > 1 else [],
+        )
+
+    monkeypatch.setattr(
+        "app.routers.request.expire_caches", fake_expire,
+    )
+
+    resp = test_client.post(
+        "/v1/context-cache/expire",
+        json={"cache_ids": ["h1", "h2"], "grace_seconds": 60},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["expired"] == ["h1"]
+    assert body["failed"][0]["cache_id"] == "h2"
+
+
+def test_expire_endpoint_validates_empty_ids(test_client):
+    resp = test_client.post(
+        "/v1/context-cache/expire",
+        json={"cache_ids": [], "grace_seconds": 60},
+    )
+    assert resp.status_code == 422
+
+
+def test_expire_endpoint_validates_grace_lower_bound(test_client):
+    resp = test_client.post(
+        "/v1/context-cache/expire",
+        json={"cache_ids": ["h1"], "grace_seconds": 0},
+    )
+    assert resp.status_code == 422
+
+
+def test_expire_endpoint_validates_grace_upper_bound(test_client):
+    resp = test_client.post(
+        "/v1/context-cache/expire",
+        json={"cache_ids": ["h1"], "grace_seconds": 3601},
+    )
+    assert resp.status_code == 422
+
+
+def test_expire_endpoint_default_grace_seconds(test_client, monkeypatch):
+    """grace_seconds 생략 시 기본 60 으로 동작."""
+    from app.models.responses import ExpireContextCacheResponse
+
+    captured = {}
+
+    async def fake_expire(ids, grace):
+        captured["grace"] = grace
+        return ExpireContextCacheResponse(expired=ids, failed=[])
+
+    monkeypatch.setattr(
+        "app.routers.request.expire_caches", fake_expire,
+    )
+
+    resp = test_client.post(
+        "/v1/context-cache/expire",
+        json={"cache_ids": ["h1"]},
+    )
+    assert resp.status_code == 200
+    assert captured["grace"] == 60
