@@ -35,3 +35,23 @@ def test_sync_client_omits_header_when_service_name_unset(
 
     client = SyncClient()
     assert "X-Caller-Service" not in client._http.headers
+
+
+def test_async_client_attaches_header_when_service_name_set(
+    monkeypatch, reload_clients
+):
+    monkeypatch.setenv("SERVICE_NAME", "test-agent")
+    from mdb_handler._async_client import AsyncClient
+
+    client = AsyncClient()
+    assert client._http.headers.get("X-Caller-Service") == "test-agent"
+
+
+def test_async_client_omits_header_when_service_name_unset(
+    monkeypatch, reload_clients
+):
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    from mdb_handler._async_client import AsyncClient
+
+    client = AsyncClient()
+    assert "X-Caller-Service" not in client._http.headers
