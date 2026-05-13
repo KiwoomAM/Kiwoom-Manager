@@ -168,7 +168,11 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx", specifier = ">=0.27.0" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "tqdm", marker = "extra == 'scripts'", specifier = ">=4.66.0" },
+]
+provides-extras = ["scripts"]
 
 [[package]]
 name = "kiwoom-llm-handler"
