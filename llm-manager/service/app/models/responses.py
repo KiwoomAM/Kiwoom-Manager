@@ -41,7 +41,7 @@ class ErrorResponse(BaseModel):
 
 
 class ExpireFailure(BaseModel):
-    """release 실패 항목 — Gemini 5xx / 네트워크 등."""
+    """expire 실패 항목 — Gemini 5xx / 네트워크 등."""
 
     cache_id: str
     error: str

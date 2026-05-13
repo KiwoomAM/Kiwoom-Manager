@@ -10,7 +10,6 @@ from typing import Any
 
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
-from llm_handler.exceptions import HandlerError
 from llm_handler.models import LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
@@ -20,6 +19,7 @@ from app.logic.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
+from app.logic.gemini_errors import is_gemini_404
 from app.logic.stored_file_resolver import resolve_stored_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
@@ -375,23 +375,6 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
     )
     prep.context_cache_id = resolved.context_cache_id
     return _apply_resolved(prep.llm_input, resolved)
-
-
-def is_gemini_404(exc: Exception) -> bool:
-    """Gemini 호출에서 '리소스 없음 (404)' 신호인지 판정.
-
-    public — 다른 모듈 (context_cache_lifecycle 등) 에서도 같은 분기 검사용.
-
-    우선순위:
-      1. HandlerError 의 status_code == 404 (정확 — llm-handler 가 Gemini HTTP
-         status 그대로 전파).
-      2. 그 외 raw 예외는 메시지 substring fallback ("404" / "not found") —
-         llm-handler 가 wrap 하지 못한 경로 / 옛 코드 호환.
-    """
-    if isinstance(exc, HandlerError) and exc.status_code == 404:
-        return True
-    msg = str(exc).lower()
-    return "404" in msg or "not found" in msg
 
 
 # ── agent_llm standby 헬퍼 (cache-stampede-dedup §6) ────────

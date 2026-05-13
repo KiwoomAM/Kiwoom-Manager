@@ -78,7 +78,8 @@ class FileCacheStore(BaseJsonStore):
 
         Gemini caches.update 와 동기 만료를 위해 같은 ttl 로 단축한다.
         """
-        self._expire(self._make_key("context_cache", hash_key), ttl)
+        if not self._expire(self._make_key("context_cache", hash_key), ttl):
+            logger.debug("shrink no-op (key absent): hash=%s", hash_key[:16])
 
 
 # 모듈 레벨 싱글톤

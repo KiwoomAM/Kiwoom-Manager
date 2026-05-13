@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Literal, TypedDict
 
 from llm_handler import aio as llm_aio
 
 from app.logic.file_processing import cache_store
-from app.logic.runner import is_gemini_404
+from app.logic.gemini_errors import is_gemini_404
 from app.models.responses import ExpireContextCacheResponse, ExpireFailure
 
 logger = logging.getLogger(__name__)
+
+
+class _ExpireOutcome(TypedDict, total=False):
+    cache_id: str
+    status: Literal["expired", "failed"]
+    error: str
 
 
 async def expire_caches(
@@ -36,13 +43,13 @@ async def expire_caches(
     return ExpireContextCacheResponse(expired=expired, failed=failed)
 
 
-async def _expire_one(cache_id: str, grace_seconds: int) -> dict:
+async def _expire_one(cache_id: str, grace_seconds: int) -> _ExpireOutcome:
     # ① Redis 조회 (cache_id == hash_key)
     try:
         doc = cache_store.find_context_cache(cache_id)
     except Exception as e:
         logger.exception("Redis 조회 실패: cache_id=%s", cache_id[:16])
-        return {"cache_id": cache_id, "status": "failed", "error": str(e)}
+        return {"cache_id": cache_id, "status": "failed", "error": type(e).__name__}
 
     if not doc:
         # idempotent — 이미 정리됨/만료됨
@@ -57,7 +64,7 @@ async def _expire_one(cache_id: str, grace_seconds: int) -> dict:
         if is_gemini_404(e):
             return {"cache_id": cache_id, "status": "expired"}
         logger.exception("Gemini update_cache 실패: cache_id=%s", cache_id[:16])
-        return {"cache_id": cache_id, "status": "failed", "error": str(e)}
+        return {"cache_id": cache_id, "status": "failed", "error": type(e).__name__}
 
     # ③ Redis TTL 단축 (실패해도 expired — Gemini 비용은 단축됨)
     try:
