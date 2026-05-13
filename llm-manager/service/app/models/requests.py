@@ -5,7 +5,7 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 from typing import Annotated, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
 
 
 # JSON 직렬화 시 base64 문자열로 인코딩, 파싱 시 raw bytes로 디코딩.
@@ -123,3 +123,14 @@ class FetchBody(BaseModel):
 
     cache_key: str
     database: str | None = None
+
+
+class ExpireContextCacheRequest(BaseModel):
+    """POST /v1/context-cache/expire 요청 바디.
+
+    `cache_ids` 는 `RequestMeta.context_cache_id` 로 받은 식별자 리스트.
+    `grace_seconds` 동안 in-flight 요청을 보호한 후 Gemini cache + Redis 만료.
+    """
+
+    cache_ids: list[str] = Field(min_length=1)
+    grace_seconds: int = Field(default=60, ge=1, le=3600)

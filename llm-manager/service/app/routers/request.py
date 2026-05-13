@@ -9,13 +9,20 @@ from urllib.parse import quote
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from app.logic.context_cache_lifecycle import expire_caches
 from app.logic.done_check import done_check
 from app.logic.keying import make_file_checksum
 from app.logic.runner import llm_request_async, llm_request_stream_async
 from app.logic.store import fetch_by_cache_key
-from app.models.requests import DoneCheckBody, FetchBody, LLMRequestBody
+from app.models.requests import (
+    DoneCheckBody,
+    ExpireContextCacheRequest,
+    FetchBody,
+    LLMRequestBody,
+)
 from app.models.responses import (
     DoneCheckResponse,
+    ExpireContextCacheResponse,
     FetchResponse,
     LLMRequestResponse,
 )
@@ -120,3 +127,20 @@ async def handle_fetch(body: FetchBody) -> FetchResponse:
         database=body.database,
     )
     return FetchResponse(result=response.model_dump(), meta=meta)
+
+
+# ── /v1/context-cache/expire ─────────────────────────────────
+
+
+@router.post(
+    "/v1/context-cache/expire",
+    response_model=ExpireContextCacheResponse,
+)
+async def handle_expire_context_cache(
+    body: ExpireContextCacheRequest,
+) -> ExpireContextCacheResponse:
+    """Context Cache TTL 단축 — Gemini caches.update + Redis EXPIRE.
+
+    Cache 청구는 새 TTL 기준으로 prorate 처리됨. design: docs/20.context-cache-expire.md
+    """
+    return await expire_caches(body.cache_ids, body.grace_seconds)

@@ -102,6 +102,24 @@ class TestContextCache:
         result = cache_store.find_context_cache("hashkey_del")
         assert result is None
 
+    def test_shrink_ttl_calls_expire(self, monkeypatch):
+        """shrink_context_cache_ttl 이 정확한 key + ttl 로 _expire 호출."""
+        captured = {}
+
+        def fake_expire(self, key, seconds):
+            captured["key"] = key
+            captured["seconds"] = seconds
+            return True
+
+        monkeypatch.setattr(
+            "redis_handler.BaseJsonStore._expire", fake_expire,
+        )
+
+        cache_store.shrink_context_cache_ttl("hashkey_shrink", 60)
+
+        assert captured["key"].endswith("context_cache:hashkey_shrink")
+        assert captured["seconds"] == 60
+
 
 class TestMakeContextCacheKey:
     """hash_key 생성 테스트."""
