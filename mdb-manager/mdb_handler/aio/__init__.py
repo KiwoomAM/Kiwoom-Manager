@@ -9,6 +9,9 @@
 """
 
 from mdb_handler._async_client import AsyncClient
+from mdb_handler.aio.collections.agent_envelope import (
+    AsyncAgentEnvelopeCollection,
+)
 from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
 from mdb_handler.aio.handler import AsyncMongoDBHandler
 from mdb_handler.exceptions import (
@@ -20,6 +23,7 @@ from mdb_handler.exceptions import (
 __all__ = [
     "AsyncMongoDBHandler",
     "AsyncBlocksCollection",
+    "AsyncAgentEnvelopeCollection",
     "AsyncClient",
     "MDBError",
     "MDBConnectionError",

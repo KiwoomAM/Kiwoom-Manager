@@ -87,3 +87,33 @@ def test_insert_agent_output_posts_to_envelope_endpoint():
     args, kwargs = client.post.call_args
     assert args[0] == "/v1/d/agent_output/insert"
     assert kwargs["json"]["type"] == "result"
+
+
+def test_insert_agent_data_emits_deprecation_warning():
+    import warnings
+
+    col, client = _make_collection()
+    client.post.return_value = {"inserted_id": "x"}
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        col.insert_agent_data(type="r", data={})
+    deprecations = [
+        x for x in w if issubclass(x.category, DeprecationWarning)
+    ]
+    assert deprecations, "DeprecationWarning expected"
+    msg = " ".join(str(x.message) for x in deprecations)
+    assert "AgentEnvelopeCollection" in msg
+
+
+def test_insert_agent_output_emits_deprecation_warning():
+    import warnings
+
+    col, client = _make_collection()
+    client.post.return_value = {"inserted_id": "y"}
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        col.insert_agent_output(type="r", data={})
+    deprecations = [
+        x for x in w if issubclass(x.category, DeprecationWarning)
+    ]
+    assert deprecations, "DeprecationWarning expected"

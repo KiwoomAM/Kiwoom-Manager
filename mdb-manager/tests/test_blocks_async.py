@@ -89,3 +89,22 @@ async def test_async_insert_agent_output_posts_to_envelope_endpoint():
     assert result == "id-y"
     args, _ = client.post.call_args
     assert args[0] == "/v1/d/agent_output/insert"
+
+
+@pytest.mark.asyncio
+async def test_async_insert_agent_data_emits_deprecation_warning():
+    import warnings
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value={"inserted_id": "x"})
+    col = AsyncBlocksCollection(client=client, collection_name="c", database="d")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        await col.insert_agent_data(type="r", data={})
+    deprecations = [
+        x for x in w if issubclass(x.category, DeprecationWarning)
+    ]
+    assert deprecations, "DeprecationWarning expected"
+    msg = " ".join(str(x.message) for x in deprecations)
+    assert "AsyncAgentEnvelopeCollection" in msg

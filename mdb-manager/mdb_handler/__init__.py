@@ -18,6 +18,7 @@ MongoDB Handler - MongoDB 통합 관리 모듈
 """
 
 from mdb_handler import aio
+from mdb_handler.collections.agent_envelope import AgentEnvelopeCollection
 from mdb_handler.collections.blocks import BlocksCollection
 from mdb_handler.exceptions import (
     MDBConnectionError,
@@ -29,6 +30,7 @@ from mdb_handler.handler import MongoDBHandler
 __all__ = [
     "MongoDBHandler",
     "BlocksCollection",
+    "AgentEnvelopeCollection",
     "MDBError",
     "MDBConnectionError",
     "MDBHandlerError",

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Dict, List, Optional
 
 from mdb_handler._paths import (
@@ -219,12 +220,19 @@ class BlocksCollection:
         data: Dict | None = None,
         ttl: int | None = None,
     ) -> str:
-        """envelope 형태로 agent_data 컬렉션에 삽입한다.
+        """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입.
 
-        Service가 metadata.depart(=SERVICE_NAME) / metadata.type /
-        created_at을 자동 채우므로 호출자는 비즈니스 페이로드만 제공한다.
-        현재 BlocksCollection의 database 속성을 그대로 사용한다.
+        Use ``MongoDBHandler.get_agent_data().insert(...)`` (AgentEnvelopeCollection)
+        instead. envelope CRUD 전체(find/update/delete 포함)는 AgentEnvelopeCollection
+        에서만 제공된다.
         """
+        warnings.warn(
+            "BlocksCollection.insert_agent_data is deprecated. "
+            "Use MongoDBHandler.get_agent_data().insert(...) "
+            "(AgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resp = self._client.post(
             f"/v1/{self.database}/agent_data/insert",
             json=build_envelope_insert_body(
@@ -241,7 +249,18 @@ class BlocksCollection:
         data: Dict | None = None,
         ttl: int | None = None,
     ) -> str:
-        """envelope 형태로 agent_output 컬렉션에 삽입한다."""
+        """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입.
+
+        Use ``MongoDBHandler.get_agent_output().insert(...)`` (AgentEnvelopeCollection)
+        instead.
+        """
+        warnings.warn(
+            "BlocksCollection.insert_agent_output is deprecated. "
+            "Use MongoDBHandler.get_agent_output().insert(...) "
+            "(AgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resp = self._client.post(
             f"/v1/{self.database}/agent_output/insert",
             json=build_envelope_insert_body(

@@ -55,3 +55,54 @@ def test_build_envelope_insert_body_omits_ttl_when_none():
 
     body = build_envelope_insert_body(type_="r", ttl=None)
     assert "ttl" not in body
+
+
+def test_envelope_find_body_minimal():
+    from mdb_handler._paths import build_envelope_find_body
+
+    assert build_envelope_find_body() == {"filter": {}}
+
+
+def test_envelope_find_body_full():
+    from mdb_handler._paths import build_envelope_find_body
+
+    body = build_envelope_find_body(
+        {"k": 1}, projection={"k": 1}, sort=[["k", -1]], limit=10, skip=2
+    )
+    assert body == {
+        "filter": {"k": 1},
+        "projection": {"k": 1},
+        "sort": [["k", -1]],
+        "limit": 10,
+        "skip": 2,
+    }
+
+
+def test_envelope_find_one_body_minimal():
+    from mdb_handler._paths import build_envelope_find_one_body
+
+    assert build_envelope_find_one_body() == {"filter": {}}
+
+
+def test_envelope_update_body_without_ttl():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body({"k": 1}, {"$set": {"x": 1}})
+    assert body == {"filter": {"k": 1}, "update": {"$set": {"x": 1}}}
+
+
+def test_envelope_update_body_with_ttl():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body({"k": 1}, {"$set": {"x": 1}}, ttl=3600)
+    assert body == {
+        "filter": {"k": 1},
+        "update": {"$set": {"x": 1}},
+        "ttl": 3600,
+    }
+
+
+def test_envelope_delete_body():
+    from mdb_handler._paths import build_envelope_delete_body
+
+    assert build_envelope_delete_body({"k": 1}) == {"filter": {"k": 1}}

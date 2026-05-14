@@ -23,6 +23,9 @@ import logging
 from typing import Dict, List, Optional
 
 from mdb_handler._async_client import AsyncClient
+from mdb_handler.aio.collections.agent_envelope import (
+    AsyncAgentEnvelopeCollection,
+)
 from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
 
 logger = logging.getLogger(__name__)
@@ -208,6 +211,31 @@ class AsyncMongoDBHandler:
         self._ensure_open()
         col = collection or "agent_data"
         return AsyncBlocksCollection(self._client, col, database)
+
+    def get_agent_data(
+        self, database: str | None = None
+    ) -> AsyncAgentEnvelopeCollection:
+        """agent_data envelope 컬렉션 진입점 (비동기).
+
+        모든 read/write가 SERVICE_NAME으로 자동 스코프됨.
+        """
+        self._ensure_open()
+        return AsyncAgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_data",
+            database=database or self.database,
+        )
+
+    def get_agent_output(
+        self, database: str | None = None
+    ) -> AsyncAgentEnvelopeCollection:
+        """agent_output envelope 컬렉션 진입점 (비동기)."""
+        self._ensure_open()
+        return AsyncAgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_output",
+            database=database or self.database,
+        )
 
     def __repr__(self) -> str:
         status = "closed" if self._closed else "open"

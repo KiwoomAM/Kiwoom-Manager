@@ -6,6 +6,7 @@ _paths.py의 빌더를 재사용해 경로/바디 로직을 동기 버전과 공
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional
 
 from mdb_handler._paths import (
@@ -217,11 +218,18 @@ class AsyncBlocksCollection:
         data: Dict | None = None,
         ttl: int | None = None,
     ) -> str:
-        """envelope 형태로 agent_data 컬렉션에 삽입한다 (async).
+        """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입 (async).
 
-        Service가 metadata.depart(=SERVICE_NAME) / metadata.type /
-        created_at을 자동 채우므로 호출자는 비즈니스 페이로드만 제공한다.
+        Use ``AsyncMongoDBHandler.get_agent_data().insert(...)``
+        (AsyncAgentEnvelopeCollection) instead.
         """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_data is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_data().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resp = await self._client.post(
             f"/v1/{self.database}/agent_data/insert",
             json=build_envelope_insert_body(
@@ -238,7 +246,17 @@ class AsyncBlocksCollection:
         data: Dict | None = None,
         ttl: int | None = None,
     ) -> str:
-        """envelope 형태로 agent_output 컬렉션에 삽입한다 (async)."""
+        """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입 (async).
+
+        Use ``AsyncMongoDBHandler.get_agent_output().insert(...)`` instead.
+        """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_output is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_output().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resp = await self._client.post(
             f"/v1/{self.database}/agent_output/insert",
             json=build_envelope_insert_body(
