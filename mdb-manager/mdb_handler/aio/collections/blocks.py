@@ -6,6 +6,7 @@ _paths.py의 빌더를 재사용해 경로/바디 로직을 동기 버전과 공
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional
 
 from mdb_handler._paths import (
@@ -14,6 +15,7 @@ from mdb_handler._paths import (
     build_count_body,
     build_delete_body,
     build_distinct_body,
+    build_envelope_insert_body,
     build_find_body,
     build_find_one_body,
     build_insert_many_body,
@@ -206,3 +208,59 @@ class AsyncBlocksCollection:
             self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return resp["data"]
+
+    # Envelope insert (agent_data / agent_output 전용)
+    async def insert_agent_data(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입 (async).
+
+        Use ``AsyncMongoDBHandler.get_agent_data().insert(...)``
+        (AsyncAgentEnvelopeCollection) instead.
+        """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_data is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_data().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = await self._client.post(
+            f"/v1/{self.database}/agent_data/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]
+
+    async def insert_agent_output(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입 (async).
+
+        Use ``AsyncMongoDBHandler.get_agent_output().insert(...)`` instead.
+        """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_output is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_output().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = await self._client.post(
+            f"/v1/{self.database}/agent_output/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]

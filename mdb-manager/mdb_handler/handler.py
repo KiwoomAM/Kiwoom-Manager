@@ -31,6 +31,7 @@ import warnings
 from typing import Dict, List, Optional
 
 from mdb_handler._client import SyncClient
+from mdb_handler.collections.agent_envelope import AgentEnvelopeCollection
 from mdb_handler.collections.blocks import BlocksCollection
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,30 @@ class MongoDBHandler:
         """다른 database로 전환. collection 미지정 시 기본값 agent_data."""
         col = collection or "agent_data"
         return BlocksCollection(self._client, col, database)
+
+    def get_agent_data(
+        self, database: str | None = None
+    ) -> AgentEnvelopeCollection:
+        """agent_data envelope 컬렉션 진입점.
+
+        database 인자 미제공 시 현재 핸들러의 database 사용. 반환된 컬렉션은
+        모든 read/write가 SERVICE_NAME (X-Caller-Service)으로 자동 스코프됨.
+        """
+        return AgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_data",
+            database=database or self.database,
+        )
+
+    def get_agent_output(
+        self, database: str | None = None
+    ) -> AgentEnvelopeCollection:
+        """agent_output envelope 컬렉션 진입점."""
+        return AgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_output",
+            database=database or self.database,
+        )
 
     def list_collections(self, database: str = None) -> List[str]:
         """데이터베이스의 컬렉션 목록. database 미지정 시 현재 database 사용."""

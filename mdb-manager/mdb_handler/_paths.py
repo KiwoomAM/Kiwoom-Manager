@@ -103,3 +103,67 @@ def build_count_body(filter: dict | None = None) -> dict[str, Any]:
 
 def build_aggregate_body(pipeline: list[dict]) -> dict[str, Any]:
     return {"pipeline": pipeline}
+
+
+def build_envelope_insert_body(
+    *,
+    type_: str,
+    metadata: dict | None = None,
+    data: dict | None = None,
+    ttl: int | None = None,
+) -> dict[str, Any]:
+    """agent_data / agent_output envelope insert 요청 바디 빌더."""
+    body: dict[str, Any] = {
+        "type": type_,
+        "metadata": metadata or {},
+        "data": data or {},
+    }
+    if ttl is not None:
+        body["ttl"] = ttl
+    return body
+
+
+def build_envelope_find_body(
+    filter: dict | None = None,
+    *,
+    projection: dict | None = None,
+    sort: list | None = None,
+    limit: int | None = None,
+    skip: int | None = None,
+) -> dict[str, Any]:
+    """envelope find 요청 바디 빌더 (caller scope는 Service가 강제)."""
+    body: dict[str, Any] = {"filter": filter or {}}
+    if projection is not None:
+        body["projection"] = projection
+    if sort is not None:
+        body["sort"] = sort
+    if limit is not None:
+        body["limit"] = limit
+    if skip is not None:
+        body["skip"] = skip
+    return body
+
+
+def build_envelope_find_one_body(
+    filter: dict | None = None, *, projection: dict | None = None
+) -> dict[str, Any]:
+    """envelope find_one 요청 바디 빌더."""
+    body: dict[str, Any] = {"filter": filter or {}}
+    if projection is not None:
+        body["projection"] = projection
+    return body
+
+
+def build_envelope_update_body(
+    filter: dict, update: dict, *, ttl: int | None = None
+) -> dict[str, Any]:
+    """envelope update 요청 바디 빌더. update는 MongoDB operator만 허용."""
+    body: dict[str, Any] = {"filter": filter, "update": update}
+    if ttl is not None:
+        body["ttl"] = ttl
+    return body
+
+
+def build_envelope_delete_body(filter: dict) -> dict[str, Any]:
+    """envelope delete 요청 바디 빌더."""
+    return {"filter": filter}
