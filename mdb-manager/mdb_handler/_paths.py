@@ -103,3 +103,21 @@ def build_count_body(filter: dict | None = None) -> dict[str, Any]:
 
 def build_aggregate_body(pipeline: list[dict]) -> dict[str, Any]:
     return {"pipeline": pipeline}
+
+
+def build_envelope_insert_body(
+    *,
+    type_: str,
+    metadata: dict | None = None,
+    data: dict | None = None,
+    ttl: int | None = None,
+) -> dict[str, Any]:
+    """agent_data / agent_output envelope insert 요청 바디 빌더."""
+    body: dict[str, Any] = {
+        "type": type_,
+        "metadata": metadata or {},
+        "data": data or {},
+    }
+    if ttl is not None:
+        body["ttl"] = ttl
+    return body

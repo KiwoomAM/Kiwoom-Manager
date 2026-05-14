@@ -24,3 +24,34 @@ def test_insert_many_body_without_ttl_omits_key():
 def test_insert_many_body_with_ttl_includes_key():
     body = build_insert_many_body([{"a": 1}], ttl=120, ordered=False)
     assert body == {"documents": [{"a": 1}], "ordered": False, "ttl": 120}
+
+
+def test_build_envelope_insert_body_minimal():
+    from mdb_handler._paths import build_envelope_insert_body
+
+    body = build_envelope_insert_body(type_="report")
+    assert body == {"type": "report", "metadata": {}, "data": {}}
+
+
+def test_build_envelope_insert_body_full():
+    from mdb_handler._paths import build_envelope_insert_body
+
+    body = build_envelope_insert_body(
+        type_="report",
+        metadata={"source": "u1"},
+        data={"summary": "x"},
+        ttl=60,
+    )
+    assert body == {
+        "type": "report",
+        "metadata": {"source": "u1"},
+        "data": {"summary": "x"},
+        "ttl": 60,
+    }
+
+
+def test_build_envelope_insert_body_omits_ttl_when_none():
+    from mdb_handler._paths import build_envelope_insert_body
+
+    body = build_envelope_insert_body(type_="r", ttl=None)
+    assert "ttl" not in body

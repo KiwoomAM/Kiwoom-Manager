@@ -6,13 +6,13 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from mdb_handler._client import SyncClient
 from mdb_handler._paths import (
     CollectionRoute,
     build_aggregate_body,
     build_count_body,
     build_delete_body,
     build_distinct_body,
+    build_envelope_insert_body,
     build_find_body,
     build_find_one_body,
     build_insert_many_body,
@@ -20,6 +20,7 @@ from mdb_handler._paths import (
     build_replace_body,
     build_update_body,
 )
+from mdb_handler._transport import SyncTransport
 
 logger = logging.getLogger("mdb_handler.blocks")
 
@@ -29,7 +30,7 @@ class BlocksCollection:
 
     def __init__(
         self,
-        client: SyncClient,
+        client: SyncTransport,
         collection_name: str = "agent_data",
         database: str = "kw_ai",
     ):
@@ -208,3 +209,43 @@ class BlocksCollection:
             self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return resp["data"]
+
+    # Envelope insert (agent_data / agent_output 전용)
+    def insert_agent_data(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """envelope 형태로 agent_data 컬렉션에 삽입한다.
+
+        Service가 metadata.depart(=SERVICE_NAME) / metadata.type /
+        created_at을 자동 채우므로 호출자는 비즈니스 페이로드만 제공한다.
+        현재 BlocksCollection의 database 속성을 그대로 사용한다.
+        """
+        resp = self._client.post(
+            f"/v1/{self.database}/agent_data/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]
+
+    def insert_agent_output(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """envelope 형태로 agent_output 컬렉션에 삽입한다."""
+        resp = self._client.post(
+            f"/v1/{self.database}/agent_output/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]

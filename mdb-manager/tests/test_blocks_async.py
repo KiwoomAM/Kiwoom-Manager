@@ -52,3 +52,40 @@ async def test_insert_many_empty_skips_request():
     result = await col.insert_many([], ttl=60)
     assert result == []
     client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_insert_agent_data_posts_to_envelope_endpoint():
+    from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value={"inserted_id": "id-x"})
+    col = AsyncBlocksCollection(client=client, collection_name="c", database="d")
+
+    result = await col.insert_agent_data(
+        type="report", metadata={"s": "u"}, data={"k": "v"}
+    )
+    assert result == "id-x"
+    args, kwargs = client.post.call_args
+    assert args[0] == "/v1/d/agent_data/insert"
+    assert kwargs["json"] == {
+        "type": "report",
+        "metadata": {"s": "u"},
+        "data": {"k": "v"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_async_insert_agent_output_posts_to_envelope_endpoint():
+    from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.post = AsyncMock(return_value={"inserted_id": "id-y"})
+    col = AsyncBlocksCollection(client=client, collection_name="c", database="d")
+
+    result = await col.insert_agent_output(type="r", data={"s": 1.0})
+    assert result == "id-y"
+    args, _ = client.post.call_args
+    assert args[0] == "/v1/d/agent_output/insert"
