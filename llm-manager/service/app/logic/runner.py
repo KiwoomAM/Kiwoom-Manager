@@ -19,6 +19,7 @@ from app.logic.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
+from app.logic.gemini_errors import is_gemini_404
 from app.logic.stored_file_resolver import resolve_stored_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
@@ -43,6 +44,7 @@ class _Prepared:
     files: list[FileInput] | None
     context_cache_ttl: int | None
     standby_ttl_seconds: int
+    context_cache_id: str | None = None
     debug: bool = False
 
 
@@ -189,6 +191,8 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
     file_metas = _dump_files_meta(prep.files)
     if file_metas is not None:
         meta["file_meta"] = file_metas
+    if prep.context_cache_id is not None:
+        meta["context_cache_id"] = prep.context_cache_id
     if prep.debug and prep.route_reason:
         meta["route_reason"] = prep.route_reason
     return meta
@@ -369,17 +373,8 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
         tools=prep.llm_input.get("tools"),
         tool_config=prep.llm_input.get("tool_config"),
     )
+    prep.context_cache_id = resolved.context_cache_id
     return _apply_resolved(prep.llm_input, resolved)
-
-
-def _is_gemini_404(exc: Exception) -> bool:
-    """Gemini 에러가 '리소스 없음(404)' 신호인지 추정.
-
-    llm-handler가 정확한 예외 타입을 노출하지 않아 메시지 기반 판정 (보수적).
-    llm-handler 담당자에게 예외 타입 세분화 요청 (docs/inline-vs-files-api-strategy.md §12 백로그).
-    """
-    msg = str(exc).lower()
-    return "404" in msg or "not found" in msg
 
 
 # ── agent_llm standby 헬퍼 (cache-stampede-dedup §6) ────────
@@ -426,7 +421,7 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if _is_gemini_404(e) and prep.files:
+        if is_gemini_404(e) and prep.files:
             logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -437,6 +432,7 @@ async def _do_llm_call(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
         else:
@@ -550,7 +546,7 @@ async def _do_llm_stream(
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if _is_gemini_404(e) and prep.files and last is None:
+        if is_gemini_404(e) and prep.files and last is None:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -561,6 +557,7 @@ async def _do_llm_stream(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
                 text_parts.append(chunk.text or "")

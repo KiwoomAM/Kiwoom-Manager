@@ -15,6 +15,7 @@ from llm_handler.models import CacheRef, FileRef
 
 from app.core.errors import FileUploadError
 from app.logic.file_processing.resolver import (
+    ResolvedFiles,
     _estimate_non_file_bytes,
     _process_inline,
     _reuse_files_api_uris,
@@ -149,6 +150,7 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert result.uri_parts == []
         assert result.cached_content is None
+        assert result.context_cache_id is None
 
     async def test_model_none_with_context_cache_ttl_raises(
         self, fake_redis, fast_backoff, monkeypatch,
@@ -229,6 +231,8 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert len(result.uri_parts) == 1
         assert result.cached_content == "cachedContents/x"
+        assert result.context_cache_id is not None
+        assert len(result.context_cache_id) == 64  # SHA-256 hex
         assert upload_count == 1
 
 
@@ -456,3 +460,21 @@ class TestResolvedViaPropagation:
         _reuse_files_api_uris(fi, existing, [], [])
 
         assert fi.resolved_via is None  # 검증되지 않음 — silent 'primary' 박제 방지
+
+
+# ── ResolvedFiles ─────────────────────────────────────────────
+
+
+def test_resolved_files_has_context_cache_id_field():
+    rf = ResolvedFiles(
+        inline_parts=[],
+        uri_parts=[],
+        cached_content="cachedContents/xxx",
+        context_cache_id="abc123",
+    )
+    assert rf.context_cache_id == "abc123"
+
+
+def test_resolved_files_context_cache_id_defaults_none():
+    rf = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+    assert rf.context_cache_id is None
