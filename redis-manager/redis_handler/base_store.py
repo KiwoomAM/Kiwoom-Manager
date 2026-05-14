@@ -25,7 +25,7 @@ Redis 위에 JSON 직렬화/역직렬화, 키 프리픽스, TTL 관리 등
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .handler import RedisHandler
 
@@ -218,6 +218,33 @@ class BaseJsonStore:
             성공 여부
         """
         return self._handler.expire(key, seconds)
+
+    def _scan_iter(self, pattern: str, count: int = 100) -> Iterator[str]:
+        """
+        프리픽스 패턴 매칭 키를 cursor 기반으로 yield (비차단).
+
+        ``KEYS pattern``은 단일 스레드 블로킹이라 금지 — 대용량 prefix 탐색은
+        반드시 이 메서드를 사용해야 한다.
+
+        Args:
+            pattern: glob 패턴. 호출 측에서 ``self._make_key(..., "*")`` 형태로
+                완전한 패턴을 직접 구성한다.
+            count: 매 SCAN 호출의 batch hint (정확히 N개 yield 보장 X).
+
+        Yields:
+            매칭되는 키 (str). 같은 키가 중복 yield될 수 있고, iteration 중
+            mutation은 stale read 가능 (SCAN의 일반적 특성).
+
+        Note:
+            Redis 가용 중 부분 yield 후 transient 실패 시 Handler가 메모리
+            백엔드로 폴백하여 나머지를 yield한다. 결과 집합이 두 백엔드의
+            키를 혼합할 수 있으므로, "전체 키 공간 스냅샷"을 가정하면 안 된다.
+
+        Examples:
+            for key in self._scan_iter(self._make_key("files_api", "*")):
+                ...
+        """
+        return self._handler.scan_iter(match=pattern, count=count)
 
     # ── Set 연산 위임 ─────────────────────────────────────────
 

@@ -19,7 +19,7 @@ NOTE: `from __future__ import annotations`는 클래스 내부 `set()` 메서드
 from __future__ import annotations
 
 import logging
-from typing import Optional, Set
+from typing import Iterator, Optional, Set
 
 from .backends import MemoryBackend, RedisBackend
 from .config import RedisConfig
@@ -186,6 +186,31 @@ class RedisHandler:
             except RedisHandlerError as e:
                 logger.warning("Redis EXPIRE 폴백 → 메모리 (%s): %s", key, e)
         return self._memory.expire(key, seconds)
+
+    def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
+        """Cursor 기반 키 SCAN.
+
+        Redis 가용 시 RedisBackend.scan_iter를 사용, 미가용 또는 일시 장애 시
+        MemoryBackend.scan_iter로 폴백한다. 다른 명령과 동일한 폴백 정책.
+
+        주의: Redis와 메모리 백엔드는 독립된 키 공간이라 폴백 결과는 해당
+        백엔드에 살아있는 키만 반영한다 — "전체 키 목록"이 아니다.
+
+        ``KEYS``는 단일 스레드 블로킹이라 금지. ``count``는 hint일 뿐.
+        같은 키가 중복 yield될 수 있고, iteration 중 mutation은 stale read 가능.
+
+        부분 yield 후 폴백: Redis가 일부 키를 yield한 뒤 transient 실패가 나면
+        나머지는 메모리 백엔드에서 yield된다 — 호출자가 받는 결과는 두 백엔드의
+        키가 혼재한 형태가 될 수 있다 (예외는 raise되지 않음).
+        """
+        rb = self._redis()
+        if rb is not None:
+            try:
+                yield from rb.scan_iter(match, count)
+                return
+            except RedisHandlerError as e:
+                logger.warning("Redis SCAN 폴백 → 메모리 (%s): %s", match, e)
+        yield from self._memory.scan_iter(match, count)
 
     # ── Set 연산 ─────────────────────────────────────
     def sadd(self, key: str, *members: str) -> int:

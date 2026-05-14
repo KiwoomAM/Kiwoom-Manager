@@ -12,7 +12,7 @@ NOTE: `from __future__ import annotations`는 클래스 내부 `set()` 메서드
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Iterator, Optional, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -46,6 +46,28 @@ class KeyValueBackend(Protocol):
     def exists(self, key: str) -> bool: ...
     def ttl(self, key: str) -> int: ...
     def expire(self, key: str, seconds: int) -> bool: ...
+
+    def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
+        """Cursor 기반 비차단 키 SCAN.
+
+        운영 정책: `KEYS pattern`은 단일 스레드 블로킹이라 금지 — 대용량 DB에서
+        prefix 매칭이 필요하면 반드시 이 메서드 사용.
+
+        Args:
+            match: glob 패턴 (예: ``"file_cache:files_api:*"``)
+            count: 매 SCAN 호출의 batch hint. 정확히 N개 yield를 보장하지 않음.
+
+        Yields:
+            패턴에 매칭되는 키 (str).
+
+        Notes:
+            - 같은 키가 여러 번 yield될 수 있음 (Redis SCAN cursor 특성). 호출자가
+              dedup 책임.
+            - iteration 도중 추가된 키는 누락 가능, 삭제된 키는 stale로 반환 가능.
+            - 재시도 정책 미적용 — generator는 첫 batch만 retry 대상이라 의미가
+              깨짐. 호출자가 외부 루프에서 재시작 책임.
+        """
+        ...
 
     # ── Set ───────────────────────────────────────────
     def sadd(self, key: str, *members: str) -> int: ...
