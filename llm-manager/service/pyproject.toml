@@ -2,7 +2,7 @@
 name = "kiwoom-llm-request-service"
 version = "0.2.0"
 description = "LLM Request Service - LLM 응답 캐싱 + 파일 처리 서버"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",

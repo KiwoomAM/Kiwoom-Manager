@@ -267,7 +267,7 @@ response, meta = await llm_request_async(
         "max_tokens": 200,              # 선택
         "service_name": "kiwoom-rm",    # 선택 (meta에 기록). 레포 이름과 동일하게 지정 권장
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
-        "media_resolution": "high",     # 선택 ("low" | "medium" | "high" | "ultra_high")
+        "media_resolution": "high",     # 선택 ("low" | "medium" | "high")
     },
     stored_files=[...],    # 선택. list[StoredFile] — file-manager register_or_get 결과
     cache_mode=True,       # 기본 True
@@ -299,7 +299,7 @@ def call(
     history: list[dict] | None = None,   # 이전 대화 이력
     cached_content: str | None = None,   # Context Cache 이름
     service_name: str | None = None,     # 서비스 식별자 (로깅용)
-    media_resolution: str | None = None, # "low" | "medium" | "high" | "ultra_high"
+    media_resolution: str | None = None, # "low" | "medium" | "high"
 ) -> LLMResponse
 ```
 

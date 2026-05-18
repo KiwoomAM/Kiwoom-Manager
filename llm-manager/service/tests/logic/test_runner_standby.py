@@ -212,8 +212,8 @@ class TestAgentLlmStreamStandby:
 class TestStreamFunctionCallsAccumulation:
     """_do_llm_stream 의 function_calls 누적 분기 회귀.
 
-    `if chunk.function_calls is not None: function_calls = chunk.function_calls`
-    — 마지막 비-None 청크의 값을 채택하는 시맨틱이 깨지지 않는지 검증.
+    `_StreamAcc.function_calls.extend(chunk.function_calls)`
+    — 여러 청크에 분산된 function_calls 가 모두 합산되어 저장 응답에 보존되는지 검증.
     기존 stream 테스트는 모든 청크 function_calls=None 이라 이 분기를 한 번도 실행하지 않음.
     """
 
@@ -254,6 +254,54 @@ class TestStreamFunctionCallsAccumulation:
         saved = next(iter(mock_collection.values()))
         assert saved["result"]["function_calls"] == [fc.model_dump()]
         assert saved["result"]["text"] == "abc"
+
+    async def test_function_calls_distributed_across_chunks_all_preserved(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """parallel function call N개가 N개 chunk에 분산 도착 — 모두 누적 저장.
+
+        Gemini stream 실측: parallel fc N개는 N개 chunk에 1개씩 분배되어 옴.
+        기존 overwrite 시맨틱에서는 마지막 chunk fc 만 남고 앞 fc 들이 손실됐음 — 회귀 가드.
+        """
+        fc1 = FunctionCall(name="get_weather", args={"city": "Seoul"}, id="fc-1")
+        fc2 = FunctionCall(name="get_time", args={"tz": "Asia/Seoul"}, id="fc-2")
+        fc3 = FunctionCall(name="get_news", args={"topic": "tech"}, id="fc-3")
+
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc1])
+            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc2])
+            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc3])
+            yield StreamChunk(
+                text="",
+                finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+                function_calls=None,
+            )
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+
+        llm_input = {
+            "contents": "parallel fc accumulation",
+            "model": "gemini-3-flash-preview",
+            "service_name": "test",
+        }
+
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input,
+            cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        assert len(mock_collection) == 1
+        saved = next(iter(mock_collection.values()))
+        # 3개 fc 가 모두 저장되어야 함 — overwrite 회귀 시 [fc3.model_dump()] 만 남음
+        assert saved["result"]["function_calls"] == [
+            fc1.model_dump(),
+            fc2.model_dump(),
+            fc3.model_dump(),
+        ]
 
 
 # ── Phase 3 lazy fetch dedup 통합 ──────────────────────────

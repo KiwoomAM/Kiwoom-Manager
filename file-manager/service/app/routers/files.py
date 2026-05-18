@@ -13,8 +13,12 @@ import logging
 import uuid
 from urllib.parse import quote
 
-import httpx
 from fastapi import APIRouter, File, Form, Response, UploadFile
+from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_handler.exceptions import (
+    MDBConnectionError as SdkMDBConnectionError,
+    MDBHandlerError as SdkMDBHandlerError,
+)
 
 from app.config import MONGODB_CACHE_COLLECTION, settings
 from app.core.errors import MDBConnectionError, MetadataNotFoundError
@@ -26,58 +30,56 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/files", tags=["files"])
 
-# ─── MDB Handler HTTP 클라이언트 ──────────────────────────────────────
+# ─── MDB Handler SDK 클라이언트 ───────────────────────────────────────
+# SDK가 SERVICE_NAME env에서 X-Caller-Service 헤더를 자동 부착한다.
+# file_cache 컬렉션은 caller="file-manager" 만 write 허용 (mdb-handler ACL).
 
-_mdb_client: httpx.AsyncClient | None = None
-_mdb_prefix = f"/v1/{settings.mongodb_database}/{MONGODB_CACHE_COLLECTION}"
+_mdb: AsyncMongoDBHandler | None = None
 
 
-def get_mdb_client() -> httpx.AsyncClient:
-    global _mdb_client
-    if _mdb_client is None:
-        _mdb_client = httpx.AsyncClient(
+def get_mdb() -> AsyncMongoDBHandler:
+    global _mdb
+    if _mdb is None:
+        _mdb = AsyncMongoDBHandler(
+            database=settings.mongodb_database,
+            collection=MONGODB_CACHE_COLLECTION,
             base_url=settings.mdb_handler_url,
-            timeout=30.0,
         )
-    return _mdb_client
+    return _mdb
 
 
 async def close_mdb_client() -> None:
-    global _mdb_client
-    if _mdb_client is not None:
-        await _mdb_client.aclose()
-        _mdb_client = None
+    global _mdb
+    if _mdb is not None:
+        await _mdb.aclose()
+        _mdb = None
 
 
 # ─── MDB Handler 호출 헬퍼 ────────────────────────────────────────────
 
 
-async def _mdb_call(path: str, json: dict) -> dict:
-    """MDB Handler POST 호출 + httpx 예외를 MDBConnectionError로 번역."""
+async def _mdb_find_one(filter: dict) -> dict | None:
+    """MDB Handler에서 단일 문서 조회. SDK 예외를 MDBConnectionError로 번역."""
     try:
-        resp = await get_mdb_client().post(path, json=json)
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.ConnectError as e:
+        return await get_mdb().find_one(filter)
+    except SdkMDBConnectionError as e:
         raise MDBConnectionError(f"MDB Handler 연결 실패: {e}") from e
-    except httpx.TimeoutException as e:
-        raise MDBConnectionError(f"MDB Handler 응답 타임아웃: {e}") from e
-    except httpx.HTTPStatusError as e:
+    except SdkMDBHandlerError as e:
         raise MDBConnectionError(
-            f"MDB Handler 응답 오류 ({e.response.status_code}): {e.response.text}"
+            f"MDB Handler 응답 오류 ({e.status_code}): {e.message}"
         ) from e
 
 
-async def _mdb_find_one(filter: dict) -> dict | None:
-    """MDB Handler에서 단일 문서 조회"""
-    body = await _mdb_call(f"{_mdb_prefix}/find_one", {"filter": filter})
-    return body.get("data")
-
-
 async def _mdb_insert_one(document: dict) -> str:
-    """MDB Handler에 단일 문서 삽입"""
-    body = await _mdb_call(f"{_mdb_prefix}/insert_one", {"document": document})
-    return body["inserted_id"]
+    """MDB Handler에 단일 문서 삽입. SDK 예외를 MDBConnectionError로 번역."""
+    try:
+        return await get_mdb().insert_one(document)
+    except SdkMDBConnectionError as e:
+        raise MDBConnectionError(f"MDB Handler 연결 실패: {e}") from e
+    except SdkMDBHandlerError as e:
+        raise MDBConnectionError(
+            f"MDB Handler 응답 오류 ({e.status_code}): {e.message}"
+        ) from e
 
 
 # ─── 엔드포인트 ───────────────────────────────────────────────────────
