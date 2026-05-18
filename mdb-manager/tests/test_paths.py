@@ -106,3 +106,54 @@ def test_envelope_delete_body():
     from mdb_handler._paths import build_envelope_delete_body
 
     assert build_envelope_delete_body({"k": 1}) == {"filter": {"k": 1}}
+
+
+def test_envelope_update_body_omits_upsert_keys_by_default():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body({"k": 1}, {"$set": {"x": 1}})
+    assert "upsert" not in body
+    assert "type" not in body
+
+
+def test_envelope_update_body_with_upsert_and_type():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body(
+        {"k": 1},
+        {"$set": {"x": 1}, "$setOnInsert": {"data.k": "v"}},
+        upsert=True,
+        type_="report",
+    )
+    assert body == {
+        "filter": {"k": 1},
+        "update": {"$set": {"x": 1}, "$setOnInsert": {"data.k": "v"}},
+        "upsert": True,
+        "type": "report",
+    }
+
+
+def test_envelope_update_body_with_upsert_and_type_and_ttl():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body(
+        {"k": 1},
+        {"$set": {"x": 1}},
+        ttl=60,
+        upsert=True,
+        type_="report",
+    )
+    assert body == {
+        "filter": {"k": 1},
+        "update": {"$set": {"x": 1}},
+        "upsert": True,
+        "type": "report",
+        "ttl": 60,
+    }
+
+
+def test_envelope_update_body_upsert_false_omits_key():
+    from mdb_handler._paths import build_envelope_update_body
+
+    body = build_envelope_update_body({"k": 1}, {"$set": {"x": 1}}, upsert=False)
+    assert "upsert" not in body

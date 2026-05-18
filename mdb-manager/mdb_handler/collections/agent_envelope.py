@@ -91,17 +91,29 @@ class AgentEnvelopeCollection:
         return resp["data"]
 
     def update(
-        self, filter: dict, update: dict, *, ttl: int | None = None
+        self,
+        filter: dict,
+        update: dict,
+        *,
+        upsert: bool = False,
+        type: str | None = None,
+        ttl: int | None = None,
     ) -> int:
+        """envelope update. upsert=True 시 type 필수 (Service가 422).
+
+        type은 Python builtin shadow지만 insert()와 동일 패턴 (envelope insert/update
+        인자명 일관성). 반환은 modified_count만 — upserted_id가 필요한 use case는
+        별도 메서드로 분리 (현재 미지원).
+        """
         resp = self._client.post(
             f"{self._prefix}/update",
-            json=build_envelope_update_body(filter, update, ttl=ttl),
+            json=build_envelope_update_body(
+                filter, update, ttl=ttl, upsert=upsert, type_=type
+            ),
         )
         return resp["modified_count"]
 
-    def update_many(
-        self, filter: dict, update: dict, *, ttl: int | None = None
-    ) -> int:
+    def update_many(self, filter: dict, update: dict, *, ttl: int | None = None) -> int:
         resp = self._client.post(
             f"{self._prefix}/update_many",
             json=build_envelope_update_body(filter, update, ttl=ttl),

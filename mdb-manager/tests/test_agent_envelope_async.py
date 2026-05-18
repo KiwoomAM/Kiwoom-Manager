@@ -92,3 +92,50 @@ async def test_async_agent_output_uses_correct_collection_in_path():
     t.post.return_value = {"data": []}
     await col.find()
     assert t.post.call_args[0][0] == "/v1/kw_ai/agent_output/find"
+
+
+@pytest.mark.asyncio
+async def test_async_update_passes_upsert_and_type_in_body():
+    col, t = _make_col()
+    t.post.return_value = {"modified_count": 0, "upserted_id": "oid"}
+    result = await col.update(
+        {"k": 1},
+        {"$set": {"x": 1}, "$setOnInsert": {"data.k": "v"}},
+        upsert=True,
+        type="report",
+    )
+    assert result == 0
+    body = t.post.call_args.kwargs["json"]
+    assert body["upsert"] is True
+    assert body["type"] == "report"
+
+
+@pytest.mark.asyncio
+async def test_async_update_default_omits_upsert_and_type():
+    col, t = _make_col()
+    t.post.return_value = {"modified_count": 1, "upserted_id": None}
+    await col.update({"k": 1}, {"$set": {"x": 1}})
+    body = t.post.call_args.kwargs["json"]
+    assert "upsert" not in body
+    assert "type" not in body
+
+
+@pytest.mark.asyncio
+async def test_async_update_upsert_with_ttl_sends_all_params():
+    col, t = _make_col()
+    t.post.return_value = {"modified_count": 0, "upserted_id": "oid"}
+    await col.update(
+        {"k": 1},
+        {"$set": {"x": 1}},
+        upsert=True,
+        type="report",
+        ttl=3600,
+    )
+    body = t.post.call_args.kwargs["json"]
+    assert body == {
+        "filter": {"k": 1},
+        "update": {"$set": {"x": 1}},
+        "upsert": True,
+        "type": "report",
+        "ttl": 3600,
+    }

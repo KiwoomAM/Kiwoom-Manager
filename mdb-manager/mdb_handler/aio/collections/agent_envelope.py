@@ -87,11 +87,20 @@ class AsyncAgentEnvelopeCollection:
         return resp["data"]
 
     async def update(
-        self, filter: dict, update: dict, *, ttl: int | None = None
+        self,
+        filter: dict,
+        update: dict,
+        *,
+        upsert: bool = False,
+        type: str | None = None,
+        ttl: int | None = None,
     ) -> int:
+        """envelope update (async). upsert=True 시 type 필수 (Service가 422)."""
         resp = await self._client.post(
             f"{self._prefix}/update",
-            json=build_envelope_update_body(filter, update, ttl=ttl),
+            json=build_envelope_update_body(
+                filter, update, ttl=ttl, upsert=upsert, type_=type
+            ),
         )
         return resp["modified_count"]
 

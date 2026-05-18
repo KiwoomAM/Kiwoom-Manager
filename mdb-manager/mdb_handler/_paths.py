@@ -56,9 +56,7 @@ def build_find_one_body(
     return body
 
 
-def build_insert_one_body(
-    document: dict, *, ttl: int | None = None
-) -> dict[str, Any]:
+def build_insert_one_body(document: dict, *, ttl: int | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"document": document}
     if ttl is not None:
         body["ttl"] = ttl
@@ -155,10 +153,23 @@ def build_envelope_find_one_body(
 
 
 def build_envelope_update_body(
-    filter: dict, update: dict, *, ttl: int | None = None
+    filter: dict,
+    update: dict,
+    *,
+    ttl: int | None = None,
+    upsert: bool = False,
+    type_: str | None = None,
 ) -> dict[str, Any]:
-    """envelope update 요청 바디 빌더. update는 MongoDB operator만 허용."""
+    """envelope update 요청 바디 빌더. update는 MongoDB operator만 허용.
+
+    upsert=True 일 때 type_은 필수 (Service가 422). type_은 builtin shadow
+    회피용 trailing underscore이며 JSON 키는 "type"으로 직렬화한다.
+    """
     body: dict[str, Any] = {"filter": filter, "update": update}
+    if upsert:
+        body["upsert"] = True
+    if type_ is not None:
+        body["type"] = type_
     if ttl is not None:
         body["ttl"] = ttl
     return body
