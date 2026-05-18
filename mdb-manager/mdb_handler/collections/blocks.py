@@ -81,9 +81,7 @@ class BlocksCollection:
 
     # Read
     def get_all(self) -> List[Dict]:
-        resp = self._client.post(
-            self._route.path("find"), json=build_find_body()
-        )
+        resp = self._client.post(self._route.path("find"), json=build_find_body())
         return resp["data"]
 
     def get_by_id(self, block_id: str) -> Optional[Dict]:
@@ -127,32 +125,24 @@ class BlocksCollection:
         return resp["data"]
 
     # Update
-    def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("update_one"),
             json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
-    def update_many(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_many(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("update_many"),
             json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
-    def update_by_id(
-        self, block_id: str, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_by_id(self, block_id: str, update: Dict, upsert: bool = False) -> int:
         return self.update_one({"block_id": block_id}, update, upsert=upsert)
 
-    def replace_one(
-        self, filter: Dict, replacement: Dict, upsert: bool = False
-    ) -> int:
+    def replace_one(self, filter: Dict, replacement: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("replace_one"),
             json=build_replace_body(filter, replacement, upsert=upsert),

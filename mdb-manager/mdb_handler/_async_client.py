@@ -53,9 +53,7 @@ class AsyncClient:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.aclose()
 
-    async def _request(
-        self, method: str, path: str, **kwargs: Any
-    ) -> httpx.Response:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:

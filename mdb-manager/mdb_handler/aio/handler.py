@@ -91,9 +91,7 @@ class AsyncMongoDBHandler:
         ttl: int | None = None,
     ) -> List[str]:
         self._ensure_open()
-        return await self._default.insert_many(
-            documents, ordered=ordered, ttl=ttl
-        )
+        return await self._default.insert_many(documents, ordered=ordered, ttl=ttl)
 
     # Read
     async def get_all(self) -> List[Dict]:
@@ -121,9 +119,7 @@ class AsyncMongoDBHandler:
         return await self._default.find_one(filter, **kwargs)
 
     # Update
-    async def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    async def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         self._ensure_open()
         return await self._default.update_one(filter, update, upsert=upsert)
 
@@ -143,9 +139,7 @@ class AsyncMongoDBHandler:
         self, filter: Dict, replacement: Dict, upsert: bool = False
     ) -> int:
         self._ensure_open()
-        return await self._default.replace_one(
-            filter, replacement, upsert=upsert
-        )
+        return await self._default.replace_one(filter, replacement, upsert=upsert)
 
     # Delete
     async def delete_one(self, filter: Dict) -> int:
@@ -193,17 +187,13 @@ class AsyncMongoDBHandler:
     async def list_collections(self, database: str | None = None) -> List[str]:
         self._ensure_open()
         db = database or self.database
-        resp = await self._client.get(
-            "/v1/admin/collections", params={"database": db}
-        )
+        resp = await self._client.get("/v1/admin/collections", params={"database": db})
         return resp["collections"]
 
     # 컬렉션/DB 전환
     def get_collection(self, collection_name: str) -> AsyncBlocksCollection:
         self._ensure_open()
-        return AsyncBlocksCollection(
-            self._client, collection_name, self.database
-        )
+        return AsyncBlocksCollection(self._client, collection_name, self.database)
 
     def get_database(
         self, database: str, collection: str | None = None

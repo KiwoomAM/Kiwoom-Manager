@@ -77,9 +77,7 @@ class AsyncBlocksCollection:
 
     # Read
     async def get_all(self) -> List[Dict]:
-        resp = await self._client.post(
-            self._route.path("find"), json=build_find_body()
-        )
+        resp = await self._client.post(self._route.path("find"), json=build_find_body())
         return resp["data"]
 
     async def get_by_id(self, block_id: str) -> Optional[Dict]:
@@ -123,9 +121,7 @@ class AsyncBlocksCollection:
         return resp["data"]
 
     # Update
-    async def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    async def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = await self._client.post(
             self._route.path("update_one"),
             json=build_update_body(filter, update, upsert=upsert),
@@ -144,9 +140,7 @@ class AsyncBlocksCollection:
     async def update_by_id(
         self, block_id: str, update: Dict, upsert: bool = False
     ) -> int:
-        return await self.update_one(
-            {"block_id": block_id}, update, upsert=upsert
-        )
+        return await self.update_one({"block_id": block_id}, update, upsert=upsert)
 
     async def replace_one(
         self, filter: Dict, replacement: Dict, upsert: bool = False

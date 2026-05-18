@@ -102,9 +102,7 @@ async def test_async_insert_agent_data_emits_deprecation_warning():
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         await col.insert_agent_data(type="r", data={})
-    deprecations = [
-        x for x in w if issubclass(x.category, DeprecationWarning)
-    ]
+    deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
     assert deprecations, "DeprecationWarning expected"
     msg = " ".join(str(x.message) for x in deprecations)
     assert "AsyncAgentEnvelopeCollection" in msg

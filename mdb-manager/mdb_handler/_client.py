@@ -38,9 +38,7 @@ class SyncClient:
     def close(self) -> None:
         self._http.close()
 
-    def _request(
-        self, method: str, path: str, **kwargs: Any
-    ) -> httpx.Response:
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:

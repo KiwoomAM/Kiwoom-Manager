@@ -96,9 +96,7 @@ class MongoDBHandler:
         ordered: bool = True,
         ttl: int | None = None,
     ) -> List[str]:
-        return self._default_collection.insert_many(
-            documents, ordered=ordered, ttl=ttl
-        )
+        return self._default_collection.insert_many(documents, ordered=ordered, ttl=ttl)
 
     # =====================================================================
     # Read
@@ -126,33 +124,17 @@ class MongoDBHandler:
     # Update
     # =====================================================================
 
-    def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
-        return self._default_collection.update_one(
-            filter, update, upsert=upsert
-        )
+    def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
+        return self._default_collection.update_one(filter, update, upsert=upsert)
 
-    def update_many(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
-        return self._default_collection.update_many(
-            filter, update, upsert=upsert
-        )
+    def update_many(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
+        return self._default_collection.update_many(filter, update, upsert=upsert)
 
-    def update_by_id(
-        self, block_id: str, update: Dict, upsert: bool = False
-    ) -> int:
-        return self._default_collection.update_by_id(
-            block_id, update, upsert=upsert
-        )
+    def update_by_id(self, block_id: str, update: Dict, upsert: bool = False) -> int:
+        return self._default_collection.update_by_id(block_id, update, upsert=upsert)
 
-    def replace_one(
-        self, filter: Dict, replacement: Dict, upsert: bool = False
-    ) -> int:
-        return self._default_collection.replace_one(
-            filter, replacement, upsert=upsert
-        )
+    def replace_one(self, filter: Dict, replacement: Dict, upsert: bool = False) -> int:
+        return self._default_collection.replace_one(filter, replacement, upsert=upsert)
 
     # =====================================================================
     # Delete
@@ -223,16 +205,12 @@ class MongoDBHandler:
         """같은 database 내에서 collection만 변경."""
         return BlocksCollection(self._client, collection_name, self.database)
 
-    def get_database(
-        self, database: str, collection: str = None
-    ) -> BlocksCollection:
+    def get_database(self, database: str, collection: str = None) -> BlocksCollection:
         """다른 database로 전환. collection 미지정 시 기본값 agent_data."""
         col = collection or "agent_data"
         return BlocksCollection(self._client, col, database)
 
-    def get_agent_data(
-        self, database: str | None = None
-    ) -> AgentEnvelopeCollection:
+    def get_agent_data(self, database: str | None = None) -> AgentEnvelopeCollection:
         """agent_data envelope 컬렉션 진입점.
 
         database 인자 미제공 시 현재 핸들러의 database 사용. 반환된 컬렉션은
@@ -244,9 +222,7 @@ class MongoDBHandler:
             database=database or self.database,
         )
 
-    def get_agent_output(
-        self, database: str | None = None
-    ) -> AgentEnvelopeCollection:
+    def get_agent_output(self, database: str | None = None) -> AgentEnvelopeCollection:
         """agent_output envelope 컬렉션 진입점."""
         return AgentEnvelopeCollection(
             client=self._client,
