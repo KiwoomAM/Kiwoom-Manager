@@ -8,14 +8,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-
 from file_manager import FileManagerHandler
+from llm_handler.exceptions import HandlerConnectionError, HandlerError
 
 from app.core.errors import LLMRequestServiceError
 from app.core.providers import configure_handlers
 from app.models.responses import ErrorResponse
 from app.routers import request
-
 
 # 로그 설정. "서버에서 일어나는 일을 어떻게 기록할지" — 시간, 레벨, 이름 형식 지정.
 logging.basicConfig(
@@ -26,8 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger("llm_request")
 
 
-# 서버 시작/종료 시 실행할 것. 
-# yield 전 = 시작 시, yield 후 = 종료 시. 
+# 서버 시작/종료 시 실행할 것.
+# yield 전 = 시작 시, yield 후 = 종료 시.
 # configure_handlers()가 MDB/Redis/LLM 연결을 여기서 초기화
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,6 +64,46 @@ async def handle_service_error(_request: Request, exc: LLMRequestServiceError) -
     )
 
 
+@app.exception_handler(HandlerError)
+async def relay_handler_error(_request: Request, exc: HandlerError) -> JSONResponse:
+    """llm-handler 의 분류 결과를 변형 없이 그대로 caller 에게 relay.
+
+    llm-handler 가 status_code(422/502/504 등) + error_type(6 sub-class:
+    validation/content_blocked/transport/provider/handler_ops/handler_internal)
+    으로 세분한 에러를, llm-request 가 자기 taxonomy 로 묶거나 평탄화하지 않고
+    그대로 통과시킨다. HandlerError base 핸들러 하나가 6 sub-class 전부 catch.
+    """
+    request_id = getattr(_request.state, "request_id", str(uuid.uuid4()))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ErrorResponse(
+            error=exc.message,
+            detail=exc.detail,  # handler_internal sub-cause slug 등 — 변형 없이 relay
+            error_type=exc.error_type,
+            request_id=request_id,
+        ).model_dump(),
+    )
+
+
+@app.exception_handler(HandlerConnectionError)
+async def relay_handler_unreachable(_request: Request, exc: HandlerConnectionError) -> JSONResponse:
+    """llm-handler 서비스 자체에 도달 불가 (status_code=0).
+
+    llm-request 입장에서는 upstream(llm-handler) 가 죽은 것 → 502 로 정규화.
+    HandlerConnectionError 는 HandlerError 가 아니라 SDKError 하위라 위 핸들러로
+    잡히지 않으므로 별도 처리.
+    """
+    request_id = getattr(_request.state, "request_id", str(uuid.uuid4()))
+    return JSONResponse(
+        status_code=502,
+        content=ErrorResponse(
+            error=exc.message,
+            error_type="handler",
+            request_id=request_id,
+        ).model_dump(),
+    )
+
+
 @app.exception_handler(RequestValidationError)
 async def handle_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
     """FastAPI 요청 검증 에러를 표준 ErrorResponse로 변환."""
@@ -89,12 +128,16 @@ async def request_logging_middleware(request: Request, call_next):
 
     try:
         response = await call_next(request)
-    except Exception:
-        logger.exception("미처리 예외: request_id=%s", request_id)
+    except Exception as exc:
+        # 미처리 예외 — llm-request 자체 버그 / 한계. detail 에 exception class
+        # name 을 실어 caller / 운영이 원인 종류를 식별할 수 있게 한다 (기존엔
+        # "내부 서버 오류" 만 나가 진단 정보가 통째로 버려졌음).
+        logger.exception("미처리 예외: request_id=%s %s", request_id, type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
                 error="내부 서버 오류",
+                detail=type(exc).__name__,
                 error_type="handler",
                 request_id=request_id,
             ).model_dump(),

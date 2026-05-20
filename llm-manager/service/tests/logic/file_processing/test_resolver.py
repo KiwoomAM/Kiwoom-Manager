@@ -478,3 +478,53 @@ def test_resolved_files_has_context_cache_id_field():
 def test_resolved_files_context_cache_id_defaults_none():
     rf = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
     assert rf.context_cache_id is None
+
+
+# ── llm-handler 에러 pass-through (FileUploadError 로 변형 금지) ────
+
+
+class TestUploadErrorPassthrough:
+    """upload_file 가 던진 llm-handler 에러는 분류 보존하며 그대로 전파,
+    진짜 로컬 실패만 FileUploadError 로 wrap."""
+
+    async def test_handler_error_passes_through(self, monkeypatch):
+        from llm_handler.exceptions import HandlerError
+
+        async def fake_upload(path, mime_type):
+            raise HandlerError("Gemini 차단", status_code=422, error_type="content_blocked")
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(HandlerError) as exc_info:
+            await _upload_and_cache_file(fi, "checksum-x", [], [])
+        assert exc_info.value.error_type == "content_blocked"
+        assert exc_info.value.status_code == 422
+
+    async def test_handler_connection_error_passes_through(self, monkeypatch):
+        from llm_handler.exceptions import HandlerConnectionError
+
+        async def fake_upload(path, mime_type):
+            raise HandlerConnectionError()
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(HandlerConnectionError):
+            await _upload_and_cache_file(fi, "checksum-x", [], [])
+
+    async def test_local_error_still_wrapped_as_file_upload_error(self, monkeypatch):
+        async def fake_upload(path, mime_type):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(FileUploadError):
+            await _upload_and_cache_file(fi, "checksum-x", [], [])

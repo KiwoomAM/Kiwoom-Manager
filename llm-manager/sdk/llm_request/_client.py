@@ -47,14 +47,18 @@ class AsyncClient:
             raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
 
         if response.status_code >= 400:
+            detail = None
             try:
                 body = response.json()
                 error_msg = body.get("error", response.text)
                 error_type = body.get("error_type")
+                detail = body.get("detail")
             except Exception:
                 error_msg = response.text
                 error_type = None
-            raise ServiceError(error_msg, status_code=response.status_code, error_type=error_type)
+            raise ServiceError(
+                error_msg, status_code=response.status_code, error_type=error_type, detail=detail
+            )
 
         return response
 
@@ -148,6 +152,7 @@ class AsyncClient:
                     err_body.get("error", resp.text),
                     status_code=resp.status_code,
                     error_type=err_body.get("error_type"),
+                    detail=err_body.get("detail"),
                 )
             except Exception:
                 err = ServiceError(resp.text, status_code=resp.status_code)
@@ -164,7 +169,18 @@ class AsyncClient:
                         data = line[6:]
                         if data == "[DONE]":
                             break
-                        yield json.loads(data)
+                        event = json.loads(data)
+                        # llm-handler 와 동일 계약 — "error" 키 이벤트는 mid-stream
+                        # 에러 신호. 변형 없이 ServiceError 로 raise (caller 의 async
+                        # for 가 throw).
+                        if "error" in event:
+                            raise ServiceError(
+                                event["error"],
+                                status_code=event.get("status_code", 502),
+                                error_type=event.get("error_type"),
+                                detail=event.get("detail"),
+                            )
+                        yield event
             finally:
                 await ctx.__aexit__(None, None, None)
 

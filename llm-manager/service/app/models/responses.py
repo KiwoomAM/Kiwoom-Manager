@@ -36,6 +36,8 @@ class ErrorResponse(BaseModel):
 
     error: str
     detail: str | None = None
+    # llm-request 자체 값(validation/cache/file/...) 또는 llm-handler 에서 relay 된
+    # 값(content_blocked/transport/provider/handler_ops/handler_internal) 그대로.
     error_type: str = "handler"
     request_id: str = ""
 
