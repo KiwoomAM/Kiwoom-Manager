@@ -175,7 +175,7 @@ def test_request_relays_handler_ops_502(test_client):
 
 
 def test_request_relays_handler_connection_error_as_502(test_client):
-    """llm-handler 서비스 도달 불가(status_code=0) → 502 로 정규화하여 relay."""
+    """llm-handler 서비스 도달 불가(status_code=0) → 502 transport (재시도 가능 신호)."""
     from llm_handler.exceptions import HandlerConnectionError
 
     with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=HandlerConnectionError()):
@@ -183,7 +183,8 @@ def test_request_relays_handler_connection_error_as_502(test_client):
 
     assert resp.status_code == 502
     data = resp.json()
-    assert data["error_type"] == "handler"
+    # 도달 불가 = 재시도 가능한 전송 계층 장애 → caller 가 transport 로 동일 재시도 분기.
+    assert data["error_type"] == "transport"
 
 
 def test_request_relays_handler_internal_detail(test_client):
@@ -206,13 +207,17 @@ def test_request_relays_handler_internal_detail(test_client):
 
 
 def test_request_unhandled_exception_carries_detail(test_client):
-    """미처리 예외 → 500 + detail 에 exception class name (진단 정보 보강)."""
+    """llm-request 자체 미처리 예외 → 500 + request_internal + detail=exception class name.
+
+    relay 되는 handler_internal(=llm-handler 내부)과 구분되는 별도 라벨.
+    스트림/비스트림 경로 무관 동일 분류.
+    """
     with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
         resp = test_client.post("/v1/request", json=_cache_off_body())
 
     assert resp.status_code == 500
     data = resp.json()
-    assert data["error_type"] == "handler"
+    assert data["error_type"] == "request_internal"
     assert data["detail"] == "RuntimeError"
 
 
@@ -446,8 +451,34 @@ def test_stream_relays_handler_internal_detail(test_client, monkeypatch):
     assert error_events[0]["detail"] == "pool_timeout"
 
 
-def test_stream_unhandled_exception_becomes_handler_internal(test_client, monkeypatch):
-    """스트림 도중 llm-request 자체 미처리 예외 → handler_internal + detail=예외클래스명."""
+def test_stream_handler_connection_error_becomes_transport(test_client, monkeypatch):
+    """스트림 도중 llm-handler 도달 불가 → 502 transport (재시도 가능 신호)."""
+    from llm_handler.exceptions import HandlerConnectionError
+    from llm_handler.models import StreamChunk
+
+    async def spy_stream_async(llm_input, **kwargs):
+        async def _gen():
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+            raise HandlerConnectionError()
+
+        return _gen(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "x", "model": "gemini-2.5-flash"},
+    })
+
+    error_events = [e for e in _parse_sse_events(resp.text) if "error" in e]
+    assert error_events[0]["error_type"] == "transport"
+    assert error_events[0]["status_code"] == 502
+
+
+def test_stream_unhandled_exception_becomes_request_internal(test_client, monkeypatch):
+    """스트림 도중 llm-request 자체 미처리 예외 → request_internal + detail=예외클래스명.
+
+    비스트림 catch-all 과 동일 라벨 (경로 무관 일관), relay handler_internal 과는 구분.
+    """
     from llm_handler.models import StreamChunk
 
     async def spy_stream_async(llm_input, **kwargs):
@@ -464,7 +495,7 @@ def test_stream_unhandled_exception_becomes_handler_internal(test_client, monkey
     })
 
     error_events = [e for e in _parse_sse_events(resp.text) if "error" in e]
-    assert error_events[0]["error_type"] == "handler_internal"
+    assert error_events[0]["error_type"] == "request_internal"
     assert error_events[0]["detail"] == "RuntimeError"
 
 

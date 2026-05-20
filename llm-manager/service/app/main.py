@@ -89,7 +89,8 @@ async def relay_handler_error(_request: Request, exc: HandlerError) -> JSONRespo
 async def relay_handler_unreachable(_request: Request, exc: HandlerConnectionError) -> JSONResponse:
     """llm-handler 서비스 자체에 도달 불가 (status_code=0).
 
-    llm-request 입장에서는 upstream(llm-handler) 가 죽은 것 → 502 로 정규화.
+    연결 실패 = 재시도 가능한 전송 계층 장애 → caller 가 transport 로 동일 재시도
+    분기할 수 있도록 502 `transport` 로 정규화 (모호한 "handler" 대신 retryable 신호).
     HandlerConnectionError 는 HandlerError 가 아니라 SDKError 하위라 위 핸들러로
     잡히지 않으므로 별도 처리.
     """
@@ -98,7 +99,7 @@ async def relay_handler_unreachable(_request: Request, exc: HandlerConnectionErr
         status_code=502,
         content=ErrorResponse(
             error=exc.message,
-            error_type="handler",
+            error_type="transport",
             request_id=request_id,
         ).model_dump(),
     )
@@ -129,16 +130,17 @@ async def request_logging_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        # 미처리 예외 — llm-request 자체 버그 / 한계. detail 에 exception class
-        # name 을 실어 caller / 운영이 원인 종류를 식별할 수 있게 한다 (기존엔
-        # "내부 서버 오류" 만 나가 진단 정보가 통째로 버려졌음).
+        # 미처리 예외 — llm-request 자체 버그 / 한계. relay 되는 handler_internal
+        # (=llm-handler 내부)과 구분되도록 request_internal 로 분류, detail 에
+        # exception class name 을 실어 원인 종류 식별 (기존엔 "내부 서버 오류" 만
+        # 나가 진단 정보가 통째로 버려졌음).
         logger.exception("미처리 예외: request_id=%s %s", request_id, type(exc).__name__)
         return JSONResponse(
             status_code=500,
             content=ErrorResponse(
                 error="내부 서버 오류",
                 detail=type(exc).__name__,
-                error_type="handler",
+                error_type="request_internal",
                 request_id=request_id,
             ).model_dump(),
         )

@@ -26,10 +26,13 @@ class ServiceError(SDKError):
     Attributes:
         error_type: 에러 출처.
             - llm-request 자체: "validation" | "cache" | "file" |
-              "unsupported_file_type" | "file_too_large" | "file_resolve" | "handler"
+              "unsupported_file_type" | "file_too_large" | "file_resolve" |
+              "not_found" | "request_internal"(llm-request 자체 미처리 버그) | "handler"
             - llm-handler 에서 그대로 relay 된 값: "content_blocked" | "transport"
-              | "provider" | "handler_ops" | "handler_internal"
+              | "provider" | "handler_ops" | "handler_internal"(=llm-handler 내부)
               (status_code 도 llm-handler 가 정한 값 그대로 보존)
+            - "transport": llm-handler 도달 불가(HandlerConnectionError, 502)도 이 값으로
+              정규화 — Gemini transport 와 동일하게 재시도 가능 신호.
             - None: 구버전 / error_type 미상 응답
         detail: 에러 sub-cause 식별자. llm-handler 의 handler_internal 슬러그
             ("pool_timeout" | "local_protocol_error" | <ExceptionClassName>) 가

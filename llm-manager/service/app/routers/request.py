@@ -100,10 +100,10 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             return
         except HandlerConnectionError as e:
-            # llm-handler 도달 불가 → 502 handler.
+            # llm-handler 도달 불가 → 502 transport (재시도 가능 신호, 비스트림과 동일).
             err = {
                 "error": e.message,
-                "error_type": "handler",
+                "error_type": "transport",
                 "status_code": 502,
                 "detail": None,
             }
@@ -111,11 +111,11 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
             return
         except Exception as e:
             # llm-request 자체 미처리 예외 — 비스트림 catch-all 과 동일하게
-            # handler_internal + detail=예외클래스명.
+            # request_internal + detail=예외클래스명 (relay handler_internal 과 구분).
             logger.exception("스트림 미처리 예외: %s", type(e).__name__)
             err = {
                 "error": "내부 서버 오류",
-                "error_type": "handler_internal",
+                "error_type": "request_internal",
                 "status_code": 500,
                 "detail": type(e).__name__,
             }
