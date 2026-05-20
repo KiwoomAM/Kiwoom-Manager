@@ -116,11 +116,104 @@ def test_request_cache_off(test_client):
 
 
 def test_fetch_not_found(test_client, mock_collection):
-    """fetch: 존재하지 않는 cache_key."""
+    """fetch: 존재하지 않는 cache_key → 404 not_found (불투명한 500 대신 명확한 신호)."""
     resp = test_client.post("/v1/fetch", json={
         "cache_key": "0" * 64,
     })
-    assert resp.status_code == 500  # KeyError → 500
+    assert resp.status_code == 404
+    data = resp.json()
+    assert data["error_type"] == "not_found"
+
+
+# ── llm-handler 에러 relay (변형 없이 그대로 caller 에게) ──────────
+
+
+def _cache_off_body() -> dict:
+    return {
+        "llm_input": {"contents": "테스트", "model": "gemini-2.5-flash"},
+        "cache_mode": False,
+        "save_mode": False,
+    }
+
+
+def test_request_relays_handler_error_content_blocked(test_client):
+    """llm-handler 의 ContentBlocked(422) 가 그대로 caller 에게 relay 된다."""
+    from llm_handler.exceptions import HandlerError
+
+    err = HandlerError("Gemini 가 응답을 차단 (finish_reason=SAFETY)", status_code=422, error_type="content_blocked")
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=err):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error_type"] == "content_blocked"
+    assert "차단" in data["error"]
+
+
+def test_request_relays_handler_error_transport_504(test_client):
+    """transport(504) status_code/error_type 가 평탄화 없이 보존된다."""
+    from llm_handler.exceptions import HandlerError
+
+    err = HandlerError("전송 계층 실패: ReadTimeout", status_code=504, error_type="transport")
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=err):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 504
+    assert resp.json()["error_type"] == "transport"
+
+
+def test_request_relays_handler_ops_502(test_client):
+    """handler_ops(502, Gemini 401/403) relay — caller 가 운영팀 alert 라우팅 가능."""
+    from llm_handler.exceptions import HandlerError
+
+    err = HandlerError("Gemini 권한/인증 실패", status_code=502, error_type="handler_ops")
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=err):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 502
+    assert resp.json()["error_type"] == "handler_ops"
+
+
+def test_request_relays_handler_connection_error_as_502(test_client):
+    """llm-handler 서비스 도달 불가(status_code=0) → 502 로 정규화하여 relay."""
+    from llm_handler.exceptions import HandlerConnectionError
+
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=HandlerConnectionError()):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 502
+    data = resp.json()
+    assert data["error_type"] == "handler"
+
+
+def test_request_relays_handler_internal_detail(test_client):
+    """handler_internal 의 detail(sub-cause slug)도 변형 없이 relay — 운영 alert 라우팅용."""
+    from llm_handler.exceptions import HandlerError
+
+    err = HandlerError(
+        "내부 서버 오류 (handler 자원 부족)",
+        status_code=500,
+        error_type="handler_internal",
+        detail="pool_timeout",
+    )
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=err):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data["error_type"] == "handler_internal"
+    assert data["detail"] == "pool_timeout"
+
+
+def test_request_unhandled_exception_carries_detail(test_client):
+    """미처리 예외 → 500 + detail 에 exception class name (진단 정보 보강)."""
+    with patch("app.logic.runner.aio_call", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        resp = test_client.post("/v1/request", json=_cache_off_body())
+
+    assert resp.status_code == 500
+    data = resp.json()
+    assert data["error_type"] == "handler"
+    assert data["detail"] == "RuntimeError"
 
 
 # ── Phase 1 — file_meta 응답 노출 (endpoint 통합) ──────────────
@@ -286,6 +379,93 @@ def test_request_stream_routes_stored_files_to_runner(test_client, monkeypatch):
     assert resp.status_code == 200
     assert captured["stored_files"] is not None
     assert captured["stored_files"][0].file_path == "abc.pdf"
+
+
+# ── 스트림 mid-stream 에러 relay (in-band SSE error 이벤트) ────────
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """SSE 응답 본문에서 [DONE] 제외한 data 이벤트 dict 목록 추출."""
+    import json
+    out = []
+    for line in body.splitlines():
+        if line.startswith("data: "):
+            payload = line[6:]
+            if payload != "[DONE]":
+                out.append(json.loads(payload))
+    return out
+
+
+def test_stream_relays_mid_stream_handler_error(test_client, monkeypatch):
+    """스트림 도중 HandlerError → error 키 SSE 이벤트로 relay, [DONE] 미발송."""
+    from llm_handler.exceptions import HandlerError
+    from llm_handler.models import StreamChunk
+
+    async def spy_stream_async(llm_input, **kwargs):
+        async def _gen():
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+            raise HandlerError("Gemini 전송 단절", status_code=502, error_type="transport")
+
+        return _gen(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "x", "model": "gemini-2.5-flash"},
+    })
+
+    body = resp.text
+    events = _parse_sse_events(body)
+    error_events = [e for e in events if "error" in e]
+    assert len(error_events) == 1
+    assert error_events[0]["error_type"] == "transport"
+    assert error_events[0]["status_code"] == 502
+    assert "[DONE]" not in body  # 에러 시 done 미발송
+
+
+def test_stream_relays_handler_internal_detail(test_client, monkeypatch):
+    """스트림 도중 handler_internal 의 detail 슬러그도 그대로 relay."""
+    from llm_handler.exceptions import HandlerError
+    from llm_handler.models import StreamChunk
+
+    async def spy_stream_async(llm_input, **kwargs):
+        async def _gen():
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+            raise HandlerError("자원 부족", status_code=500, error_type="handler_internal", detail="pool_timeout")
+
+        return _gen(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "x", "model": "gemini-2.5-flash"},
+    })
+
+    error_events = [e for e in _parse_sse_events(resp.text) if "error" in e]
+    assert error_events[0]["error_type"] == "handler_internal"
+    assert error_events[0]["detail"] == "pool_timeout"
+
+
+def test_stream_unhandled_exception_becomes_handler_internal(test_client, monkeypatch):
+    """스트림 도중 llm-request 자체 미처리 예외 → handler_internal + detail=예외클래스명."""
+    from llm_handler.models import StreamChunk
+
+    async def spy_stream_async(llm_input, **kwargs):
+        async def _gen():
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+            raise RuntimeError("boom")
+
+        return _gen(), {"source": "live", "cache_hit": False}
+
+    monkeypatch.setattr("app.routers.request.llm_request_stream_async", spy_stream_async)
+
+    resp = test_client.post("/v1/request/stream", json={
+        "llm_input": {"contents": "x", "model": "gemini-2.5-flash"},
+    })
+
+    error_events = [e for e in _parse_sse_events(resp.text) if "error" in e]
+    assert error_events[0]["error_type"] == "handler_internal"
+    assert error_events[0]["detail"] == "RuntimeError"
 
 
 # ── /v1/context-cache/expire ─────────────────────────────────
