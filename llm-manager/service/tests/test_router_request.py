@@ -551,7 +551,7 @@ def test_expire_endpoint_validates_grace_upper_bound(test_client):
 
 
 def test_expire_endpoint_default_grace_seconds(test_client, monkeypatch):
-    """grace_seconds 생략 시 기본 3 으로 동작."""
+    """grace_seconds 생략 시 기본 5 로 동작."""
     from app.models.responses import ExpireContextCacheResponse
 
     captured = {}
@@ -569,4 +569,4 @@ def test_expire_endpoint_default_grace_seconds(test_client, monkeypatch):
         json={"cache_ids": ["h1"]},
     )
     assert resp.status_code == 200
-    assert captured["grace"] == 3
+    assert captured["grace"] == 5

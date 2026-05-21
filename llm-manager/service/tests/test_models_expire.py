@@ -15,9 +15,9 @@ class TestExpireRequest:
         with pytest.raises(ValidationError):
             ExpireContextCacheRequest(cache_ids=[])
 
-    def test_grace_seconds_default_3(self):
+    def test_grace_seconds_default_5(self):
         req = ExpireContextCacheRequest(cache_ids=["abc"])
-        assert req.grace_seconds == 3
+        assert req.grace_seconds == 5
 
     def test_grace_seconds_lower_bound(self):
         with pytest.raises(ValidationError):

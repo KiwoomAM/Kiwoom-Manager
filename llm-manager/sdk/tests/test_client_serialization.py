@@ -99,7 +99,7 @@ class TestExpireContextCache:
         }
         assert result == {"expired": ["h1"], "failed": []}
 
-    async def test_default_grace_seconds_3(self):
+    async def test_default_grace_seconds_5(self):
         from llm_request._client import AsyncClient
 
         mock_resp = MagicMock()
@@ -111,7 +111,7 @@ class TestExpireContextCache:
 
         await client.delete_cache(["h1"])
 
-        assert client._request.call_args.kwargs["json"]["grace_seconds"] == 3
+        assert client._request.call_args.kwargs["json"]["grace_seconds"] == 5
 
 
 class TestErrorDetailRelay:
@@ -152,6 +152,14 @@ class TestDeleteCacheInput:
         with pytest.raises(ValueError, match="cache_id"):
             await llm_request.delete_cache_async([])
 
+    async def test_empty_string_id_raises(self):
+        import llm_request
+
+        with pytest.raises(ValueError, match="빈 cache_id"):
+            await llm_request.delete_cache_async("")
+        with pytest.raises(ValueError, match="빈 cache_id"):
+            await llm_request.delete_cache_async(["h1", ""])
+
     async def test_grace_seconds_below_range_raises(self):
         import llm_request
 
@@ -185,7 +193,7 @@ class TestDeleteCacheInput:
         result = await llm_request.delete_cache_async("h1")
 
         assert captured["ids"] == ["h1"]  # 단건 문자열 → 리스트로 정규화
-        assert captured["grace"] == 3
+        assert captured["grace"] == 5
         assert result.expired == ["h1"]
 
     async def test_request_detail_none_when_absent(self):

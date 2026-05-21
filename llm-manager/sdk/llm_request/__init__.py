@@ -361,7 +361,7 @@ async def fetch_by_cache_key(
 async def delete_cache_async(
     cache_ids: str | list[str],
     *,
-    grace_seconds: int = 3,
+    grace_seconds: int = 5,
 ) -> ExpireResult:
     """Context Cache 를 grace_seconds 후 만료시킨다 (async).
 
@@ -373,7 +373,9 @@ async def delete_cache_async(
     Args:
         cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열
             하나, 여러 개면 리스트로 넘긴다. (단건도 결과는 리스트로 돌아온다.)
-        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 3).
+        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 5).
+            기본 5초는 task 종료 직후 호출을 가정한다. 같은 cache 를 쓰는 느린
+            LLM 호출과 겹칠 수 있으면 넉넉히(예: 30~60) 올려 잡을 것.
 
     Returns:
         ExpireResult — `expired` (만료 성공, 또는 이미 없어진 cache 의 idempotent
@@ -397,6 +399,10 @@ async def delete_cache_async(
         raise ValueError(
             "삭제할 cache_id 가 없습니다. cache_id 를 1개 이상 넣어주세요."
         )
+    if not all(ids):
+        raise ValueError(
+            "빈 cache_id 가 포함되어 있습니다. 유효한 cache_id 만 넣어주세요."
+        )
     if not 1 <= grace_seconds <= 3600:
         raise ValueError(
             f"grace_seconds 는 1~3600초 사이여야 합니다 (받은 값: {grace_seconds})."
@@ -410,7 +416,7 @@ async def delete_cache_async(
 def delete_cache(
     cache_ids: str | list[str],
     *,
-    grace_seconds: int = 3,
+    grace_seconds: int = 5,
 ) -> ExpireResult:
     """Context Cache 를 grace_seconds 후 만료시킨다 (sync). delete_cache_async 의 동기 래퍼."""
     return asyncio.run(

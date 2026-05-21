@@ -221,7 +221,7 @@ class AsyncClient:
         self,
         cache_ids: list[str],
         *,
-        grace_seconds: int = 3,
+        grace_seconds: int = 5,
     ) -> dict[str, Any]:
         """POST /v1/context-cache/expire — Context Cache TTL 단축 (내부 caches.update)."""
         body = {"cache_ids": cache_ids, "grace_seconds": grace_seconds}

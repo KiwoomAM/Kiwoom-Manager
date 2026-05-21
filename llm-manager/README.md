@@ -516,8 +516,10 @@ print(result.failed)    # []
 
 | 인자 | 기본값 | 설명 |
 | --- | --- | --- |
-| `cache_ids` | — | `meta.context_cache_id` 로 받은 식별자 리스트 |
-| `grace_seconds` | `3` | in-flight 요청 보호 grace (1~3600). 이 시간 후 Gemini cache + Redis 동시 만료 |
+| `cache_ids` | — | `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열, 여러 개면 리스트 |
+| `grace_seconds` | `5` | in-flight 요청 보호 grace (1~3600). 이 시간 후 Gemini cache + Redis 동시 만료 |
+
+> ⚠️ 기본 `5`초는 **task 종료 직후 호출**을 가정한다. 같은 cache 를 쓰는 LLM 호출이 아직 진행 중일 수 있으면(대용량 컨텍스트 등 느린 호출) `grace_seconds` 를 넉넉히(예: 30~60) 올려 잡아 호출 완료 전에 만료되지 않게 한다.
 
 > ⚠️ `meta.context_cache_id` 는 **live 호출일 때만** 응답에 들어간다. MDB cache HIT 응답에는 키 자체 부재. 첫 호출이 cache HIT 이면 그 task 의 cache_id 는 받지 못하지만, Gemini 측 cache 는 자연 만료되므로 큰 문제 없음.
 
