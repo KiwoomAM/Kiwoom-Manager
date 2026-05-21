@@ -30,7 +30,6 @@ from llm_handler.aio import (
     call,
     configure,
     create_cache,
-    delete_cache,
     embed,
     list_caches,
     session,
@@ -49,7 +48,6 @@ __all__ = [
     # 유틸리티
     "upload_file",
     "create_cache",
-    "delete_cache",
     "list_caches",
     "configure",
     # 모델

@@ -49,7 +49,11 @@ async def _expire_one(cache_id: str, grace_seconds: int) -> _ExpireOutcome:
         doc = cache_store.find_context_cache(cache_id)
     except Exception as e:
         logger.exception("Redis 조회 실패: cache_id=%s", cache_id[:16])
-        return {"cache_id": cache_id, "status": "failed", "error": type(e).__name__}
+        return {
+            "cache_id": cache_id,
+            "status": "failed",
+            "error": f"캐시 정보 조회에 실패했습니다. 잠시 후 다시 시도하세요. ({type(e).__name__})",
+        }
 
     if not doc:
         # idempotent — 이미 정리됨/만료됨
@@ -64,7 +68,11 @@ async def _expire_one(cache_id: str, grace_seconds: int) -> _ExpireOutcome:
         if is_gemini_404(e):
             return {"cache_id": cache_id, "status": "expired"}
         logger.exception("Gemini update_cache 실패: cache_id=%s", cache_id[:16])
-        return {"cache_id": cache_id, "status": "failed", "error": type(e).__name__}
+        return {
+            "cache_id": cache_id,
+            "status": "failed",
+            "error": f"캐시 만료 처리에 실패했습니다. 잠시 후 다시 시도하세요. ({type(e).__name__})",
+        }
 
     # ③ Redis TTL 단축 (실패해도 expired — Gemini 비용은 단축됨)
     try:
