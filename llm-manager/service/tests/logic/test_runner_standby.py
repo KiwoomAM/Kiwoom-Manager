@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-from llm_handler.models import FunctionCall, LLMResponse, StreamChunk, TokenUsage
+from llm_handler.models import LLMResponse, StreamChunk, TokenUsage
 
 from app.logic import runner
-
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -171,6 +169,15 @@ class TestAgentLlmStreamStandby:
             )
 
         monkeypatch.setattr(runner, "aio_stream", slow_aio_stream)
+        # leader stream 종료 시 handler done event 의 assistant_message 로 저장됨 (PR #593 §2).
+        # live text("chunk1-chunk2") 와 동일하게 두어 cached chunk text 검증이 일치하도록.
+        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
+            "request_id": "req-stream-dedup",
+            "assistant_message": {
+                "role": "model",
+                "content": [{"type": "text", "text": "chunk1-chunk2"}],
+            },
+        })
 
         llm_input = {
             "contents": "stream dedup test",
@@ -206,89 +213,40 @@ class TestAgentLlmStreamStandby:
         assert cached_chunks[0].finish_reason == "STOP"
 
 
-# ── stream chunk 누적 시맨틱 회귀 ────────────────────────────
+# ── stream assistant_message 저장 회귀 ────────────────────────────
 
 
-class TestStreamFunctionCallsAccumulation:
-    """_do_llm_stream 의 function_calls 누적 분기 회귀.
+class TestStreamAssistantMessageSave:
+    """_do_llm_stream 이 handler done event 의 assistant_message 로 저장하는지 회귀 (PR #593 §2).
 
-    `_StreamAcc.function_calls.extend(chunk.function_calls)`
-    — 여러 청크에 분산된 function_calls 가 모두 합산되어 저장 응답에 보존되는지 검증.
-    기존 stream 테스트는 모든 청크 function_calls=None 이라 이 분기를 한 번도 실행하지 않음.
+    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로, llm-request 는
+    chunk 별 누적 없이 그대로 받아 저장한다. _get_handler_done_payload 를 mock 해서 주입.
     """
 
-    async def test_middle_chunk_function_calls_preserved_in_saved_response(
+    async def test_assistant_message_saved_with_text_derived(
         self, mock_collection, fake_redis, monkeypatch,
     ):
-        """중간 청크에만 function_calls 가 있고 마지막 청크가 None 이어도, 저장된 응답에 보존."""
-        fc = FunctionCall(name="lookup", args={"q": "x"}, id="fc-1")
-
+        """done event 의 assistant_message 가 cache 에 저장되고, text 가 part 에서 derive 됨."""
         async def fake_aio_stream(**kwargs):
-            yield StreamChunk(text="a", finish_reason=None, usage=None, function_calls=None)
-            yield StreamChunk(text="b", finish_reason=None, usage=None, function_calls=[fc])
+            yield StreamChunk(text="안녕", finish_reason=None, usage=None)
             yield StreamChunk(
-                text="c",
-                finish_reason="STOP",
+                text="하세요", finish_reason="STOP",
                 usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
-                function_calls=None,  # 마지막 청크는 None — 누적된 값이 보존되어야 함
             )
 
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
+            "event": "done",
+            "request_id": "req-1",
+            "assistant_message": {
+                "role": "model",
+                "content": [{"type": "text", "text": "안녕하세요"}],
+            },
+        })
 
-        llm_input = {
-            "contents": "fc accumulation",
-            "model": "gemini-2.5-flash",
-            "service_name": "test",
-        }
-
+        llm_input = {"contents": "x", "model": "gemini-2.5-flash", "service_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
-            llm_input,
-            cache_mode=True, save_mode=True,
-            standby_ttl_seconds=10, database="test_db",
-        )
-        async for _ in stream:
-            pass
-
-        # mock_collection 은 store: dict[str, dict] — 저장된 doc 1개 있어야 함
-        assert len(mock_collection) == 1
-        saved = next(iter(mock_collection.values()))
-        assert saved["result"]["function_calls"] == [fc.model_dump()]
-        assert saved["result"]["text"] == "abc"
-
-    async def test_function_calls_distributed_across_chunks_all_preserved(
-        self, mock_collection, fake_redis, monkeypatch,
-    ):
-        """parallel function call N개가 N개 chunk에 분산 도착 — 모두 누적 저장.
-
-        Gemini stream 실측: parallel fc N개는 N개 chunk에 1개씩 분배되어 옴.
-        기존 overwrite 시맨틱에서는 마지막 chunk fc 만 남고 앞 fc 들이 손실됐음 — 회귀 가드.
-        """
-        fc1 = FunctionCall(name="get_weather", args={"city": "Seoul"}, id="fc-1")
-        fc2 = FunctionCall(name="get_time", args={"tz": "Asia/Seoul"}, id="fc-2")
-        fc3 = FunctionCall(name="get_news", args={"topic": "tech"}, id="fc-3")
-
-        async def fake_aio_stream(**kwargs):
-            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc1])
-            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc2])
-            yield StreamChunk(text="", finish_reason=None, usage=None, function_calls=[fc3])
-            yield StreamChunk(
-                text="",
-                finish_reason="STOP",
-                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
-                function_calls=None,
-            )
-
-        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
-
-        llm_input = {
-            "contents": "parallel fc accumulation",
-            "model": "gemini-3-flash-preview",
-            "service_name": "test",
-        }
-
-        stream, _meta = await runner.llm_request_stream_async(
-            llm_input,
-            cache_mode=True, save_mode=True,
+            llm_input, cache_mode=True, save_mode=True,
             standby_ttl_seconds=10, database="test_db",
         )
         async for _ in stream:
@@ -296,12 +254,62 @@ class TestStreamFunctionCallsAccumulation:
 
         assert len(mock_collection) == 1
         saved = next(iter(mock_collection.values()))
-        # 3개 fc 가 모두 저장되어야 함 — overwrite 회귀 시 [fc3.model_dump()] 만 남음
-        assert saved["result"]["function_calls"] == [
-            fc1.model_dump(),
-            fc2.model_dump(),
-            fc3.model_dump(),
-        ]
+        assert saved["result"]["text"] == "안녕하세요"  # part 에서 derive
+        assert saved["result"]["assistant_message"]["content"][0]["text"] == "안녕하세요"
+
+    async def test_function_call_preserved_in_assistant_message(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """function_call part 가 assistant_message 안에 그대로 보존됨 (5필드 분리 저장 대신)."""
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(
+                text="", finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
+            "request_id": "req-2",
+            "assistant_message": {
+                "role": "model",
+                "content": [
+                    {"type": "function_call",
+                     "function_call": {"name": "lookup", "args": {"q": "x"}, "id": "fc-1"}},
+                ],
+            },
+        })
+
+        llm_input = {"contents": "y", "model": "gemini-2.5-flash", "service_name": "test"}
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input, cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        saved = next(iter(mock_collection.values()))
+        parts = saved["result"]["assistant_message"]["content"]
+        assert parts[0]["function_call"]["name"] == "lookup"
+
+    async def test_no_done_event_skips_save(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """done event 미수신(빈 응답 등) 시 캐시 저장 안 함."""
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: None)
+
+        llm_input = {"contents": "z", "model": "gemini-2.5-flash", "service_name": "test"}
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input, cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        assert len(mock_collection) == 0  # 저장 안 됨
 
 
 # ── Phase 3 lazy fetch dedup 통합 ──────────────────────────

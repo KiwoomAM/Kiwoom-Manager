@@ -4,23 +4,13 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from llm_handler.aio import call as aio_call
 from llm_handler.aio import stream as aio_stream
-from llm_handler.models import (
-    CodeBlock,
-    CodeResult,
-    Content,
-    FunctionCall,
-    Grounding,
-    LLMResponse,
-    StreamChunk,
-    ToolCallInfo,
-    ToolResponseInfo,
-)
+from llm_handler.models import Content, LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
 from app.logic.file_processing import (
@@ -30,10 +20,10 @@ from app.logic.file_processing import (
     resolve_files_after_404,
 )
 from app.logic.gemini_errors import is_gemini_404
-from app.logic.stored_file_resolver import resolve_stored_files
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
 from app.logic.store import cache_get, save_result
+from app.logic.stored_file_resolver import resolve_stored_files
 from app.models.requests import FileInput, StoredFile
 
 logger = logging.getLogger(__name__)
@@ -58,35 +48,25 @@ class _Prepared:
     debug: bool = False
 
 
-@dataclass
-class _StreamAcc:
-    """stream loop 누적용 — chunk 전체를 보관하지 않고 finalize에 필요한 정보만 추출."""
-    text_parts: list[str] = field(default_factory=list)
-    last: StreamChunk | None = None
-    function_calls: list[FunctionCall] = field(default_factory=list)
-    tool_calls: list[ToolCallInfo] = field(default_factory=list)
-    tool_responses: list[ToolResponseInfo] = field(default_factory=list)
-    code_blocks: list[CodeBlock] = field(default_factory=list)
-    code_results: list[CodeResult] = field(default_factory=list)
-    grounding: Grounding | None = None
+def _get_handler_done_payload() -> dict[str, Any] | None:
+    """handler stream 종료 시 SSE done event payload 를 꺼낸다.
+
+    payload: {"event": "done", "request_id": str, "assistant_message": dict | None}
+    error/abort 등으로 done event 미수신 시 None.
+
+    TODO: handler 가 raw stream 사용자 전용 helper (예: aio.last_assistant_message())
+    를 노출하면 이 함수를 그 wrapper 로 교체 — PR #593 review §2.
+    현재는 SDK internal (_done_payload_var) 직접 참조.
+    """
+    from llm_handler._common import _done_payload_var
+    return _done_payload_var.get()
 
 
-def _accumulate(acc: _StreamAcc, chunk: StreamChunk) -> None:
-    """stream chunk 1개에서 누적할 정보 추출. grounding은 Gemini 응답 끝 1회 → last-write-wins."""
-    acc.text_parts.append(chunk.text or "")
-    acc.last = chunk
-    if chunk.function_calls:
-        acc.function_calls.extend(chunk.function_calls)
-    if chunk.tool_calls:
-        acc.tool_calls.extend(chunk.tool_calls)
-    if chunk.tool_responses:
-        acc.tool_responses.extend(chunk.tool_responses)
-    if chunk.code_blocks:
-        acc.code_blocks.extend(chunk.code_blocks)
-    if chunk.code_results:
-        acc.code_results.extend(chunk.code_results)
-    if chunk.grounding is not None:
-        acc.grounding = chunk.grounding
+def _text_from_assistant_message(am: Content) -> str:
+    """assistant_message 의 text part 들만 이어붙임 (cache HIT 시 text 노출용)."""
+    if not isinstance(am.content, list):
+        return am.content if isinstance(am.content, str) else ""
+    return "".join(p.text for p in am.content if p.type == "text" and p.text)
 
 
 # ── prepare / finalize ─────────────────────────────────────────
@@ -291,58 +271,42 @@ def finalize(
 
 def _finalize_stream(
     prep: _Prepared,
-    acc: _StreamAcc,
+    last: StreamChunk | None,
     *,
     database: str | None = None,
 ) -> None:
-    """Stream 완료 후 누적 정보로 MDB 저장 (docs/16 §3.5).
+    """Stream 완료 후 handler done event 의 assistant_message 로 MDB 저장.
 
-    chunk 객체 전체를 보관하지 않고 _StreamAcc 에 누적된 정보만 사용한다.
+    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로,
+    llm-request 는 chunk 별 누적 없이 그대로 받아 저장한다 (PR #593 review §2).
     """
     if not prep.save_mode or prep.dc is None:
         return
-    if acc.last is None:
+    if last is None:
         logger.warning(
             "스트림 완료 시 청크가 0개: cache_key=%s — 빈 결과는 저장하지 않음",
             prep.dc.cache_key[:16] + "...",
         )
         return
 
-    last = acc.last
-    assembled: dict = {
-        "text": "".join(acc.text_parts),
-        "model": prep.llm_input.get("model", "unknown"),
-        "usage": last.usage.model_dump() if last.usage else None,
-        "finish_reason": last.finish_reason,
-        "request_id": "",
-        "source": "stream",
-    }
-    if acc.function_calls:
-        assembled["function_calls"] = [x.model_dump() for x in acc.function_calls]
-    if acc.tool_calls:
-        assembled["tool_calls"] = [x.model_dump() for x in acc.tool_calls]
-    if acc.tool_responses:
-        assembled["tool_responses"] = [x.model_dump() for x in acc.tool_responses]
-    if acc.code_blocks:
-        assembled["code_blocks"] = [x.model_dump() for x in acc.code_blocks]
-    if acc.code_results:
-        assembled["code_results"] = [x.model_dump() for x in acc.code_results]
-    if acc.grounding is not None:
-        assembled["grounding"] = acc.grounding.model_dump()
-
-    try:
-        save_result(
-            prep.dc.cache_key, prep.dc.canonical_json,
-            assembled, prep.meta, prep.dc.collection,
-            database=database, ttl_seconds=prep.ttl_seconds,
-            requested_at=prep.requested_at,
-            file_metas=_dump_files_meta(prep.files),
-        )
-    except Exception:
-        logger.exception(
-            "스트림 결과 저장 실패: cache_key=%s — 캐시 미저장",
+    done = _get_handler_done_payload()
+    if not done or not done.get("assistant_message"):
+        logger.warning(
+            "done event/assistant_message 미수신: cache_key=%s — 캐시 미저장",
             prep.dc.cache_key[:16] + "...",
         )
+        return
+
+    am = Content.model_validate(done["assistant_message"])
+    response = LLMResponse(
+        text=_text_from_assistant_message(am),
+        model=prep.llm_input.get("model", "unknown"),
+        usage=last.usage,
+        finish_reason=last.finish_reason,
+        request_id=done.get("request_id", "") or "",
+        assistant_message=am,
+    )
+    finalize(prep, response, database=database)   # 기존 저장 로직 재사용
 
 
 def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
@@ -586,15 +550,15 @@ async def _do_llm_stream(
 ) -> AsyncIterator[StreamChunk]:
     """파일 처리 + LLM stream + 404 자동 복구 + stream finalize."""
     call_input = await _build_server_call_input(prep)
-    # chunk 객체 전체를 보관하지 않고 finalize 에 필요한 정보만 추출 누적 (docs/16 §3.5)
-    acc = _StreamAcc()
+    # chunk 는 그대로 흘리고, 저장은 handler done event 의 assistant_message 로 (PR #593 review §2)
+    last: StreamChunk | None = None
     try:
         async for chunk in aio_stream(**call_input):
-            _accumulate(acc, chunk)
+            last = chunk
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if is_gemini_404(e) and prep.files and acc.last is None:
+        if is_gemini_404(e) and prep.files and last is None:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -608,14 +572,14 @@ async def _do_llm_stream(
             prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
-                _accumulate(acc, chunk)
+                last = chunk
                 yield chunk
         else:
             # 404 외 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
             # 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출 안 함. 동일 요청 재호출 시 LLM 재과금 발생.
             logger.warning("스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
             raise
-    _finalize_stream(prep, acc, database=database)
+    _finalize_stream(prep, last, database=database)
 
 
 async def llm_request_stream_async(
