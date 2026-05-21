@@ -54,6 +54,17 @@ class FileTooLargeError(LLMRequestServiceError):
         super().__init__(message, status_code=422, error_type="file_too_large")
 
 
+class CacheKeyNotFoundError(LLMRequestServiceError):
+    """cache_key 에 해당하는 캐시 문서가 없음 (/v1/fetch).
+
+    caller 가 잘못된/만료된 cache_key 로 조회한 경우. "서버 오류"(500)가 아니라
+    "그런 리소스 없음"이므로 404 + not_found 로 명확히 신호한다.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=404, error_type="not_found")
+
+
 class FileResolveError(LLMRequestServiceError):
     """stored_files resolve 단계에서 file-manager 가 파일을 찾을 수 없음.
 

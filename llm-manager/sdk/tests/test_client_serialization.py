@@ -112,3 +112,113 @@ class TestExpireContextCache:
         await client.expire_context_cache(["h1"])
 
         assert client._request.call_args.kwargs["json"]["grace_seconds"] == 60
+
+
+class TestErrorDetailRelay:
+    """_request 가 wire detail 을 ServiceError.detail 로 캡처 — llm-handler 의
+    handler_internal sub-cause slug 가 llm-request caller 까지 보존."""
+
+    async def test_request_captures_detail_from_error_body(self):
+        from llm_request._client import AsyncClient
+        from llm_request.exceptions import ServiceError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.json.return_value = {
+            "error": "내부 서버 오류 (handler 자원 부족)",
+            "detail": "pool_timeout",
+            "error_type": "handler_internal",
+            "request_id": "r",
+        }
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._http.request = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(ServiceError) as exc_info:
+            await client._request("POST", "/v1/request", json={})
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.error_type == "handler_internal"
+        assert exc_info.value.detail == "pool_timeout"
+
+    async def test_request_detail_none_when_absent(self):
+        from llm_request._client import AsyncClient
+        from llm_request.exceptions import ServiceError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 422
+        mock_resp.json.return_value = {"error": "bad", "error_type": "validation"}
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._http.request = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(ServiceError) as exc_info:
+            await client._request("POST", "/v1/request", json={})
+
+        assert exc_info.value.detail is None
+
+
+class TestStreamErrorRaise:
+    """스트림 중 error 키 이벤트 → ServiceError raise (llm-handler 와 동일 계약)."""
+
+    async def test_stream_error_event_raises_service_error(self):
+        from llm_request._client import AsyncClient
+        from llm_request.exceptions import ServiceError
+
+        async def _lines():
+            yield 'data: {"type": "chunk", "text": "\\ubd80\\ubd84"}'
+            yield 'data: {"error": "\\uc804\\uc1a1 \\ub2e8\\uc808", "error_type": "transport", "status_code": 502, "detail": null}'
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}
+        mock_resp.aiter_lines = lambda: _lines()
+
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._http.stream = MagicMock(return_value=mock_ctx)
+
+        stream, _meta = await client.request_stream(llm_input={"contents": "x"})
+
+        collected = []
+        with pytest.raises(ServiceError) as exc_info:
+            async for ev in stream:
+                collected.append(ev)
+
+        assert collected and collected[0]["text"] == "부분"  # 정상 chunk 는 먼저 전달
+        assert exc_info.value.error_type == "transport"
+        assert exc_info.value.status_code == 502
+
+    async def test_stream_error_event_preserves_detail(self):
+        from llm_request._client import AsyncClient
+        from llm_request.exceptions import ServiceError
+
+        async def _lines():
+            yield 'data: {"error": "x", "error_type": "handler_internal", "status_code": 500, "detail": "pool_timeout"}'
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {}
+        mock_resp.aiter_lines = lambda: _lines()
+
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        client = AsyncClient.__new__(AsyncClient)
+        client._http = MagicMock()
+        client._http.stream = MagicMock(return_value=mock_ctx)
+
+        stream, _meta = await client.request_stream(llm_input={"contents": "x"})
+
+        with pytest.raises(ServiceError) as exc_info:
+            async for _ev in stream:
+                pass
+
+        assert exc_info.value.detail == "pool_timeout"

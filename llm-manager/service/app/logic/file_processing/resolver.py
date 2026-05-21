@@ -25,13 +25,14 @@ from dataclasses import dataclass
 
 from file_manager import FileManagerHandler
 from llm_handler.aio import upload_file
+from llm_handler.exceptions import HandlerConnectionError, HandlerError
 from llm_handler.models import FileRef, Part
 
 from app.core.errors import CacheError, FileUploadError
 from app.logic.file_processing import cache_store, dedup
 from app.logic.file_processing.uploader import create_context_cache, upload_pdf_parts
-from app.logic.stored_file_resolver import fetch_with_fallback
 from app.logic.keying import make_file_checksum
+from app.logic.stored_file_resolver import fetch_with_fallback
 from app.models.requests import FileInput
 
 logger = logging.getLogger(__name__)
@@ -199,7 +200,12 @@ async def _upload_and_cache_file(
                 refs = await upload_pdf_parts(tmp.name)
             else:
                 refs = [await upload_file(tmp.name, mime_type=fi.mime_type)]
+        except (HandlerError, HandlerConnectionError):
+            # llm-handler 가 분류한 에러는 묶지 말고 그대로 전파 — caller 가
+            # status_code/error_type 으로 분기할 수 있게 (전역 핸들러가 relay).
+            raise
         except Exception as e:
+            # 진짜 로컬 file 처리 실패 (tempfile I/O 등) 만 file 502 로 wrap.
             logger.exception(
                 "Files API 업로드 실패: file_name=%s, mime=%s",
                 fi.file_name, fi.mime_type,
@@ -275,6 +281,9 @@ async def _create_and_save_context_cache(
             tools=tools,
             tool_config=tool_config,
         )
+    except (HandlerError, HandlerConnectionError):
+        # llm-handler 분류 에러는 그대로 전파 (전역 핸들러가 relay).
+        raise
     except Exception as e:
         logger.exception("Context cache 생성 실패")
         raise FileUploadError(f"Context cache 생성 실패: {e}") from e
