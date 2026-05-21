@@ -217,13 +217,13 @@ class AsyncClient:
         resp = await self._request("POST", "/v1/fetch", json=body)
         return resp.json()
 
-    async def expire_context_cache(
+    async def delete_cache(
         self,
         cache_ids: list[str],
         *,
-        grace_seconds: int = 60,
+        grace_seconds: int = 5,
     ) -> dict[str, Any]:
-        """POST /v1/context-cache/expire — Context Cache TTL 단축."""
+        """POST /v1/context-cache/expire — Context Cache TTL 단축 (내부 caches.update)."""
         body = {"cache_ids": cache_ids, "grace_seconds": grace_seconds}
         resp = await self._request("POST", "/v1/context-cache/expire", json=body)
         return resp.json()

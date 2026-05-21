@@ -112,14 +112,14 @@ class DoneCheckResult(TypedDict):
 
 
 class ExpireFailure(BaseModel):
-    """expire_context_cache_async 응답의 실패 항목."""
+    """delete_cache_async 응답의 실패 항목."""
 
     cache_id: str
     error: str
 
 
 class ExpireResult(BaseModel):
-    """expire_context_cache_async 반환.
+    """delete_cache_async 반환.
 
     expired: 단축 성공 (Redis miss / Gemini 404 idempotent 포함).
     failed:  진짜 실패 (Gemini 5xx / 네트워크 등).

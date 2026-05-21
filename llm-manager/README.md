@@ -250,7 +250,8 @@ except ServiceError as e:
 | `llm_request_stream` | `tuple[Iterator[dict], dict]` | 동기 스트리밍 — `(stream, meta)` 튜플 |
 | `done_check` | `DoneCheckResult` | 캐시 존재 여부만 확인 (LLM 호출 없음) |
 | `fetch_by_cache_key` | `tuple[LLMResponse, RequestMeta]` | 캐시 키로 직접 조회 |
-| `expire_context_cache_async` | `ExpireResult` | Context Cache TTL 을 grace_seconds 로 단축 (storage 비용 prorate 절감) |
+| `delete_cache_async` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (비동기) |
+| `delete_cache` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (`asyncio.run` 래퍼) |
 | `close` | `None` (async) | SDK 내부 `AsyncClient` 커넥션 풀 정리 — agent 프로세스 종료 전 호출 권장 ([주의사항](#agent-프로세스-종료-전-close-호출) 참고) |
 
 ## llm_input 구조
@@ -367,7 +368,7 @@ response, meta = await llm_request_async(
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
 | `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 각 `StoredFile` 의 6 필드(`file_path` 포함)가 담긴 list. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
-| `context_cache_id` | `str \| None` | Context Cache 생성/HIT 시 노출되는 식별자 (opaque). `expire_context_cache_async` 호출에 사용. live 호출일 때만 노출되며, MDB cache HIT 응답에는 키 자체 부재. **영구 식별자가 아니다** — Gemini 측 TTL 이 만료되면 자동 파괴되고, 같은 입력으로 재호출 시 새 cache (새 id) 가 생성된다 |
+| `context_cache_id` | `str \| None` | Context Cache 생성/HIT 시 노출되는 식별자 (opaque). `delete_cache_async` 호출에 사용. live 호출일 때만 노출되며, MDB cache HIT 응답에는 키 자체 부재. **영구 식별자가 아니다** — Gemini 측 TTL 이 만료되면 자동 파괴되고, 같은 입력으로 재호출 시 새 cache (새 id) 가 생성된다 |
 
 #### `file_meta` 활용 예시
 
@@ -490,14 +491,12 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 
 > **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
 
-### Context Cache 수명 단축 — `expire_context_cache_async`
+### Context Cache 수명 단축 — `delete_cache_async` / `delete_cache`
 
 `context_cache_ttl` 을 길게 잡아두고, agent task 가 끝났을 때 즉시 단축할 수 있다. storage 비용은 새 TTL 기준으로 분 단위 prorate 청구되므로, "넉넉히 잡고 끝나면 줄이기" 패턴이 비용 효율적이다.
 
-> **왜 update 고 delete 가 아닌가?** Gemini 는 `caches.update` 만 새 TTL 로 prorate 청구하고, `caches.delete` 는 원래 TTL 그대로 청구한다. 따라서 내부적으로 `caches.update(ttl=grace_seconds)` 를 호출한다. ([공식 forum thread](https://discuss.ai.google.dev/t/clarification-on-context-cache-storage-billing-ttl-vs-actual-time/81267))
-
 ```python
-from llm_request import llm_request_async, expire_context_cache_async, StoredFile
+from llm_request import llm_request_async, delete_cache_async, StoredFile
 
 cache_ids: set[str] = set()
 for q in questions:
@@ -509,20 +508,22 @@ for q in questions:
     if meta.context_cache_id:
         cache_ids.add(meta.context_cache_id)
 
-# task 끝나면 일괄 단축
-result = await expire_context_cache_async(list(cache_ids))
+# task 끝나면 일괄 삭제 (sync 래퍼 delete_cache 도 있음)
+result = await delete_cache_async(list(cache_ids))
 print(result.expired)   # ["..."]
 print(result.failed)    # []
 ```
 
 | 인자 | 기본값 | 설명 |
 | --- | --- | --- |
-| `cache_ids` | — | `meta.context_cache_id` 로 받은 식별자 리스트 |
-| `grace_seconds` | `60` | in-flight 요청 보호 grace (1~3600). 이 시간 후 Gemini cache + Redis 동시 만료 |
+| `cache_ids` | — | `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열, 여러 개면 리스트 |
+| `grace_seconds` | `5` | in-flight 요청 보호 grace (1~3600). 이 시간 후 Gemini cache + Redis 동시 만료 |
+
+> ⚠️ 기본 `5`초는 **task 종료 직후 호출**을 가정한다. 같은 cache 를 쓰는 LLM 호출이 아직 진행 중일 수 있으면(대용량 컨텍스트 등 느린 호출) `grace_seconds` 를 넉넉히(예: 30~60) 올려 잡아 호출 완료 전에 만료되지 않게 한다.
 
 > ⚠️ `meta.context_cache_id` 는 **live 호출일 때만** 응답에 들어간다. MDB cache HIT 응답에는 키 자체 부재. 첫 호출이 cache HIT 이면 그 task 의 cache_id 는 받지 못하지만, Gemini 측 cache 는 자연 만료되므로 큰 문제 없음.
 
-> ⚠️ `context_cache_id` 는 **영구 식별자가 아니다.** Gemini 측 TTL 이 만료되면 cache 가 자동 파괴되고, 같은 입력으로 다시 호출하면 새 cache (새 id) 가 생성된다. agent 가 옛 id 를 DB 에 저장해두고 나중에 `expire_context_cache_async` 로 호출해도 이미 만료된 cache 라면 `expired` 분류로 idempotent 처리되니 안전 — 다만 옛 id 가 살아있다고 가정한 동작은 만들지 말 것.
+> ⚠️ `context_cache_id` 는 **영구 식별자가 아니다.** Gemini 측 TTL 이 만료되면 cache 가 자동 파괴되고, 같은 입력으로 다시 호출하면 새 cache (새 id) 가 생성된다. agent 가 옛 id 를 DB 에 저장해두고 나중에 `delete_cache_async` 로 호출해도 이미 만료된 cache 라면 `expired` 분류로 idempotent 처리되니 안전 — 다만 옛 id 가 살아있다고 가정한 동작은 만들지 말 것.
 
 > ⚠️ **expire 가 필요한 워크플로는 live 호출 직후의 `meta.context_cache_id` 를 보관할 것.** MDB cache HIT 응답에서는 노출되지 않으므로, 같은 입력으로 재호출하면 ID 를 받을 수 없어 그 시점에 expire 가 불가능하다 (옛 cache 가 살아있어도 호출자 측에서 ID 모르는 상태).
 
