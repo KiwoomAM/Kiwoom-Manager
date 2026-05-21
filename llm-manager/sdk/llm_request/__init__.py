@@ -48,7 +48,6 @@ from llm_handler import (
     call,
     configure,
     create_cache,
-    delete_cache,
     delete_file,
     embed,
     get_cache,
@@ -83,7 +82,8 @@ __all__ = [
     "llm_request_stream",
     "done_check",
     "fetch_by_cache_key",
-    "expire_context_cache_async",
+    "delete_cache",
+    "delete_cache_async",
     "close",
     "Timings",
     "FileInput",
@@ -111,7 +111,6 @@ __all__ = [
     "get_file",
     "list_files",
     "create_cache",
-    "delete_cache",
     "get_cache",
     "list_caches",
     "update_cache",
@@ -359,22 +358,67 @@ async def fetch_by_cache_key(
     return LLMResponse(**result["result"]), RequestMeta(**result["meta"])
 
 
-async def expire_context_cache_async(
-    cache_ids: list[str],
+async def delete_cache_async(
+    cache_ids: str | list[str],
     *,
-    grace_seconds: int = 60,
+    grace_seconds: int = 5,
 ) -> ExpireResult:
-    """Context Cache TTL 을 grace_seconds 로 단축한다.
+    """Context Cache 를 grace_seconds 후 만료시킨다 (async).
+
+    이름은 delete 지만 내부적으로는 Gemini `caches.update(ttl=grace_seconds)` 로
+    TTL 을 단축한다 — `caches.delete` 는 원래 TTL 그대로 청구되는 반면 update 는
+    새 TTL 로 prorate 청구되기 때문 (storage 비용 절감). grace_seconds 동안
+    in-flight 요청을 보호한 뒤 Gemini cache + Redis 가 만료된다.
 
     Args:
-        cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자 리스트.
-        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 60).
+        cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열
+            하나, 여러 개면 리스트로 넘긴다. (단건도 결과는 리스트로 돌아온다.)
+        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 5).
+            기본 5초는 task 종료 직후 호출을 가정한다. 같은 cache 를 쓰는 느린
+            LLM 호출과 겹칠 수 있으면 넉넉히(예: 30~60) 올려 잡을 것.
 
     Returns:
-        ExpireResult — `expired` (성공 또는 idempotent), `failed` (Gemini 5xx 등).
+        ExpireResult — `expired` (만료 성공, 또는 이미 없어진 cache 의 idempotent
+        처리 포함), `failed` (Gemini 5xx·Redis 오류 등으로 만료 못 한 건).
+
+    Raises:
+        ValueError: cache_ids 가 비어있거나 grace_seconds 가 범위(1~3600) 밖일 때.
+        ServiceConnectionError: llm-request 서비스에 연결 불가 / 응답 타임아웃.
+        ServiceError: 서비스가 에러 응답을 반환 (예: error_type="validation").
+
+    Note:
+        개별 cache 의 만료 실패는 예외로 raise 되지 않고 `result.failed` 에
+        담긴다 (여러 건 동시 처리 시 부분 실패 허용). 실제 삭제 여부가 중요하면
+        호출 후 `result.failed` 를 반드시 확인할 것.
     """
+    if isinstance(cache_ids, str):
+        ids = [cache_ids]
+    else:
+        ids = list(cache_ids) if cache_ids else []
+    if not ids:
+        raise ValueError(
+            "삭제할 cache_id 가 없습니다. cache_id 를 1개 이상 넣어주세요."
+        )
+    if not all(ids):
+        raise ValueError(
+            "빈 cache_id 가 포함되어 있습니다. 유효한 cache_id 만 넣어주세요."
+        )
+    if not 1 <= grace_seconds <= 3600:
+        raise ValueError(
+            f"grace_seconds 는 1~3600초 사이여야 합니다 (받은 값: {grace_seconds})."
+        )
+
     client = await _get_client()
-    result = await client.expire_context_cache(
-        cache_ids, grace_seconds=grace_seconds,
-    )
+    result = await client.delete_cache(ids, grace_seconds=grace_seconds)
     return ExpireResult(**result)
+
+
+def delete_cache(
+    cache_ids: str | list[str],
+    *,
+    grace_seconds: int = 5,
+) -> ExpireResult:
+    """Context Cache 를 grace_seconds 후 만료시킨다 (sync). delete_cache_async 의 동기 래퍼."""
+    return asyncio.run(
+        delete_cache_async(cache_ids, grace_seconds=grace_seconds)
+    )

@@ -129,7 +129,9 @@ async def test_gemini_5xx_is_failure(monkeypatch):
     assert resp.expired == []
     assert len(resp.failed) == 1
     assert resp.failed[0].cache_id == "h1"
-    assert resp.failed[0].error == "RuntimeError"
+    # 사람이 읽을 한글 문장 + 진단용 클래스명 병기
+    assert "실패" in resp.failed[0].error
+    assert "RuntimeError" in resp.failed[0].error
 
 
 @pytest.mark.asyncio

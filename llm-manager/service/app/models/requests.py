@@ -133,4 +133,4 @@ class ExpireContextCacheRequest(BaseModel):
     """
 
     cache_ids: list[str] = Field(min_length=1)
-    grace_seconds: int = Field(default=60, ge=1, le=3600)
+    grace_seconds: int = Field(default=5, ge=1, le=3600)

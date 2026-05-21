@@ -75,7 +75,7 @@ class TestRequestStoredFilesSerialization:
 
 
 class TestExpireContextCache:
-    """_client.expire_context_cache — body 직렬화 + 응답 파싱."""
+    """_client.delete_cache — body 직렬화 + 응답 파싱."""
 
     async def test_sends_correct_payload(self):
         from llm_request._client import AsyncClient
@@ -87,7 +87,7 @@ class TestExpireContextCache:
         client._http = MagicMock()
         client._request = AsyncMock(return_value=mock_resp)
 
-        result = await client.expire_context_cache(
+        result = await client.delete_cache(
             ["h1", "h2"], grace_seconds=30,
         )
 
@@ -99,7 +99,7 @@ class TestExpireContextCache:
         }
         assert result == {"expired": ["h1"], "failed": []}
 
-    async def test_default_grace_seconds_60(self):
+    async def test_default_grace_seconds_5(self):
         from llm_request._client import AsyncClient
 
         mock_resp = MagicMock()
@@ -109,9 +109,9 @@ class TestExpireContextCache:
         client._http = MagicMock()
         client._request = AsyncMock(return_value=mock_resp)
 
-        await client.expire_context_cache(["h1"])
+        await client.delete_cache(["h1"])
 
-        assert client._request.call_args.kwargs["json"]["grace_seconds"] == 60
+        assert client._request.call_args.kwargs["json"]["grace_seconds"] == 5
 
 
 class TestErrorDetailRelay:
@@ -141,6 +141,60 @@ class TestErrorDetailRelay:
         assert exc_info.value.status_code == 500
         assert exc_info.value.error_type == "handler_internal"
         assert exc_info.value.detail == "pool_timeout"
+
+
+class TestDeleteCacheInput:
+    """delete_cache_async — 단건/리스트 정규화 + 로컬 입력 검증 (한글 raise)."""
+
+    async def test_empty_list_raises_korean_valueerror(self):
+        import llm_request
+
+        with pytest.raises(ValueError, match="cache_id"):
+            await llm_request.delete_cache_async([])
+
+    async def test_empty_string_id_raises(self):
+        import llm_request
+
+        with pytest.raises(ValueError, match="빈 cache_id"):
+            await llm_request.delete_cache_async("")
+        with pytest.raises(ValueError, match="빈 cache_id"):
+            await llm_request.delete_cache_async(["h1", ""])
+
+    async def test_grace_seconds_below_range_raises(self):
+        import llm_request
+
+        with pytest.raises(ValueError, match="1~3600"):
+            await llm_request.delete_cache_async("h1", grace_seconds=0)
+
+    async def test_grace_seconds_above_range_raises(self):
+        import llm_request
+
+        with pytest.raises(ValueError, match="1~3600"):
+            await llm_request.delete_cache_async("h1", grace_seconds=4000)
+
+    async def test_single_str_normalized_to_list(self, monkeypatch):
+        import llm_request
+
+        captured = {}
+        mock_client = MagicMock()
+
+        async def fake_delete(ids, *, grace_seconds):
+            captured["ids"] = ids
+            captured["grace"] = grace_seconds
+            return {"expired": ids, "failed": []}
+
+        mock_client.delete_cache = fake_delete
+
+        async def fake_get_client():
+            return mock_client
+
+        monkeypatch.setattr(llm_request, "_get_client", fake_get_client)
+
+        result = await llm_request.delete_cache_async("h1")
+
+        assert captured["ids"] == ["h1"]  # 단건 문자열 → 리스트로 정규화
+        assert captured["grace"] == 5
+        assert result.expired == ["h1"]
 
     async def test_request_detail_none_when_absent(self):
         from llm_request._client import AsyncClient
