@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_handler.models import LLMResponse, StreamChunk, TokenUsage
+from llm_handler.models import Content, LLMResponse, StreamChunk, TokenUsage
 
 from app.logic import runner
 
@@ -171,13 +171,10 @@ class TestAgentLlmStreamStandby:
         monkeypatch.setattr(runner, "aio_stream", slow_aio_stream)
         # leader stream 종료 시 handler done event 의 assistant_message 로 저장됨 (PR #593 §2).
         # live text("chunk1-chunk2") 와 동일하게 두어 cached chunk text 검증이 일치하도록.
-        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
-            "request_id": "req-stream-dedup",
-            "assistant_message": {
-                "role": "model",
-                "content": [{"type": "text", "text": "chunk1-chunk2"}],
-            },
-        })
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "chunk1-chunk2"}],
+        }))
 
         llm_input = {
             "contents": "stream dedup test",
@@ -220,7 +217,7 @@ class TestStreamAssistantMessageSave:
     """_do_llm_stream 이 handler done event 의 assistant_message 로 저장하는지 회귀 (PR #593 §2).
 
     handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로, llm-request 는
-    chunk 별 누적 없이 그대로 받아 저장한다. _get_handler_done_payload 를 mock 해서 주입.
+    chunk 별 누적 없이 그대로 받아 저장한다. last_assistant_message 를 mock 해서 주입.
     """
 
     async def test_assistant_message_saved_with_text_derived(
@@ -235,14 +232,10 @@ class TestStreamAssistantMessageSave:
             )
 
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
-        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
-            "event": "done",
-            "request_id": "req-1",
-            "assistant_message": {
-                "role": "model",
-                "content": [{"type": "text", "text": "안녕하세요"}],
-            },
-        })
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "안녕하세요"}],
+        }))
 
         llm_input = {"contents": "x", "model": "gemini-2.5-flash", "service_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
@@ -268,16 +261,13 @@ class TestStreamAssistantMessageSave:
             )
 
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
-        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: {
-            "request_id": "req-2",
-            "assistant_message": {
-                "role": "model",
-                "content": [
-                    {"type": "function_call",
-                     "function_call": {"name": "lookup", "args": {"q": "x"}, "id": "fc-1"}},
-                ],
-            },
-        })
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [
+                {"type": "function_call",
+                 "function_call": {"name": "lookup", "args": {"q": "x"}, "id": "fc-1"}},
+            ],
+        }))
 
         llm_input = {"contents": "y", "model": "gemini-2.5-flash", "service_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
@@ -299,7 +289,7 @@ class TestStreamAssistantMessageSave:
             yield StreamChunk(text="부분", finish_reason=None, usage=None)
 
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
-        monkeypatch.setattr(runner, "_get_handler_done_payload", lambda: None)
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: None)
 
         llm_input = {"contents": "z", "model": "gemini-2.5-flash", "service_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(

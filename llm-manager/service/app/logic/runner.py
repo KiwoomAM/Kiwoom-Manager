@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from llm_handler.aio import call as aio_call
+from llm_handler.aio import last_assistant_message
 from llm_handler.aio import stream as aio_stream
 from llm_handler.models import Content, LLMResponse, StreamChunk
 
@@ -46,20 +47,6 @@ class _Prepared:
     standby_ttl_seconds: int
     context_cache_id: str | None = None
     debug: bool = False
-
-
-def _get_handler_done_payload() -> dict[str, Any] | None:
-    """handler stream 종료 시 SSE done event payload 를 꺼낸다.
-
-    payload: {"event": "done", "request_id": str, "assistant_message": dict | None}
-    error/abort 등으로 done event 미수신 시 None.
-
-    TODO: handler 가 raw stream 사용자 전용 helper (예: aio.last_assistant_message())
-    를 노출하면 이 함수를 그 wrapper 로 교체 — PR #593 review §2.
-    현재는 SDK internal (_done_payload_var) 직접 참조.
-    """
-    from llm_handler._common import _done_payload_var
-    return _done_payload_var.get()
 
 
 def _text_from_assistant_message(am: Content) -> str:
@@ -289,21 +276,20 @@ def _finalize_stream(
         )
         return
 
-    done = _get_handler_done_payload()
-    if not done or not done.get("assistant_message"):
+    am = last_assistant_message()
+    if am is None:
         logger.warning(
             "done event/assistant_message 미수신: cache_key=%s — 캐시 미저장",
             prep.dc.cache_key[:16] + "...",
         )
         return
 
-    am = Content.model_validate(done["assistant_message"])
     response = LLMResponse(
         text=_text_from_assistant_message(am),
         model=prep.llm_input.get("model", "unknown"),
         usage=last.usage,
         finish_reason=last.finish_reason,
-        request_id=done.get("request_id", "") or "",
+        request_id="",  # raw stream 저장은 원래 빈 값 (helper 가 request_id 미노출)
         assistant_message=am,
     )
     finalize(prep, response, database=database)   # 기존 저장 로직 재사용
