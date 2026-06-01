@@ -31,6 +31,7 @@ from llm_handler.models import FileRef, Part
 from app.core.errors import CacheError, FileUploadError
 from app.logic.file_processing import cache_store, dedup
 from app.logic.file_processing.uploader import create_context_cache, upload_pdf_parts
+from app.logic.gemini_errors import is_cache_too_small
 from app.logic.keying import make_file_checksum
 from app.logic.stored_file_resolver import fetch_with_fallback
 from app.models.requests import FileInput
@@ -262,7 +263,7 @@ async def _create_and_save_context_cache(
     ttl: int,
     tools: list[dict] | None = None,
     tool_config: str | None = None,
-) -> str:
+) -> str | None:
     """context_cache 생성 + Redis 저장 → cached_content_name 반환 (분기 ④).
 
     standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
@@ -271,6 +272,11 @@ async def _create_and_save_context_cache(
     `tools` / `tool_config` 는 cache 에 함께 저장되어야 `call(cached_content=...)` 시
     Bad Request 를 피할 수 있다 (Gemini 제약 — cached_content + request-level
     tools/tool_config 동시 전달 불가).
+
+    Context Cache 최소 토큰(1024) 미달이면 캐시를 skip 하고 None 을 반환한다
+    (fail-soft, 이슈 #646) — 캐시는 비용 최적화일 뿐 정확도와 무관하므로. 호출부는
+    None → cached_content=None 으로 받아 Files API URI 로 호출을 이어간다.
+    too-small 외의 에러는 기존대로 raise.
     """
     try:
         cache_ref = await create_context_cache(
@@ -281,10 +287,23 @@ async def _create_and_save_context_cache(
             tools=tools,
             tool_config=tool_config,
         )
-    except (HandlerError, HandlerConnectionError):
-        # llm-handler 분류 에러는 그대로 전파 (전역 핸들러가 relay).
+    except (HandlerError, HandlerConnectionError) as e:
+        # too-small(min_total_token_count) 은 fail-soft — 캐시 skip 하고 진행.
+        if is_cache_too_small(e):
+            logger.info(
+                "[route] mode=context_cache source=skipped reason=below_min_token "
+                "hash_key=%s", hash_key[:16],
+            )
+            return None
+        # 그 외 분류 에러는 그대로 전파 (전역 핸들러가 relay).
         raise
     except Exception as e:
+        if is_cache_too_small(e):  # wrap 안 된 raw 예외 방어
+            logger.info(
+                "[route] mode=context_cache source=skipped reason=below_min_token "
+                "hash_key=%s", hash_key[:16],
+            )
+            return None
         logger.exception("Context cache 생성 실패")
         raise FileUploadError(f"Context cache 생성 실패: {e}") from e
 
@@ -596,5 +615,7 @@ async def resolve_files(
         inline_parts=inline_parts,
         uri_parts=uri_parts,
         cached_content=cached_content,
-        context_cache_id=context_cache_id,
+        # context_cache_id 는 실제 캐시가 있을 때(cached_content not None)만 노출.
+        # too-small fail-soft / ttl 미지정이면 캐시가 없으니 None — 삭제할 대상도 없다.
+        context_cache_id=context_cache_id if cached_content else None,
     )
