@@ -3,20 +3,20 @@
 사용법:
     import winus_handler
 
-    winus_handler.configure(base_url="http://winus-handler:8200")
     df = winus_handler.query_to_dataframe("SELECT * FROM table WHERE code = :code", {"code": "A001"})
 
-환경변수 WINUS_HANDLER_URL 설정 시 configure() 없이도 사용 가능:
-    from winus_handler import query_to_dataframe
-    df = query_to_dataframe("SELECT * FROM table")
+Handler 접속 URL은 운영 서버(http://192.7.9.45:8200)로 고정되어 있으며,
+환경변수나 configure(base_url=...)로 변경할 수 없습니다. timeout 등 기타
+설정은 configure()로 조정 가능합니다.
 """
 
-import os
 from typing import Any
 
 import pandas as pd
 
 from winus_handler._sync_client import SyncClient
+
+_HANDLER_BASE_URL: str = "http://192.7.9.45:8200"
 from winus_handler.exceptions import (
     ConnectionPoolException,
     DatabaseException,
@@ -61,13 +61,13 @@ _instance: SyncClient | None = None
 
 
 def _resolve_base_url() -> str:
-    return os.getenv("WINUS_HANDLER_URL", "http://localhost:8200")
+    return _HANDLER_BASE_URL
 
 
 def _get_client() -> SyncClient:
     global _instance
     if _instance is None:
-        _instance = SyncClient(base_url=_resolve_base_url())
+        _instance = SyncClient(base_url=_HANDLER_BASE_URL)
     return _instance
 
 
@@ -82,13 +82,11 @@ def close() -> None:
 def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
     """SDK 클라이언트를 수동 설정.
 
-    Args:
-        base_url: Handler 서비스 URL (기본: 환경변수 또는 localhost:8200)
-        timeout: HTTP 타임아웃 (초)
+    base_url 인자는 운영 정책상 무시되며 핸들러 URL은 항상 192.7.9.45:8200으로 고정됩니다.
+    timeout만 적용됩니다.
     """
     global _instance
-    url = base_url or _resolve_base_url()
-    _instance = SyncClient(base_url=url, timeout=timeout)
+    _instance = SyncClient(base_url=_HANDLER_BASE_URL, timeout=timeout)
 
 
 # ── SELECT ──────────────────────────────────────────

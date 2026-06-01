@@ -1,6 +1,6 @@
 [project]
 name = "kiwoom-winus-handler"
-version = "1.0.0"
+version = "1.0.1"
 description = "Kiwoom 프로젝트 WINUS Oracle DB 핸들러 (SDK)"
 requires-python = ">=3.10"
 dependencies = [
