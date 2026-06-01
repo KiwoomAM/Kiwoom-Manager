@@ -40,10 +40,3 @@ class DmlResult(BaseModel):
 
     rowcount: int
     request_id: str
-
-
-class IndexSearchData(BaseModel):
-    """지수 검색 서버 응답."""
-
-    results: list[dict[str, Any]]
-    request_id: str
