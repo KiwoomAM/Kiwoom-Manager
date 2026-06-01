@@ -14,6 +14,7 @@ import pytest
 from llm_handler.models import CacheRef, FileRef
 
 from app.core.errors import FileUploadError
+from app.logic.file_processing import resolver
 from app.logic.file_processing.resolver import (
     ResolvedFiles,
     _estimate_non_file_bytes,
@@ -528,3 +529,133 @@ class TestUploadErrorPassthrough:
         fi = _file()
         with pytest.raises(FileUploadError):
             await _upload_and_cache_file(fi, "checksum-x", [], [])
+
+
+class TestContextCacheTooSmallFailSoft:
+    """캐시 생성이 min_total_token_count 미달(400)이면 None 반환(fail-soft),
+    그 외 에러는 그대로 raise."""
+
+    def _ref(self):
+        return FileRef(name="files/x", uri="https://example.com/x",
+                       mime_type="application/pdf", state="ACTIVE")
+
+    async def test_too_small_returns_none_and_skips_redis_save(self, monkeypatch):
+        from llm_handler.exceptions import HandlerError
+
+        async def fake_create(file_refs, *, model, system_instruction, ttl,
+                              tools=None, tool_config=None):
+            raise HandlerError(
+                "Gemini 캐시 생성 에러: 400 INVALID_ARGUMENT. Cached content is too "
+                "small. total_token_count=561, min_total_token_count=1024",
+                status_code=400, error_type="provider",
+            )
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.create_context_cache", fake_create,
+        )
+
+        save_called = False
+        def fake_save(hash_key, doc, ttl):
+            nonlocal save_called
+            save_called = True
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.cache_store.save_context_cache",
+            fake_save,
+        )
+
+        result = await resolver._create_and_save_context_cache(
+            "a" * 64, ["cs1"], [self._ref()],
+            model="gemini-2.5-flash", system_instruction=None, ttl=3600,
+        )
+        assert result is None
+        assert save_called is False
+
+    async def test_other_400_still_raises(self, monkeypatch):
+        from llm_handler.exceptions import HandlerError
+
+        async def fake_create(file_refs, *, model, system_instruction, ttl,
+                              tools=None, tool_config=None):
+            raise HandlerError("400 INVALID_ARGUMENT: unsupported mime",
+                               status_code=400, error_type="provider")
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.create_context_cache", fake_create,
+        )
+
+        with pytest.raises(HandlerError):
+            await resolver._create_and_save_context_cache(
+                "a" * 64, ["cs1"], [self._ref()],
+                model="gemini-2.5-flash", system_instruction=None, ttl=3600,
+            )
+
+    async def test_503_still_raises(self, monkeypatch):
+        from llm_handler.exceptions import HandlerError
+
+        async def fake_create(file_refs, *, model, system_instruction, ttl,
+                              tools=None, tool_config=None):
+            raise HandlerError("503 service unavailable",
+                               status_code=503, error_type="provider")
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.create_context_cache", fake_create,
+        )
+
+        with pytest.raises(HandlerError):
+            await resolver._create_and_save_context_cache(
+                "a" * 64, ["cs1"], [self._ref()],
+                model="gemini-2.5-flash", system_instruction=None, ttl=3600,
+            )
+
+
+class TestContextCacheIdGating:
+    """context_cache_id 는 실제 캐시가 있을 때(cached_content not None)만 노출.
+    캐시 미생성(too-small fail-soft / ttl 미지정)이면 None — 삭제할 캐시 없음."""
+
+    def _video(self):
+        # 비디오는 크기 무관 항상 files_api 경로 (split 도 안 탐) — 게이팅 검증용
+        return _file(file_name="clip.mp4", mime_type="video/mp4",
+                     file_size=5 * 1024 * 1024, extension="mp4")
+
+    def _ok_upload(self, monkeypatch):
+        async def fake_upload(path, mime_type):
+            return FileRef(name="files/y", uri="https://example.com/y",
+                           mime_type=mime_type, state="ACTIVE")
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+    async def test_too_small_skip_nulls_context_cache_id(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        from llm_handler.exceptions import HandlerError
+
+        self._ok_upload(monkeypatch)
+
+        async def fake_create(file_refs, *, model, system_instruction, ttl,
+                              tools=None, tool_config=None):
+            raise HandlerError(
+                "400 INVALID_ARGUMENT. Cached content is too small. "
+                "total_token_count=561, min_total_token_count=1024",
+                status_code=400, error_type="provider",
+            )
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.create_context_cache", fake_create,
+        )
+
+        result = await resolve_files(
+            [self._video()], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+        assert result.cached_content is None
+        assert result.context_cache_id is None  # 캐시 없으니 id도 없음
+        assert len(result.uri_parts) == 1       # Files API URI 로 전송
+
+    async def test_no_ttl_files_api_has_no_context_cache_id(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        self._ok_upload(monkeypatch)
+
+        result = await resolve_files(
+            [self._video()], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=None, standby_ttl_seconds=10,
+        )
+        assert result.cached_content is None
+        assert result.context_cache_id is None
+        assert len(result.uri_parts) == 1
