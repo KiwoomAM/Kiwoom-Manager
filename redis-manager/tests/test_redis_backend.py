@@ -130,6 +130,33 @@ class TestRedisBackendSetCommands:
         assert backend.srem("k", "a") == 1
 
 
+class TestRedisBackendScanIter:
+    def test_scan_iter_delegates_to_client(self, backend, mock_client):
+        mock_client.scan_iter.return_value = iter(["a", "b", "c"])
+        result = list(backend.scan_iter("prefix:*", count=50))
+        assert result == ["a", "b", "c"]
+        mock_client.scan_iter.assert_called_once_with(match="prefix:*", count=50)
+
+    def test_scan_iter_default_count(self, backend, mock_client):
+        mock_client.scan_iter.return_value = iter([])
+        list(backend.scan_iter("p:*"))
+        mock_client.scan_iter.assert_called_once_with(match="p:*", count=100)
+
+    def test_scan_iter_wraps_connection_error_as_RedisRetryExhausted(self, backend, mock_client):
+        """generator라 @retryable 미적용. 대신 RETRYABLE_EXCEPTIONS는 도메인
+        예외로 wrap되어 raise — Handler 폴백 분기 일관성 보장."""
+        mock_client.scan_iter.side_effect = redis.ConnectionError("down")
+        with pytest.raises(RedisRetryExhausted):
+            list(backend.scan_iter("p:*"))
+        assert mock_client.scan_iter.call_count == 1
+
+    def test_scan_iter_does_not_wrap_other_errors(self, backend, mock_client):
+        """ResponseError 등 비-RETRYABLE 예외는 그대로 전파."""
+        mock_client.scan_iter.side_effect = redis.ResponseError("BAD")
+        with pytest.raises(redis.ResponseError):
+            list(backend.scan_iter("p:*"))
+
+
 class TestRedisBackendRetry:
     def test_get_retries_on_connection_error(self, backend, mock_client):
         mock_client.get.side_effect = [redis.ConnectionError("d"), "v"]

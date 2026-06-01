@@ -69,8 +69,10 @@ def configure_handlers() -> None:
     os.environ.setdefault("LLM_HANDLER_URL", settings.llm_handler_url)
     import llm_handler
     import llm_handler.aio
-    llm_handler.configure()
-    llm_handler.aio.configure()
+    # Vision + 대용량 PDF 등 분 단위 호출 대응 (SDK 기본 120s 초과 케이스).
+    # llm-request 한정 override — llm-handler SDK 자체 기본값은 그대로 유지.
+    llm_handler.configure(timeout=600.0)
+    llm_handler.aio.configure(timeout=600.0)
 
     # MongoDB database 환경변수 설정 (store.py에서 사용)
     os.environ.setdefault("MONGODB_DATABASE", settings.mongodb_database)

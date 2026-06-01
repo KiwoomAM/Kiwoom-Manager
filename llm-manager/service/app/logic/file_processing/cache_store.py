@@ -73,6 +73,14 @@ class FileCacheStore(BaseJsonStore):
         """Context Cache 레코드 삭제 (404 fallback용)."""
         self._delete(self._make_key("context_cache", hash_key))
 
+    def shrink_context_cache_ttl(self, hash_key: str, ttl: int) -> None:
+        """expire 시 Context Cache Redis 키 TTL 단축 (Redis EXPIRE wrapper).
+
+        Gemini caches.update 와 동기 만료를 위해 같은 ttl 로 단축한다.
+        """
+        if not self._expire(self._make_key("context_cache", hash_key), ttl):
+            logger.debug("shrink no-op (key absent): hash=%s", hash_key[:16])
+
 
 # 모듈 레벨 싱글톤
 _store = FileCacheStore()
@@ -204,3 +212,8 @@ def delete_files_api(file_checksum: str) -> None:
 def delete_context_cache(hash_key: str) -> None:
     """Context Cache 레코드 삭제 (404 fallback용)."""
     _store.delete_context_cache(hash_key)
+
+
+def shrink_context_cache_ttl(hash_key: str, ttl: int) -> None:
+    """hash_key 의 Redis 키 TTL 단축."""
+    _store.shrink_context_cache_ttl(hash_key, ttl)

@@ -12,9 +12,10 @@ NOTE: `from __future__ import annotations`는 클래스 내부 `set()` 메서드
 
 from __future__ import annotations
 
+import fnmatch
 import threading
 import time
-from typing import Optional
+from typing import Iterator, Optional
 
 
 class MemoryBackend:
@@ -108,6 +109,24 @@ class MemoryBackend:
                 return False
             self._expiry[key] = time.time() + seconds
             return True
+
+    def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
+        """fnmatch 기반 SCAN simulate. RedisBackend와 인터페이스 호환.
+
+        Lock 안에서 키 snapshot을 만든 뒤 lock 밖에서 yield — generator 소비
+        도중 다른 스레드가 mutation을 기다리며 blocking되는 상황을 회피.
+        ``_is_expired``가 mutation을 발생시키므로 반드시 lock 내부에서 호출.
+
+        ``count`` 인자는 인터페이스 호환용으로 수신만 하고 무시한다 (메모리
+        백엔드는 batch 의미가 없음).
+        """
+        del count
+        with self._lock:
+            candidates = list(self._strings.keys() | self._sets.keys())
+            snapshot = [k for k in candidates if not self._is_expired(k)]
+        for key in snapshot:
+            if fnmatch.fnmatchcase(key, match):
+                yield key
 
     # ── Set ───────────────────────────────────────────
     def sadd(self, key: str, *members: str) -> int:

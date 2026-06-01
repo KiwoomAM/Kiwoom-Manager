@@ -12,6 +12,10 @@ ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 COPY packages/file-handler /tmp/file-handler
 RUN pip install --no-cache-dir /tmp/file-handler && rm -rf /tmp/file-handler
 
+# ─── mdb-handler SDK 설치 (로컬 소스에서 빌드) ─────────────────────────
+COPY packages/mdb-handler/sdk /tmp/mdb-handler-sdk
+RUN pip install --no-cache-dir /tmp/mdb-handler-sdk && rm -rf /tmp/mdb-handler-sdk
+
 # ─── FM Service 의존성 ─────────────────────────────────────────────────
 COPY packages/file-manager/service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

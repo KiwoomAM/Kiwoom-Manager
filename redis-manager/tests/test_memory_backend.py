@@ -144,6 +144,71 @@ class TestMemoryBackendPing:
         assert MemoryBackend().ping() is True
 
 
+class TestMemoryBackendScanIter:
+    def test_empty_backend_yields_nothing(self):
+        b = MemoryBackend()
+        assert list(b.scan_iter("*")) == []
+
+    def test_matches_string_keys(self):
+        b = MemoryBackend()
+        b.set("file_cache:files_api:abc", "v")
+        b.set("file_cache:files_api:def", "v")
+        b.set("other:key", "v")
+        keys = sorted(b.scan_iter("file_cache:files_api:*"))
+        assert keys == ["file_cache:files_api:abc", "file_cache:files_api:def"]
+
+    def test_matches_set_keys(self):
+        """_sets에만 존재하는 키도 yield 되어야 함."""
+        b = MemoryBackend()
+        b.sadd("group:a", "x")
+        b.sadd("group:b", "y")
+        b.set("string:c", "v")
+        keys = sorted(b.scan_iter("group:*"))
+        assert keys == ["group:a", "group:b"]
+
+    def test_excludes_expired_keys(self):
+        b = MemoryBackend()
+        b.set("alive:a", "v", ex=60)
+        b.set("dying:b", "v", ex=1)
+        time.sleep(1.1)
+        keys = list(b.scan_iter("*:*"))
+        assert "alive:a" in keys
+        assert "dying:b" not in keys
+
+    def test_no_match_yields_empty(self):
+        b = MemoryBackend()
+        b.set("foo", "v")
+        assert list(b.scan_iter("bar:*")) == []
+
+    def test_wildcard_position_variants(self):
+        b = MemoryBackend()
+        b.set("prefix:abc:suffix", "v")
+        b.set("prefix:xyz:suffix", "v")
+        b.set("prefix:abc:other", "v")
+        assert sorted(b.scan_iter("prefix:*:suffix")) == [
+            "prefix:abc:suffix",
+            "prefix:xyz:suffix",
+        ]
+        assert sorted(b.scan_iter("*:abc:*")) == [
+            "prefix:abc:other",
+            "prefix:abc:suffix",
+        ]
+
+    def test_count_argument_is_ignored_but_accepted(self):
+        b = MemoryBackend()
+        b.set("k", "v")
+        # 인터페이스 호환을 위해 count 수신만 하고 결과에 영향 없음
+        assert list(b.scan_iter("*", count=1)) == ["k"]
+        assert list(b.scan_iter("*", count=10000)) == ["k"]
+
+    def test_string_and_set_keys_both_included(self):
+        """동일 prefix를 가진 string/set 키가 모두 yield되는지."""
+        b = MemoryBackend()
+        b.set("p:string", "v")
+        b.sadd("p:set", "m")
+        assert sorted(b.scan_iter("p:*")) == ["p:set", "p:string"]
+
+
 class TestMemoryBackendCleanup:
     def test_cleanup_expired_removes_only_expired(self):
         b = MemoryBackend()

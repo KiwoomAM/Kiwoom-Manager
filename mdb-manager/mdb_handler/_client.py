@@ -13,18 +13,32 @@ from mdb_handler.exceptions import MDBConnectionError, MDBHandlerError
 BASE_URL = os.environ.get("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 
 
+def _default_headers() -> dict[str, str]:
+    """SERVICE_NAME env가 있으면 X-Caller-Service 헤더를 부착한다.
+
+    Service 측이 write 요청에 헤더 누락 시 400을 반환하므로,
+    누락된 caller는 명시적 실패로 이어진다 (조용한 'unknown' 대신).
+    """
+    service_name = os.environ.get("SERVICE_NAME")
+    if service_name:
+        return {"X-Caller-Service": service_name}
+    return {}
+
+
 class SyncClient:
     """MDB Handler Service와 통신하는 동기 HTTP 클라이언트."""
 
     def __init__(self, timeout: float = 30.0) -> None:
-        self._http = httpx.Client(base_url=BASE_URL, timeout=timeout)
+        self._http = httpx.Client(
+            base_url=BASE_URL,
+            timeout=timeout,
+            headers=_default_headers(),
+        )
 
     def close(self) -> None:
         self._http.close()
 
-    def _request(
-        self, method: str, path: str, **kwargs: Any
-    ) -> httpx.Response:
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:

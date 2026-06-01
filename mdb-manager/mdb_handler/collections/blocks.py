@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Dict, List, Optional
 
-from mdb_handler._client import SyncClient
 from mdb_handler._paths import (
     CollectionRoute,
     build_aggregate_body,
     build_count_body,
     build_delete_body,
     build_distinct_body,
+    build_envelope_insert_body,
     build_find_body,
     build_find_one_body,
     build_insert_many_body,
@@ -20,6 +21,7 @@ from mdb_handler._paths import (
     build_replace_body,
     build_update_body,
 )
+from mdb_handler._transport import SyncTransport
 
 logger = logging.getLogger("mdb_handler.blocks")
 
@@ -29,7 +31,7 @@ class BlocksCollection:
 
     def __init__(
         self,
-        client: SyncClient,
+        client: SyncTransport,
         collection_name: str = "agent_data",
         database: str = "kw_ai",
     ):
@@ -43,28 +45,43 @@ class BlocksCollection:
         return self._route.prefix
 
     # Create
-    def insert_one(self, document: Dict) -> str:
+    def insert_one(self, document: Dict, ttl: int | None = None) -> str:
+        """문서를 삽입한다.
+
+        Args:
+            document: 저장할 문서.
+            ttl: 문서 만료까지의 시간(초). None이면 만료 없음.
+        """
         resp = self._client.post(
-            self._route.path("insert_one"), json=build_insert_one_body(document)
+            self._route.path("insert_one"),
+            json=build_insert_one_body(document, ttl=ttl),
         )
         return resp["inserted_id"]
 
     def insert_many(
-        self, documents: List[Dict], ordered: bool = True
+        self,
+        documents: List[Dict],
+        ordered: bool = True,
+        ttl: int | None = None,
     ) -> List[str]:
+        """문서 다건을 삽입한다.
+
+        Args:
+            documents: 저장할 문서 리스트.
+            ordered: 순차 처리 여부 (실패 시 중단).
+            ttl: 각 문서 만료까지의 시간(초). 모든 문서에 동일하게 적용. None이면 만료 없음.
+        """
         if not documents:
             return []
         resp = self._client.post(
             self._route.path("insert_many"),
-            json=build_insert_many_body(documents, ordered=ordered),
+            json=build_insert_many_body(documents, ordered=ordered, ttl=ttl),
         )
         return resp["inserted_ids"]
 
     # Read
     def get_all(self) -> List[Dict]:
-        resp = self._client.post(
-            self._route.path("find"), json=build_find_body()
-        )
+        resp = self._client.post(self._route.path("find"), json=build_find_body())
         return resp["data"]
 
     def get_by_id(self, block_id: str) -> Optional[Dict]:
@@ -108,32 +125,24 @@ class BlocksCollection:
         return resp["data"]
 
     # Update
-    def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("update_one"),
             json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
-    def update_many(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_many(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("update_many"),
             json=build_update_body(filter, update, upsert=upsert),
         )
         return resp["modified_count"]
 
-    def update_by_id(
-        self, block_id: str, update: Dict, upsert: bool = False
-    ) -> int:
+    def update_by_id(self, block_id: str, update: Dict, upsert: bool = False) -> int:
         return self.update_one({"block_id": block_id}, update, upsert=upsert)
 
-    def replace_one(
-        self, filter: Dict, replacement: Dict, upsert: bool = False
-    ) -> int:
+    def replace_one(self, filter: Dict, replacement: Dict, upsert: bool = False) -> int:
         resp = self._client.post(
             self._route.path("replace_one"),
             json=build_replace_body(filter, replacement, upsert=upsert),
@@ -191,3 +200,61 @@ class BlocksCollection:
             self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return resp["data"]
+
+    # Envelope insert (agent_data / agent_output 전용)
+    def insert_agent_data(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입.
+
+        Use ``MongoDBHandler.get_agent_data().insert(...)`` (AgentEnvelopeCollection)
+        instead. envelope CRUD 전체(find/update/delete 포함)는 AgentEnvelopeCollection
+        에서만 제공된다.
+        """
+        warnings.warn(
+            "BlocksCollection.insert_agent_data is deprecated. "
+            "Use MongoDBHandler.get_agent_data().insert(...) "
+            "(AgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = self._client.post(
+            f"/v1/{self.database}/agent_data/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]
+
+    def insert_agent_output(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입.
+
+        Use ``MongoDBHandler.get_agent_output().insert(...)`` (AgentEnvelopeCollection)
+        instead.
+        """
+        warnings.warn(
+            "BlocksCollection.insert_agent_output is deprecated. "
+            "Use MongoDBHandler.get_agent_output().insert(...) "
+            "(AgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = self._client.post(
+            f"/v1/{self.database}/agent_output/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]

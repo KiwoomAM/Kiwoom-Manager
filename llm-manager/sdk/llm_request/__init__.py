@@ -2,21 +2,22 @@
 
 사용법:
     from pathlib import Path
-    import mimetypes
-    from llm_request import llm_request_async, FileInput
+    from file_manager import FileManagerHandler
+    from llm_request import llm_request_async, StoredFile
 
+    fm = FileManagerHandler()
     p = Path("report.pdf")
-    file_input = FileInput(
-        file_name=p.name,
-        file_size=p.stat().st_size,
-        file_mtime=int(p.stat().st_mtime),
-        mime_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-        extension=p.suffix.lstrip("."),
-        data=p.read_bytes(),
+    sf_dict = await fm.register_or_get(
+        bytes_data=p.read_bytes(),
+        metadata=fm.build_metadata(
+            file_name=p.name,
+            file_mtime=int(p.stat().st_mtime),
+            file_size=p.stat().st_size,
+        ),
     )
     response, meta = await llm_request_async(
         {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-        files=[file_input],
+        stored_files=[StoredFile(**sf_dict)],
     )
 """
 
@@ -47,7 +48,6 @@ from llm_handler import (
     call,
     configure,
     create_cache,
-    delete_cache,
     delete_file,
     embed,
     get_cache,
@@ -65,6 +65,8 @@ from llm_request._client import AsyncClient
 from llm_request.exceptions import SDKError, ServiceConnectionError, ServiceError
 from llm_request.models import (
     DoneCheckResult,
+    ExpireFailure,
+    ExpireResult,
     FileInput,
     FileKeyingMeta,
     RequestMeta,
@@ -80,12 +82,16 @@ __all__ = [
     "llm_request_stream",
     "done_check",
     "fetch_by_cache_key",
+    "delete_cache",
+    "delete_cache_async",
     "close",
     "Timings",
     "FileInput",
     "FileKeyingMeta",
     "StoredFile",
     "RequestMeta",
+    "ExpireResult",
+    "ExpireFailure",
     "SDKError",
     "ServiceConnectionError",
     "ServiceError",
@@ -105,7 +111,6 @@ __all__ = [
     "get_file",
     "list_files",
     "create_cache",
-    "delete_cache",
     "get_cache",
     "list_caches",
     "update_cache",
@@ -210,7 +215,6 @@ def _resolve_timings(timings: Timings | None) -> Timings:
 async def llm_request_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -218,13 +222,11 @@ async def llm_request_async(
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[LLMResponse, RequestMeta]:
-    """단일 LLM 요청 실행 (async). (result, meta) 튜플 반환.
+    """단일 LLM 요청 실행 (async). Phase 3: stored_files 만 받음 (Method 1 폐기).
 
-    files: 에이전트가 구성한 FileInput 리스트 (meta + bytes). 서버가 내부에서
-    file-manager에 신규 등록 후 처리한다.
-    stored_files (Phase 2): 이미 file-manager 에 등록된 파일 참조 (StoredFile, 6 필드).
-    Phase 1 응답의 `meta.file_meta` 를 그대로 재사용 가능. 서버가 file-manager 에서
-    bytes 만 fetch 하여 파이프라인 진입.
+    stored_files: 이미 file-manager 에 등록된 파일 참조 (StoredFile, 6 필드).
+    agent 가 file-manager SDK 의 `register_or_get` 으로 등록 후 받은 dict 를
+    StoredFile 로 변환해 전달. 서버가 file-manager 에서 bytes 만 fetch.
 
     Args:
         timings: 시간 관련 설정 묶음. 일부 키만 지정하면 나머지는 기본값 적용.
@@ -235,7 +237,6 @@ async def llm_request_async(
     client = await _get_client()
     result = await client.request(
         llm_input,
-        files=files,
         stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
@@ -252,7 +253,6 @@ async def llm_request_async(
 def llm_request(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -263,7 +263,6 @@ def llm_request(
     """단일 LLM 요청 실행 (sync). llm_request_async의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
-        files=files,
         stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
@@ -276,7 +275,6 @@ def llm_request(
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -284,19 +282,11 @@ async def llm_request_stream_async(
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). (AsyncIterator[event_dict], meta) 튜플 반환.
-
-    사용 예:
-        stream, meta = await llm_request_stream_async(llm_input)
-        print(meta["cache_hit"])
-        async for event in stream:
-            print(event["text"], end="")
-    """
+    """스트리밍 LLM 요청 (async). Phase 3: stored_files 만 받음."""
     t = _resolve_timings(timings)
     client = await _get_client()
     return await client.request_stream(
         llm_input,
-        files=files,
         stored_files=stored_files,
         cache_mode=cache_mode,
         save_mode=save_mode,
@@ -312,7 +302,6 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -320,14 +309,10 @@ def llm_request_stream(
     timings: Timings | None = None,
     debug: bool = False,
 ) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). (Iterator[event_dict], meta) 튜플 반환.
-
-    llm_request_stream_async 의 동기 래퍼. 전체 이벤트를 수집 후 iterator로 감싸 반환.
-    """
+    """스트리밍 LLM 요청 (sync). Phase 3: stored_files 만 받음."""
     async def _collect() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         stream, meta = await llm_request_stream_async(
             llm_input,
-            files=files,
             stored_files=stored_files,
             cache_mode=cache_mode,
             save_mode=save_mode,
@@ -371,3 +356,69 @@ async def fetch_by_cache_key(
     client = await _get_client()
     result = await client.fetch(cache_key, database=database)
     return LLMResponse(**result["result"]), RequestMeta(**result["meta"])
+
+
+async def delete_cache_async(
+    cache_ids: str | list[str],
+    *,
+    grace_seconds: int = 5,
+) -> ExpireResult:
+    """Context Cache 를 grace_seconds 후 만료시킨다 (async).
+
+    이름은 delete 지만 내부적으로는 Gemini `caches.update(ttl=grace_seconds)` 로
+    TTL 을 단축한다 — `caches.delete` 는 원래 TTL 그대로 청구되는 반면 update 는
+    새 TTL 로 prorate 청구되기 때문 (storage 비용 절감). grace_seconds 동안
+    in-flight 요청을 보호한 뒤 Gemini cache + Redis 가 만료된다.
+
+    Args:
+        cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열
+            하나, 여러 개면 리스트로 넘긴다. (단건도 결과는 리스트로 돌아온다.)
+        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 5).
+            기본 5초는 task 종료 직후 호출을 가정한다. 같은 cache 를 쓰는 느린
+            LLM 호출과 겹칠 수 있으면 넉넉히(예: 30~60) 올려 잡을 것.
+
+    Returns:
+        ExpireResult — `expired` (만료 성공, 또는 이미 없어진 cache 의 idempotent
+        처리 포함), `failed` (Gemini 5xx·Redis 오류 등으로 만료 못 한 건).
+
+    Raises:
+        ValueError: cache_ids 가 비어있거나 grace_seconds 가 범위(1~3600) 밖일 때.
+        ServiceConnectionError: llm-request 서비스에 연결 불가 / 응답 타임아웃.
+        ServiceError: 서비스가 에러 응답을 반환 (예: error_type="validation").
+
+    Note:
+        개별 cache 의 만료 실패는 예외로 raise 되지 않고 `result.failed` 에
+        담긴다 (여러 건 동시 처리 시 부분 실패 허용). 실제 삭제 여부가 중요하면
+        호출 후 `result.failed` 를 반드시 확인할 것.
+    """
+    if isinstance(cache_ids, str):
+        ids = [cache_ids]
+    else:
+        ids = list(cache_ids) if cache_ids else []
+    if not ids:
+        raise ValueError(
+            "삭제할 cache_id 가 없습니다. cache_id 를 1개 이상 넣어주세요."
+        )
+    if not all(ids):
+        raise ValueError(
+            "빈 cache_id 가 포함되어 있습니다. 유효한 cache_id 만 넣어주세요."
+        )
+    if not 1 <= grace_seconds <= 3600:
+        raise ValueError(
+            f"grace_seconds 는 1~3600초 사이여야 합니다 (받은 값: {grace_seconds})."
+        )
+
+    client = await _get_client()
+    result = await client.delete_cache(ids, grace_seconds=grace_seconds)
+    return ExpireResult(**result)
+
+
+def delete_cache(
+    cache_ids: str | list[str],
+    *,
+    grace_seconds: int = 5,
+) -> ExpireResult:
+    """Context Cache 를 grace_seconds 후 만료시킨다 (sync). delete_cache_async 의 동기 래퍼."""
+    return asyncio.run(
+        delete_cache_async(cache_ids, grace_seconds=grace_seconds)
+    )

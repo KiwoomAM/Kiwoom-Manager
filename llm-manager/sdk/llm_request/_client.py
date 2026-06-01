@@ -12,7 +12,6 @@ import httpx
 from llm_request.exceptions import ServiceConnectionError, ServiceError
 from llm_request.models import (
     DoneCheckResult,
-    FileInput,
     FileKeyingMeta,
     RequestResult,
     StoredFile,
@@ -48,14 +47,18 @@ class AsyncClient:
             raise ServiceConnectionError(f"llm-request 서비스 요청 타임아웃: {e}") from e
 
         if response.status_code >= 400:
+            detail = None
             try:
                 body = response.json()
                 error_msg = body.get("error", response.text)
                 error_type = body.get("error_type")
+                detail = body.get("detail")
             except Exception:
                 error_msg = response.text
                 error_type = None
-            raise ServiceError(error_msg, status_code=response.status_code, error_type=error_type)
+            raise ServiceError(
+                error_msg, status_code=response.status_code, error_type=error_type, detail=detail
+            )
 
         return response
 
@@ -63,7 +66,6 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        files: list[FileInput] | None = None,
         stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
@@ -74,7 +76,7 @@ class AsyncClient:
         http_timeout: float | None = None,
         debug: bool = False,
     ) -> RequestResult:
-        """POST /v1/request — LLM 요청."""
+        """POST /v1/request — LLM 요청. Phase 3: stored_files 만 받음."""
         body: dict[str, Any] = {
             "llm_input": llm_input,
             "cache_mode": cache_mode,
@@ -82,9 +84,6 @@ class AsyncClient:
             "standby_ttl_seconds": standby_ttl_seconds,
             "debug": debug,
         }
-        if files:
-            # Pydantic v2의 mode="json"이 bytes 필드를 base64로 자동 직렬화
-            body["files"] = [f.model_dump(mode="json") for f in files]
         if stored_files:
             body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:
@@ -101,7 +100,6 @@ class AsyncClient:
         self,
         llm_input: dict,
         *,
-        files: list[FileInput] | None = None,
         stored_files: list[StoredFile] | None = None,
         cache_mode: bool = True,
         save_mode: bool = True,
@@ -112,7 +110,7 @@ class AsyncClient:
         http_timeout: float | None = None,
         debug: bool = False,
     ) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
-        """POST /v1/request/stream — SSE 스트리밍 요청.
+        """POST /v1/request/stream — SSE 스트리밍 요청. Phase 3: stored_files 만 받음.
 
         (AsyncIterator[event_dict], meta) 튜플 반환. meta는 `X-LLM-Meta` 응답 헤더에서 파싱.
         """
@@ -123,8 +121,6 @@ class AsyncClient:
             "standby_ttl_seconds": standby_ttl_seconds,
             "debug": debug,
         }
-        if files:
-            body["files"] = [f.model_dump(mode="json") for f in files]
         if stored_files:
             body["stored_files"] = [s.model_dump(mode="json") for s in stored_files]
         if ttl_seconds is not None:
@@ -156,6 +152,7 @@ class AsyncClient:
                     err_body.get("error", resp.text),
                     status_code=resp.status_code,
                     error_type=err_body.get("error_type"),
+                    detail=err_body.get("detail"),
                 )
             except Exception:
                 err = ServiceError(resp.text, status_code=resp.status_code)
@@ -172,7 +169,18 @@ class AsyncClient:
                         data = line[6:]
                         if data == "[DONE]":
                             break
-                        yield json.loads(data)
+                        event = json.loads(data)
+                        # llm-handler 와 동일 계약 — "error" 키 이벤트는 mid-stream
+                        # 에러 신호. 변형 없이 ServiceError 로 raise (caller 의 async
+                        # for 가 throw).
+                        if "error" in event:
+                            raise ServiceError(
+                                event["error"],
+                                status_code=event.get("status_code", 502),
+                                error_type=event.get("error_type"),
+                                detail=event.get("detail"),
+                            )
+                        yield event
             finally:
                 await ctx.__aexit__(None, None, None)
 
@@ -207,4 +215,15 @@ class AsyncClient:
             body["database"] = database
 
         resp = await self._request("POST", "/v1/fetch", json=body)
+        return resp.json()
+
+    async def delete_cache(
+        self,
+        cache_ids: list[str],
+        *,
+        grace_seconds: int = 5,
+    ) -> dict[str, Any]:
+        """POST /v1/context-cache/expire — Context Cache TTL 단축 (내부 caches.update)."""
+        body = {"cache_ids": cache_ids, "grace_seconds": grace_seconds}
+        resp = await self._request("POST", "/v1/context-cache/expire", json=body)
         return resp.json()

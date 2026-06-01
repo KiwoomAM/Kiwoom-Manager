@@ -8,11 +8,14 @@ dedup standby 통합 테스트는 test_resolver_standby.py 참고.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from llm_handler.models import CacheRef, FileRef
 
 from app.core.errors import FileUploadError
 from app.logic.file_processing.resolver import (
+    ResolvedFiles,
     _estimate_non_file_bytes,
     _process_inline,
     _reuse_files_api_uris,
@@ -108,13 +111,9 @@ class TestEstimateNonFileBytes:
         assert size > 0
 
     def test_unserializable_returns_zero(self):
-        """직렬화 실패 시 현재 동작은 0 반환 (I-Q6 follow-up 대상 — logger 추가 예정)."""
-
-        class _NotJSONable:
-            def __repr__(self):
-                raise RuntimeError("no repr")
-
-        bad = {"obj": _NotJSONable()}
+        """직렬화 실패 시 0 반환 (낙관적 fallback). circular ref → ValueError."""
+        bad: dict = {}
+        bad["self"] = bad
         assert _estimate_non_file_bytes(bad) == 0
 
 
@@ -151,6 +150,7 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert result.uri_parts == []
         assert result.cached_content is None
+        assert result.context_cache_id is None
 
     async def test_model_none_with_context_cache_ttl_raises(
         self, fake_redis, fast_backoff, monkeypatch,
@@ -231,6 +231,8 @@ class TestResolveFiles:
         assert result.inline_parts == []
         assert len(result.uri_parts) == 1
         assert result.cached_content == "cachedContents/x"
+        assert result.context_cache_id is not None
+        assert len(result.context_cache_id) == 64  # SHA-256 hex
         assert upload_count == 1
 
 
@@ -279,17 +281,250 @@ class TestFilesApiBytesRelease:
         assert fi.data == b""
         assert len(uri_parts) == 1
 
-    async def test_upload_with_empty_data_raises(self, fake_redis):
-        """fi.data == b'' 인 FileInput 재사용 시 FileUploadError raise (C1 회귀 방지).
+    # NOTE: test_upload_with_empty_data_raises (Phase 1 가드) — Phase 3 에서 삭제.
+    # Phase 3 의 lazy fetch 가 fi.data 비어있을 때 fetch_with_fallback 으로 채움 → raise 안 함.
 
-        404 자동 복구 경로에서 동일 FileInput 객체를 재사용하면 fi.data 가
-        이미 회수된 상태 → 0바이트 업로드/silent corruption 방지를 위해
-        진입 가드에서 raise. docs/16.memory-cleanup-plan.md §6 참조.
-        """
-        fi = _file(file_name="empty.pdf", file_size=30 * 1024 * 1024)
+
+class TestProcessInlineLazyFetch:
+    """Phase 3: _process_inline 이 fi.data 비어있으면 fetch_with_fallback 호출."""
+
+    async def test_empty_data_triggers_lazy_fetch(self, monkeypatch):
+        """fi.data == b"" → fetch_with_fallback 호출 → bytes 채워짐 → Part 생성."""
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="lazy.pdf", file_size=100)
         fi.data = b""
+        fi.file_path = "abc.pdf"
+
+        # FileManagerHandler() 도 mock
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # fetch_with_fallback mock
+        fetch_count = 0
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_count
+            fetch_count += 1
+            assert fm is fm_instance
+            assert fi_arg is fi
+            return b"\x00\x01\x02"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        parts = await _process_inline([fi])
+
+        assert fetch_count == 1
+        assert fi.data == b"\x00\x01\x02"
+        assert len(parts) == 1
+
+    async def test_existing_data_skips_fetch(self, monkeypatch):
+        """fi.data 가 채워있으면 (404 복구 경로) fetch 안 함."""
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="filled.pdf", file_size=100)
+        fi.data = b"\x10\x20"
+
+        fetch_called = False
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_called
+            fetch_called = True
+            return b"shouldnt be called"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        parts = await _process_inline([fi])
+
+        assert not fetch_called
+        assert fi.data == b"\x10\x20"
+        assert len(parts) == 1
+
+
+class TestUploadAndCacheFileLazyFetch:
+    """Phase 3: _upload_and_cache_file 의 leader 분기에서 fi.data 비어있으면 fetch."""
+
+    async def test_empty_data_triggers_lazy_fetch(self, fake_redis, monkeypatch):
+        from app.logic.file_processing import resolver
+
+        fi = _file(file_name="lazy_upload.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b""
+        fi.file_path = "uuid.pdf"
+
+        # FileManagerHandler() mock
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # fetch_with_fallback mock
+        fetch_count = 0
+
+        async def fake_fetch(fm, fi_arg):
+            nonlocal fetch_count
+            fetch_count += 1
+            return b"fetched-bytes"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        # upload_file mock
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
 
         uri_parts: list = []
         file_refs: list = []
-        with pytest.raises(FileUploadError, match="bytes 가 이미 회수"):
-            await _upload_and_cache_file(fi, "checksum-x", uri_parts, file_refs)
+        await _upload_and_cache_file(fi, "checksum-lazy", uri_parts, file_refs)
+
+        assert fetch_count == 1
+        assert len(uri_parts) == 1
+
+
+class TestResolvedViaPropagation:
+    """C2 회귀 보호 — fetch 검증된 분기만 resolved_via='primary' 갱신, 그 외 None 유지."""
+
+    async def test_inline_lazy_fetch_sets_primary(self, monkeypatch):
+        """_process_inline 이 fetch 직후 resolved_via=None → 'primary' 로 갱신."""
+        fi = _file(file_name="inline.pdf", file_size=100)
+        fi.data = b""
+        fi.file_path = "abc.pdf"
+        assert fi.resolved_via is None
+
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        async def fake_fetch(fm, fi_arg):
+            return b"\x00\x01"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        await _process_inline([fi])
+        assert fi.resolved_via == "primary"
+
+    async def test_inline_fallback_preserved(self, monkeypatch):
+        """fetch_with_fallback 이 'fallback' 으로 갱신했으면 _process_inline 이 'primary' 로 덮지 않음."""
+        fi = _file(file_name="stale.pdf", file_size=100)
+        fi.data = b""
+        fi.file_path = "old.pdf"
+
+        fm_instance = MagicMock()
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        async def fake_fetch(fm, fi_arg):
+            fi_arg.resolved_via = "fallback"  # fetch_with_fallback 이 갱신한 상황 시뮬
+            return b"\x00\x01"
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.fetch_with_fallback",
+            fake_fetch,
+        )
+
+        await _process_inline([fi])
+        assert fi.resolved_via == "fallback"
+
+    def test_cache_hit_leaves_resolved_via_none(self):
+        """_reuse_files_api_uris (Files API Redis HIT) 분기는 fetch 안 하므로 resolved_via 갱신 안 함."""
+        fi = _file(file_name="cached.pdf", file_size=30 * 1024 * 1024)
+        fi.data = b"original-bytes"
+        assert fi.resolved_via is None
+
+        existing = {"uris": ["https://example.com/cached"]}
+        _reuse_files_api_uris(fi, existing, [], [])
+
+        assert fi.resolved_via is None  # 검증되지 않음 — silent 'primary' 박제 방지
+
+
+# ── ResolvedFiles ─────────────────────────────────────────────
+
+
+def test_resolved_files_has_context_cache_id_field():
+    rf = ResolvedFiles(
+        inline_parts=[],
+        uri_parts=[],
+        cached_content="cachedContents/xxx",
+        context_cache_id="abc123",
+    )
+    assert rf.context_cache_id == "abc123"
+
+
+def test_resolved_files_context_cache_id_defaults_none():
+    rf = ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+    assert rf.context_cache_id is None
+
+
+# ── llm-handler 에러 pass-through (FileUploadError 로 변형 금지) ────
+
+
+class TestUploadErrorPassthrough:
+    """upload_file 가 던진 llm-handler 에러는 분류 보존하며 그대로 전파,
+    진짜 로컬 실패만 FileUploadError 로 wrap."""
+
+    async def test_handler_error_passes_through(self, monkeypatch):
+        from llm_handler.exceptions import HandlerError
+
+        async def fake_upload(path, mime_type):
+            raise HandlerError("Gemini 차단", status_code=422, error_type="content_blocked")
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(HandlerError) as exc_info:
+            await _upload_and_cache_file(fi, "checksum-x", [], [])
+        assert exc_info.value.error_type == "content_blocked"
+        assert exc_info.value.status_code == 422
+
+    async def test_handler_connection_error_passes_through(self, monkeypatch):
+        from llm_handler.exceptions import HandlerConnectionError
+
+        async def fake_upload(path, mime_type):
+            raise HandlerConnectionError()
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(HandlerConnectionError):
+            await _upload_and_cache_file(fi, "checksum-x", [], [])
+
+    async def test_local_error_still_wrapped_as_file_upload_error(self, monkeypatch):
+        async def fake_upload(path, mime_type):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        fi = _file()
+        with pytest.raises(FileUploadError):
+            await _upload_and_cache_file(fi, "checksum-x", [], [])

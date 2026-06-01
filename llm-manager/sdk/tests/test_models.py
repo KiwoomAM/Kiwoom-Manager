@@ -31,6 +31,21 @@ class TestRequestMetaFileMeta:
         assert not hasattr(m, "unknown_future_key")
 
 
+class TestRequestMetaContextCacheId:
+    """RequestMeta 가 context_cache_id 필드를 받고 노출하는지."""
+
+    def test_context_cache_id_default_none(self):
+        m = RequestMeta(source="live", cache_hit=False)
+        assert m.context_cache_id is None
+
+    def test_context_cache_id_accepts_string(self):
+        m = RequestMeta(
+            source="live", cache_hit=False,
+            context_cache_id="a" * 64,  # SHA-256 hex 형태
+        )
+        assert m.context_cache_id == "a" * 64
+
+
 class TestStoredFileSDK:
     """SDK StoredFile — Service 측 정의와 동일 (동기 정책, Phase 2). 6 필드."""
 
@@ -63,3 +78,24 @@ class TestStoredFileSDK:
                 extension=".pdf",
                 resolved_via="primary",  # server-fill → forbid
             )
+
+
+class TestExpireResult:
+    """ExpireResult / ExpireFailure shape."""
+
+    def test_basic_shape(self):
+        from llm_request.models import ExpireFailure, ExpireResult
+
+        r = ExpireResult(
+            expired=["h1"],
+            failed=[ExpireFailure(cache_id="h2", error="boom")],
+        )
+        assert r.expired == ["h1"]
+        assert r.failed[0].cache_id == "h2"
+        assert r.failed[0].error == "boom"
+
+    def test_from_dict(self):
+        from llm_request.models import ExpireResult
+
+        r = ExpireResult(**{"expired": ["h1"], "failed": []})
+        assert r.failed == []

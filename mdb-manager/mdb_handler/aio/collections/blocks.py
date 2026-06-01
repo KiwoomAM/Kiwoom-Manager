@@ -6,6 +6,7 @@ _paths.py의 빌더를 재사용해 경로/바디 로직을 동기 버전과 공
 
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional
 
 from mdb_handler._paths import (
@@ -14,6 +15,7 @@ from mdb_handler._paths import (
     build_count_body,
     build_delete_body,
     build_distinct_body,
+    build_envelope_insert_body,
     build_find_body,
     build_find_one_body,
     build_insert_many_body,
@@ -39,28 +41,43 @@ class AsyncBlocksCollection:
         self._route = CollectionRoute(database=database, collection=collection_name)
 
     # Create
-    async def insert_one(self, document: Dict) -> str:
+    async def insert_one(self, document: Dict, ttl: int | None = None) -> str:
+        """문서를 삽입한다.
+
+        Args:
+            document: 저장할 문서.
+            ttl: 문서 만료까지의 시간(초). None이면 만료 없음.
+        """
         resp = await self._client.post(
-            self._route.path("insert_one"), json=build_insert_one_body(document)
+            self._route.path("insert_one"),
+            json=build_insert_one_body(document, ttl=ttl),
         )
         return resp["inserted_id"]
 
     async def insert_many(
-        self, documents: List[Dict], ordered: bool = True
+        self,
+        documents: List[Dict],
+        ordered: bool = True,
+        ttl: int | None = None,
     ) -> List[str]:
+        """문서 다건을 삽입한다.
+
+        Args:
+            documents: 저장할 문서 리스트.
+            ordered: 순차 처리 여부.
+            ttl: 각 문서 만료까지의 시간(초). 모든 문서에 동일 적용. None이면 만료 없음.
+        """
         if not documents:
             return []
         resp = await self._client.post(
             self._route.path("insert_many"),
-            json=build_insert_many_body(documents, ordered=ordered),
+            json=build_insert_many_body(documents, ordered=ordered, ttl=ttl),
         )
         return resp["inserted_ids"]
 
     # Read
     async def get_all(self) -> List[Dict]:
-        resp = await self._client.post(
-            self._route.path("find"), json=build_find_body()
-        )
+        resp = await self._client.post(self._route.path("find"), json=build_find_body())
         return resp["data"]
 
     async def get_by_id(self, block_id: str) -> Optional[Dict]:
@@ -104,9 +121,7 @@ class AsyncBlocksCollection:
         return resp["data"]
 
     # Update
-    async def update_one(
-        self, filter: Dict, update: Dict, upsert: bool = False
-    ) -> int:
+    async def update_one(self, filter: Dict, update: Dict, upsert: bool = False) -> int:
         resp = await self._client.post(
             self._route.path("update_one"),
             json=build_update_body(filter, update, upsert=upsert),
@@ -125,9 +140,7 @@ class AsyncBlocksCollection:
     async def update_by_id(
         self, block_id: str, update: Dict, upsert: bool = False
     ) -> int:
-        return await self.update_one(
-            {"block_id": block_id}, update, upsert=upsert
-        )
+        return await self.update_one({"block_id": block_id}, update, upsert=upsert)
 
     async def replace_one(
         self, filter: Dict, replacement: Dict, upsert: bool = False
@@ -189,3 +202,59 @@ class AsyncBlocksCollection:
             self._route.path("aggregate"), json=build_aggregate_body(pipeline)
         )
         return resp["data"]
+
+    # Envelope insert (agent_data / agent_output 전용)
+    async def insert_agent_data(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입 (async).
+
+        Use ``AsyncMongoDBHandler.get_agent_data().insert(...)``
+        (AsyncAgentEnvelopeCollection) instead.
+        """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_data is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_data().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = await self._client.post(
+            f"/v1/{self.database}/agent_data/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]
+
+    async def insert_agent_output(
+        self,
+        *,
+        type: str,
+        metadata: Dict | None = None,
+        data: Dict | None = None,
+        ttl: int | None = None,
+    ) -> str:
+        """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입 (async).
+
+        Use ``AsyncMongoDBHandler.get_agent_output().insert(...)`` instead.
+        """
+        warnings.warn(
+            "AsyncBlocksCollection.insert_agent_output is deprecated. "
+            "Use AsyncMongoDBHandler.get_agent_output().insert(...) "
+            "(AsyncAgentEnvelopeCollection) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        resp = await self._client.post(
+            f"/v1/{self.database}/agent_output/insert",
+            json=build_envelope_insert_body(
+                type_=type, metadata=metadata, data=data, ttl=ttl
+            ),
+        )
+        return resp["inserted_id"]

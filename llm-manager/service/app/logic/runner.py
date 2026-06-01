@@ -9,8 +9,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from llm_handler.aio import call as aio_call
+from llm_handler.aio import last_assistant_message
 from llm_handler.aio import stream as aio_stream
-from llm_handler.models import LLMResponse, StreamChunk
+from llm_handler.models import Content, LLMResponse, StreamChunk
 
 from app.logic.done_check import DoneCheckResult, done_check
 from app.logic.file_processing import (
@@ -19,15 +20,11 @@ from app.logic.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
-from app.logic.file_processing.validators import (
-    validate_file_sizes,
-    validate_mime_types,
-)
-from app.logic.file_register import register_files
-from app.logic.file_resolver import resolve_stored_files
+from app.logic.gemini_errors import is_gemini_404
 from app.logic.keying import make_file_checksum
 from app.logic.meta import build_meta
 from app.logic.store import cache_get, save_result
+from app.logic.stored_file_resolver import resolve_stored_files
 from app.models.requests import FileInput, StoredFile
 
 logger = logging.getLogger(__name__)
@@ -48,7 +45,15 @@ class _Prepared:
     files: list[FileInput] | None
     context_cache_ttl: int | None
     standby_ttl_seconds: int
+    context_cache_id: str | None = None
     debug: bool = False
+
+
+def _text_from_assistant_message(am: Content) -> str:
+    """assistant_message 의 text part 들만 이어붙임 (cache HIT 시 text 노출용)."""
+    if not isinstance(am.content, list):
+        return am.content if isinstance(am.content, str) else ""
+    return "".join(p.text for p in am.content if p.type == "text" and p.text)
 
 
 # ── prepare / finalize ─────────────────────────────────────────
@@ -194,6 +199,8 @@ def _build_live_meta(prep: _Prepared) -> dict[str, Any]:
     file_metas = _dump_files_meta(prep.files)
     if file_metas is not None:
         meta["file_meta"] = file_metas
+    if prep.context_cache_id is not None:
+        meta["context_cache_id"] = prep.context_cache_id
     if prep.debug and prep.route_reason:
         meta["route_reason"] = prep.route_reason
     return meta
@@ -207,33 +214,15 @@ def _dump_files_meta(files: list[FileInput] | None) -> list[dict] | None:
 
 
 async def _prepare_files(
-    files: list[FileInput] | None,
     stored_files: list[StoredFile] | None,
 ) -> list[FileInput] | None:
-    """Phase 2: stored_files resolve + files register → combined list 반환.
+    """Phase 3: stored_files → placeholder FileInput list. Method 1 폐기로 단일 인자.
 
-    - stored_files: file-manager 에서 bytes fetch → bytes 로딩된 FileInput 반환.
-                    file-manager 가 우리 SUPPORTED_MIME_TYPES 모름 → resolve 후 재검증 (G2).
-    - files: 기존 data-mode — validate → register_files. P2-5 로 resolved_via='upload' 강제.
-    - combined: G4 결정적 순서 — files 먼저, stored 나중. 빈 리스트면 None.
-
-    설계: docs/18.file-meta-response-exposure.md Phase 2 §3.3, §4
+    resolve_stored_files 가 validators 까지 처리. 실제 fetch 는 4·5단계에서 lazy.
     """
-    resolved: list[FileInput] = []
-    if stored_files:
-        resolved = await resolve_stored_files(stored_files)
-        validate_mime_types(resolved)
-        validate_file_sizes(resolved)
-
-    if files:
-        validate_mime_types(files)
-        validate_file_sizes(files)
-        await register_files(files)
-        for fi in files:
-            fi.resolved_via = "upload"  # P2-5
-
-    combined = (files or []) + resolved  # G4
-    return combined or None
+    if not stored_files:
+        return None
+    return await resolve_stored_files(stored_files)
 
 
 def finalize(
@@ -269,15 +258,14 @@ def finalize(
 
 def _finalize_stream(
     prep: _Prepared,
-    text_parts: list[str],
     last: StreamChunk | None,
-    function_calls: list | None,
     *,
     database: str | None = None,
 ) -> None:
-    """Stream 완료 후 텍스트 합본 + 마지막 청크 메타로 MDB 저장 (docs/16 §3.5).
+    """Stream 완료 후 handler done event 의 assistant_message 로 MDB 저장.
 
-    chunk 객체 전체를 보관하지 않고 호출자가 추출한 정보만 받는다.
+    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로,
+    llm-request 는 chunk 별 누적 없이 그대로 받아 저장한다 (PR #593 review §2).
     """
     if not prep.save_mode or prep.dc is None:
         return
@@ -288,32 +276,23 @@ def _finalize_stream(
         )
         return
 
-    full_text = "".join(text_parts)
-
-    assembled: dict = {
-        "text": full_text,
-        "model": prep.llm_input.get("model", "unknown"),
-        "usage": last.usage.model_dump() if last.usage else None,
-        "finish_reason": last.finish_reason,
-        "request_id": "",
-        "source": "stream",
-    }
-    if function_calls is not None:
-        assembled["function_calls"] = [fc.model_dump() for fc in function_calls]
-
-    try:
-        save_result(
-            prep.dc.cache_key, prep.dc.canonical_json,
-            assembled, prep.meta, prep.dc.collection,
-            database=database, ttl_seconds=prep.ttl_seconds,
-            requested_at=prep.requested_at,
-            file_metas=_dump_files_meta(prep.files),
-        )
-    except Exception:
-        logger.exception(
-            "스트림 결과 저장 실패: cache_key=%s — 캐시 미저장",
+    am = last_assistant_message()
+    if am is None:
+        logger.warning(
+            "done event/assistant_message 미수신: cache_key=%s — 캐시 미저장",
             prep.dc.cache_key[:16] + "...",
         )
+        return
+
+    response = LLMResponse(
+        text=_text_from_assistant_message(am),
+        model=prep.llm_input.get("model", "unknown"),
+        usage=last.usage,
+        finish_reason=last.finish_reason,
+        request_id="",  # raw stream 저장은 원래 빈 값 (helper 가 request_id 미노출)
+        assistant_message=am,
+    )
+    finalize(prep, response, database=database)   # 기존 저장 로직 재사용
 
 
 def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
@@ -323,6 +302,11 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
         finish_reason=response.finish_reason,
         usage=response.usage,
         function_calls=response.function_calls,
+        tool_calls=response.tool_calls,
+        tool_responses=response.tool_responses,
+        code_blocks=response.code_blocks,
+        code_results=response.code_results,
+        grounding=response.grounding,
     )
 
 
@@ -392,17 +376,8 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
         tools=prep.llm_input.get("tools"),
         tool_config=prep.llm_input.get("tool_config"),
     )
+    prep.context_cache_id = resolved.context_cache_id
     return _apply_resolved(prep.llm_input, resolved)
-
-
-def _is_gemini_404(exc: Exception) -> bool:
-    """Gemini 에러가 '리소스 없음(404)' 신호인지 추정.
-
-    llm-handler가 정확한 예외 타입을 노출하지 않아 메시지 기반 판정 (보수적).
-    llm-handler 담당자에게 예외 타입 세분화 요청 (docs/inline-vs-files-api-strategy.md §12 백로그).
-    """
-    msg = str(exc).lower()
-    return "404" in msg or "not found" in msg
 
 
 # ── agent_llm standby 헬퍼 (cache-stampede-dedup §6) ────────
@@ -449,7 +424,7 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if _is_gemini_404(e) and prep.files:
+        if is_gemini_404(e) and prep.files:
             logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -460,6 +435,7 @@ async def _do_llm_call(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             res = await aio_call(**call_input)  # 1회만 재시도 — 또 실패면 raise
         else:
@@ -472,7 +448,6 @@ async def _do_llm_call(
 async def llm_request_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -482,22 +457,11 @@ async def llm_request_async(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[LLMResponse, dict[str, Any]]:
-    """단일 LLM 요청 실행 (async). (LLMResponse, meta) 튜플 반환.
-
-    files (FileInput): 호출자 bytes → file-manager 신규 업로드.
-    stored_files (StoredFile, Phase 2): 이미 등록된 파일 참조 → file-manager 에서 fetch.
-    둘 다 동시 사용 가능 (mixed). cache/save 모두 off면 파일 자체를 처리하지 않는다.
-
-    Args:
-        standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600초).
-        debug: True면 meta에 route_reason을 포함한다 (기본 False).
-    """
-    # 둘 다 off면 파일 처리 전체 스킵 (file-manager 호출도 안 함)
+    """단일 LLM 요청 실행 (async). Phase 3: stored_files 만 받음 (Method 1 폐기)."""
     if not (cache_mode or save_mode):
-        files = None
         stored_files = None
 
-    combined = await _prepare_files(files, stored_files)
+    combined = await _prepare_files(stored_files)
 
     prep = prepare(
         llm_input,
@@ -545,7 +509,6 @@ async def llm_request_async(
 def llm_request(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -559,7 +522,6 @@ def llm_request(
     import asyncio
     return asyncio.run(llm_request_async(
         llm_input,
-        files=files,
         stored_files=stored_files,
         cache_mode=cache_mode, save_mode=save_mode,
         ttl_seconds=ttl_seconds, database=database,
@@ -574,20 +536,15 @@ async def _do_llm_stream(
 ) -> AsyncIterator[StreamChunk]:
     """파일 처리 + LLM stream + 404 자동 복구 + stream finalize."""
     call_input = await _build_server_call_input(prep)
-    # chunk 객체 전체를 보관하지 않고 finalize 에 필요한 정보만 추출 누적 (docs/16 §3.5)
-    text_parts: list[str] = []
+    # chunk 는 그대로 흘리고, 저장은 handler done event 의 assistant_message 로 (PR #593 review §2)
     last: StreamChunk | None = None
-    function_calls: list | None = None
     try:
         async for chunk in aio_stream(**call_input):
-            text_parts.append(chunk.text or "")
             last = chunk
-            if chunk.function_calls is not None:
-                function_calls = chunk.function_calls
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if _is_gemini_404(e) and prep.files and last is None:
+        if is_gemini_404(e) and prep.files and last is None:
             logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -598,25 +555,22 @@ async def _do_llm_stream(
                 tools=prep.llm_input.get("tools"),
                 tool_config=prep.llm_input.get("tool_config"),
             )
+            prep.context_cache_id = resolved.context_cache_id
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
-                text_parts.append(chunk.text or "")
                 last = chunk
-                if chunk.function_calls is not None:
-                    function_calls = chunk.function_calls
                 yield chunk
         else:
             # 404 외 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
             # 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출 안 함. 동일 요청 재호출 시 LLM 재과금 발생.
             logger.warning("스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
             raise
-    _finalize_stream(prep, text_parts, last, function_calls, database=database)
+    _finalize_stream(prep, last, database=database)
 
 
 async def llm_request_stream_async(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -626,17 +580,11 @@ async def llm_request_stream_async(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (async). (AsyncIterator[StreamChunk], meta) 튜플 반환.
-
-    캐시 히트 시 단일 StreamChunk 1개만 yield하는 AsyncIterator 반환.
-    standby 대기 후 캐시 HIT면 해당 결과를 단일 chunk로 yield하는 AsyncIterator.
-    스트림 완료 후 MDB에 결과 자동 저장.
-    """
+    """스트리밍 LLM 요청 (async). Phase 3: stored_files 만 받음."""
     if not (cache_mode or save_mode):
-        files = None
         stored_files = None
 
-    combined = await _prepare_files(files, stored_files)
+    combined = await _prepare_files(stored_files)
 
     prep = prepare(
         llm_input,
@@ -702,7 +650,6 @@ async def llm_request_stream_async(
 def llm_request_stream(
     llm_input: dict,
     *,
-    files: list[FileInput] | None = None,
     stored_files: list[StoredFile] | None = None,
     cache_mode: bool = True,
     save_mode: bool = True,
@@ -712,13 +659,12 @@ def llm_request_stream(
     standby_ttl_seconds: int = 600,
     debug: bool = False,
 ) -> tuple[Iterator[StreamChunk], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). (Iterator[StreamChunk], meta) 튜플 반환."""
+    """스트리밍 LLM 요청 (sync). Phase 3: stored_files 만 받음."""
     import asyncio
 
     async def _collect() -> tuple[list[StreamChunk], dict[str, Any]]:
         stream, meta = await llm_request_stream_async(
             llm_input,
-            files=files,
             stored_files=stored_files,
             cache_mode=cache_mode, save_mode=save_mode,
             ttl_seconds=ttl_seconds, database=database,

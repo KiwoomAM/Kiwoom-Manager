@@ -8,14 +8,23 @@ from urllib.parse import quote
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from llm_handler.exceptions import HandlerConnectionError, HandlerError
 
+from app.core.errors import CacheKeyNotFoundError
+from app.logic.context_cache_lifecycle import expire_caches
 from app.logic.done_check import done_check
 from app.logic.keying import make_file_checksum
 from app.logic.runner import llm_request_async, llm_request_stream_async
 from app.logic.store import fetch_by_cache_key
-from app.models.requests import DoneCheckBody, FetchBody, LLMRequestBody
+from app.models.requests import (
+    DoneCheckBody,
+    ExpireContextCacheRequest,
+    FetchBody,
+    LLMRequestBody,
+)
 from app.models.responses import (
     DoneCheckResponse,
+    ExpireContextCacheResponse,
     FetchResponse,
     LLMRequestResponse,
 )
@@ -33,7 +42,6 @@ async def handle_request(body: LLMRequestBody) -> LLMRequestResponse:
     """LLM 요청 (MDB 캐시 조회 → 호출 → 저장)."""
     llm_result, meta = await llm_request_async(
         body.llm_input,
-        files=body.files,
         stored_files=body.stored_files,
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
@@ -58,7 +66,6 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
     """
     stream, meta = await llm_request_stream_async(
         body.llm_input,
-        files=body.files,
         stored_files=body.stored_files,
         cache_mode=body.cache_mode,
         save_mode=body.save_mode,
@@ -70,15 +77,50 @@ async def handle_request_stream(body: LLMRequestBody) -> StreamingResponse:
     )
 
     async def _sse():
-        async for chunk in stream:
-            event = {
-                "type": "chunk",
-                "text": chunk.text,
-                "finish_reason": chunk.finish_reason,
+        # mid-stream 에러는 응답 본문이 이미 시작돼 HTTP status 로 못 보낸다.
+        # llm-handler 와 동일하게 "error" 키 SSE 이벤트로 in-band relay 후 [DONE] 생략.
+        try:
+            async for chunk in stream:
+                event = {
+                    "type": "chunk",
+                    "text": chunk.text,
+                    "finish_reason": chunk.finish_reason,
+                }
+                if chunk.usage:
+                    event["usage"] = chunk.usage.model_dump()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except HandlerError as e:
+            # llm-handler 분류 에러 — status_code/error_type/detail 그대로 relay.
+            err = {
+                "error": e.message,
+                "error_type": e.error_type,
+                "status_code": e.status_code,
+                "detail": e.detail,
             }
-            if chunk.usage:
-                event["usage"] = chunk.usage.model_dump()
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+            return
+        except HandlerConnectionError as e:
+            # llm-handler 도달 불가 → 502 transport (재시도 가능 신호, 비스트림과 동일).
+            err = {
+                "error": e.message,
+                "error_type": "transport",
+                "status_code": 502,
+                "detail": None,
+            }
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+            return
+        except Exception as e:
+            # llm-request 자체 미처리 예외 — 비스트림 catch-all 과 동일하게
+            # request_internal + detail=예외클래스명 (relay handler_internal 과 구분).
+            logger.exception("스트림 미처리 예외: %s", type(e).__name__)
+            err = {
+                "error": "내부 서버 오류",
+                "error_type": "request_internal",
+                "status_code": 500,
+                "detail": type(e).__name__,
+            }
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+            return
         yield "data: [DONE]\n\n"
 
     headers = {
@@ -117,8 +159,29 @@ async def handle_done_check(body: DoneCheckBody) -> DoneCheckResponse:
 @router.post("/v1/fetch", response_model=FetchResponse)
 async def handle_fetch(body: FetchBody) -> FetchResponse:
     """캐시 키로 결과 직접 조회."""
-    response, meta = fetch_by_cache_key(
-        body.cache_key,
-        database=body.database,
-    )
+    try:
+        response, meta = fetch_by_cache_key(
+            body.cache_key,
+            database=body.database,
+        )
+    except KeyError as e:
+        # cache_key 문서 없음 — 불투명한 500 대신 404 not_found 로 명확히 신호.
+        raise CacheKeyNotFoundError(str(e)) from e
     return FetchResponse(result=response.model_dump(), meta=meta)
+
+
+# ── /v1/context-cache/expire ─────────────────────────────────
+
+
+@router.post(
+    "/v1/context-cache/expire",
+    response_model=ExpireContextCacheResponse,
+)
+async def handle_expire_context_cache(
+    body: ExpireContextCacheRequest,
+) -> ExpireContextCacheResponse:
+    """Context Cache TTL 단축 — Gemini caches.update + Redis EXPIRE.
+
+    Cache 청구는 새 TTL 기준으로 prorate 처리됨. design: docs/20.context-cache-expire.md
+    """
+    return await expire_caches(body.cache_ids, body.grace_seconds)

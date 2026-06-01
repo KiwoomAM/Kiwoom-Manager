@@ -123,6 +123,44 @@ class TestSetSet:
         assert handler._memory.smembers("s") == {"a", "b"}
 
 
+class TestScanIter:
+    def test_scan_iter_uses_redis_when_available(self, handler):
+        client = MagicMock(spec=redis.Redis)
+        client.scan_iter.return_value = iter(["k1", "k2"])
+        _install_mock_client(client)
+        result = list(handler.scan_iter("p:*"))
+        assert result == ["k1", "k2"]
+        client.scan_iter.assert_called_once_with(match="p:*", count=100)
+
+    def test_scan_iter_falls_back_to_memory_on_redis_failure(self, handler):
+        """Redis SCAN이 ConnectionError로 실패하면 메모리 백엔드에서 SCAN.
+
+        RedisBackend.scan_iter가 ConnectionError를 RedisRetryExhausted로 wrap
+        하므로 Handler의 except RedisHandlerError가 catch하고 폴백한다.
+        """
+        client = MagicMock(spec=redis.Redis)
+        client.scan_iter.side_effect = redis.ConnectionError("down")
+        _install_mock_client(client)
+        handler._memory.set("mem:a", "v")
+        handler._memory.set("mem:b", "v")
+        result = sorted(handler.scan_iter("mem:*"))
+        assert result == ["mem:a", "mem:b"]
+
+    def test_scan_iter_uses_memory_when_redis_unavailable(self, handler):
+        connection._redis_client = None
+        connection._redis_available = False
+        handler._memory.set("only:a", "v")
+        result = list(handler.scan_iter("only:*"))
+        assert result == ["only:a"]
+
+    def test_scan_iter_passes_count_through(self, handler):
+        client = MagicMock(spec=redis.Redis)
+        client.scan_iter.return_value = iter([])
+        _install_mock_client(client)
+        list(handler.scan_iter("p:*", count=500))
+        client.scan_iter.assert_called_once_with(match="p:*", count=500)
+
+
 class TestHealthCheck:
     def test_health_check_includes_storage_mode(self, handler):
         result = handler.health_check()

@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-from llm_handler.models import FunctionCall, LLMResponse, StreamChunk, TokenUsage
+from llm_handler.models import Content, LLMResponse, StreamChunk, TokenUsage
 
 from app.logic import runner
-
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -171,6 +169,12 @@ class TestAgentLlmStreamStandby:
             )
 
         monkeypatch.setattr(runner, "aio_stream", slow_aio_stream)
+        # leader stream 종료 시 handler done event 의 assistant_message 로 저장됨 (PR #593 §2).
+        # live text("chunk1-chunk2") 와 동일하게 두어 cached chunk text 검증이 일치하도록.
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "chunk1-chunk2"}],
+        }))
 
         llm_input = {
             "contents": "stream dedup test",
@@ -206,51 +210,165 @@ class TestAgentLlmStreamStandby:
         assert cached_chunks[0].finish_reason == "STOP"
 
 
-# ── stream chunk 누적 시맨틱 회귀 ────────────────────────────
+# ── stream assistant_message 저장 회귀 ────────────────────────────
 
 
-class TestStreamFunctionCallsAccumulation:
-    """_do_llm_stream 의 function_calls 누적 분기 회귀.
+class TestStreamAssistantMessageSave:
+    """_do_llm_stream 이 handler done event 의 assistant_message 로 저장하는지 회귀 (PR #593 §2).
 
-    `if chunk.function_calls is not None: function_calls = chunk.function_calls`
-    — 마지막 비-None 청크의 값을 채택하는 시맨틱이 깨지지 않는지 검증.
-    기존 stream 테스트는 모든 청크 function_calls=None 이라 이 분기를 한 번도 실행하지 않음.
+    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로, llm-request 는
+    chunk 별 누적 없이 그대로 받아 저장한다. last_assistant_message 를 mock 해서 주입.
     """
 
-    async def test_middle_chunk_function_calls_preserved_in_saved_response(
+    async def test_assistant_message_saved_with_text_derived(
         self, mock_collection, fake_redis, monkeypatch,
     ):
-        """중간 청크에만 function_calls 가 있고 마지막 청크가 None 이어도, 저장된 응답에 보존."""
-        fc = FunctionCall(name="lookup", args={"q": "x"}, id="fc-1")
-
+        """done event 의 assistant_message 가 cache 에 저장되고, text 가 part 에서 derive 됨."""
         async def fake_aio_stream(**kwargs):
-            yield StreamChunk(text="a", finish_reason=None, usage=None, function_calls=None)
-            yield StreamChunk(text="b", finish_reason=None, usage=None, function_calls=[fc])
+            yield StreamChunk(text="안녕", finish_reason=None, usage=None)
             yield StreamChunk(
-                text="c",
-                finish_reason="STOP",
+                text="하세요", finish_reason="STOP",
                 usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
-                function_calls=None,  # 마지막 청크는 None — 누적된 값이 보존되어야 함
             )
 
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "안녕하세요"}],
+        }))
 
-        llm_input = {
-            "contents": "fc accumulation",
-            "model": "gemini-2.5-flash",
-            "service_name": "test",
-        }
-
+        llm_input = {"contents": "x", "model": "gemini-2.5-flash", "service_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
-            llm_input,
-            cache_mode=True, save_mode=True,
+            llm_input, cache_mode=True, save_mode=True,
             standby_ttl_seconds=10, database="test_db",
         )
         async for _ in stream:
             pass
 
-        # mock_collection 은 store: dict[str, dict] — 저장된 doc 1개 있어야 함
         assert len(mock_collection) == 1
         saved = next(iter(mock_collection.values()))
-        assert saved["result"]["function_calls"] == [fc.model_dump()]
-        assert saved["result"]["text"] == "abc"
+        assert saved["result"]["text"] == "안녕하세요"  # part 에서 derive
+        assert saved["result"]["assistant_message"]["content"][0]["text"] == "안녕하세요"
+
+    async def test_function_call_preserved_in_assistant_message(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """function_call part 가 assistant_message 안에 그대로 보존됨 (5필드 분리 저장 대신)."""
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(
+                text="", finish_reason="STOP",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+            )
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [
+                {"type": "function_call",
+                 "function_call": {"name": "lookup", "args": {"q": "x"}, "id": "fc-1"}},
+            ],
+        }))
+
+        llm_input = {"contents": "y", "model": "gemini-2.5-flash", "service_name": "test"}
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input, cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        saved = next(iter(mock_collection.values()))
+        parts = saved["result"]["assistant_message"]["content"]
+        assert parts[0]["function_call"]["name"] == "lookup"
+
+    async def test_no_done_event_skips_save(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """done event 미수신(빈 응답 등) 시 캐시 저장 안 함."""
+        async def fake_aio_stream(**kwargs):
+            yield StreamChunk(text="부분", finish_reason=None, usage=None)
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: None)
+
+        llm_input = {"contents": "z", "model": "gemini-2.5-flash", "service_name": "test"}
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input, cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        assert len(mock_collection) == 0  # 저장 안 됨
+
+
+# ── Phase 3 lazy fetch dedup 통합 ──────────────────────────
+
+
+class TestPhase3LazyFetchDedup:
+    """같은 stored_files 동시 요청 시 file-manager.get_file 이 1 회만 호출됨."""
+
+    async def test_concurrent_stored_files_fetch_once(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    ):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.logic import runner
+        from app.models.requests import StoredFile
+
+        # fm.get_file mock + counter
+        get_file_count = 0
+
+        async def fake_get_file(file_path: str):
+            nonlocal get_file_count
+            get_file_count += 1
+            await asyncio.sleep(0.05)  # leader fetch 시뮬레이션
+            return (b"\x00\x01\x02", {})
+
+        fm_instance = MagicMock()
+        fm_instance.get_file = AsyncMock(side_effect=fake_get_file)
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.FileManagerHandler",
+            lambda: fm_instance,
+        )
+
+        # llm_handler.upload_file mock — Files API URI 1개만 반환
+        async def fake_upload(path, mime_type):
+            from llm_handler.models import FileRef
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "app.logic.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        # aio_call mock — LLM 응답
+        monkeypatch.setattr(runner, "aio_call", AsyncMock(
+            return_value=_make_response("ok"),
+        ))
+
+        # Files API 분기 가도록 — audio 25MB (image/audio inline 한도 20MB 초과, split 안 타는 mime)
+        ref = StoredFile(
+            file_path="shared.mp3",
+            file_name="shared.mp3",
+            file_size=25 * 1024 * 1024,
+            file_mtime=0,
+            mime_type="audio/mp3",
+            extension=".mp3",
+        )
+
+        async def one_call():
+            return await runner.llm_request_async(
+                {"contents": "test", "model": "gemini-2.5-flash"},
+                stored_files=[ref],
+                cache_mode=True, save_mode=True,
+                standby_ttl_seconds=10, database="test_db",
+            )
+
+        results = await asyncio.gather(*[one_call() for _ in range(10)])
+
+        # leader 1 명만 fetch
+        assert get_file_count == 1, f"expected 1 fetch, got {get_file_count}"
+        assert len(results) == 10
+        assert all(r[0].text == "ok" for r in results)
