@@ -26,7 +26,7 @@ pip install -e packages/vdb-handler/sdk
 ## 디렉터리 구조
 
 ```
-vdb_handler/
+vdb_manager/
 ├── __init__.py        # 공개 API
 ├── _client.py         # httpx 기반 SyncClient (내부용)
 ├── handler.py         # VDBHandler (Singleton 진입점)
@@ -41,7 +41,7 @@ vdb_handler/
 ## Quick Start
 
 ```python
-from vdb_handler import VDBHandler
+from vdb_manager import VDBHandler
 
 handler = VDBHandler()
 
@@ -160,7 +160,7 @@ VDBError                    # 기본 에러
 ```
 
 ```python
-from vdb_handler import VDBConnectionError, VDBHandlerError
+from vdb_manager import VDBConnectionError, VDBHandlerError
 
 try:
     results = handler.hybrid.search("쿼리", collection_name="kw_gp")

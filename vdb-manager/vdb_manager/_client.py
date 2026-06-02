@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from vdb_handler.exceptions import VDBConnectionError, VDBHandlerError
+from vdb_manager.exceptions import VDBConnectionError, VDBHandlerError
 
 BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")
 

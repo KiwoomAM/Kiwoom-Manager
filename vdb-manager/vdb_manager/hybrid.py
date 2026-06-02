@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from vdb_handler._client import SyncClient
-from vdb_handler.dense import DenseClient
-from vdb_handler.sparse import SparseClient
+from vdb_manager._client import SyncClient
+from vdb_manager.dense import DenseClient
+from vdb_manager.sparse import SparseClient
 
 
 class HybridClient:

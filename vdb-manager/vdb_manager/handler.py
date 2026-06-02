@@ -3,7 +3,7 @@
 VDBHandler - 통합 진입점 (Singleton)
 
 사용 예시:
-    from vdb_handler import VDBHandler
+    from vdb_manager import VDBHandler
 
     handler = VDBHandler()
 
@@ -37,12 +37,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from vdb_handler._client import SyncClient
-from vdb_handler.dense import DenseClient
-from vdb_handler.sparse import SparseClient
-from vdb_handler.hybrid import HybridClient
-from vdb_handler.collection import CollectionClient
-from vdb_handler.reranker import RerankerClient
+from vdb_manager._client import SyncClient
+from vdb_manager.dense import DenseClient
+from vdb_manager.sparse import SparseClient
+from vdb_manager.hybrid import HybridClient
+from vdb_manager.collection import CollectionClient
+from vdb_manager.reranker import RerankerClient
 
 logger = logging.getLogger(__name__)
 

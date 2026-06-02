@@ -1,5 +1,5 @@
 [project]
-name = "kiwoom-vdb-handler"
+name = "kiwoom-vdb-manager"
 version = "2.0.0"
 description = "Kiwoom VDB Handler SDK - HTTP 클라이언트"
 requires-python = ">=3.10"
@@ -12,4 +12,4 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["vdb_handler*"]
+include = ["vdb_manager*"]

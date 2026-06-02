@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-vdb_handler - VDB Handler SDK
+vdb_manager - VDB Handler SDK
 
 사용법:
-    from vdb_handler import VDBHandler
+    from vdb_manager import VDBHandler
 
     handler = VDBHandler()
 
