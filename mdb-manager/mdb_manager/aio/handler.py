@@ -22,11 +22,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from mdb_handler._async_client import AsyncClient
-from mdb_handler.aio.collections.agent_envelope import (
+from mdb_manager._async_client import AsyncClient
+from mdb_manager.aio.collections.agent_envelope import (
     AsyncAgentEnvelopeCollection,
 )
-from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
 
 logger = logging.getLogger(__name__)
 

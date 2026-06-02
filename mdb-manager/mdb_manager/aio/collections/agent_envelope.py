@@ -5,14 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from mdb_handler._paths import (
+from mdb_manager._paths import (
     build_envelope_delete_body,
     build_envelope_find_body,
     build_envelope_find_one_body,
     build_envelope_insert_body,
     build_envelope_update_body,
 )
-from mdb_handler._transport import AsyncTransport
+from mdb_manager._transport import AsyncTransport
 
 
 class AsyncAgentEnvelopeCollection:

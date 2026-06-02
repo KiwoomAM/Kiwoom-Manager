@@ -6,7 +6,7 @@ MongoDBHandler - HTTP 클라이언트 래퍼 (Singleton)
 내부적으로 MDB Handler Service에 HTTP 요청을 보냅니다.
 
 사용 예시:
-    from mdb_handler import MongoDBHandler
+    from mdb_manager import MongoDBHandler
 
     mdb = MongoDBHandler()
 
@@ -30,9 +30,9 @@ import logging
 import warnings
 from typing import Dict, List, Optional
 
-from mdb_handler._client import SyncClient
-from mdb_handler.collections.agent_envelope import AgentEnvelopeCollection
-from mdb_handler.collections.blocks import BlocksCollection
+from mdb_manager._client import SyncClient
+from mdb_manager.collections.agent_envelope import AgentEnvelopeCollection
+from mdb_manager.collections.blocks import BlocksCollection
 
 logger = logging.getLogger(__name__)
 

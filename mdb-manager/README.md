@@ -26,7 +26,7 @@ pip install -e packages/mdb-handler/sdk
 ## 디렉터리 구조
 
 ```
-mdb_handler/
+mdb_manager/
 ├── __init__.py            # 공개 API (sync + aio 노출)
 ├── _client.py             # httpx 기반 SyncClient (내부용)
 ├── _async_client.py       # httpx 기반 AsyncClient (내부용)
@@ -46,7 +46,7 @@ mdb_handler/
 ## Quick Start
 
 ```python
-from mdb_handler import MongoDBHandler
+from mdb_manager import MongoDBHandler
 
 mdb = MongoDBHandler()  # 기본: kw_ai / agent_data
 
@@ -163,7 +163,7 @@ MDBError                    # 기본 에러 (message, status_code)
 ```
 
 ```python
-from mdb_handler import MDBConnectionError, MDBHandlerError
+from mdb_manager import MDBConnectionError, MDBHandlerError
 
 try:
     mdb.find({"type": "table"})
@@ -246,13 +246,13 @@ await aio_mdb.insert_one({"a": 1}, ttl=600)
 
 ## 비동기 사용법 (Async)
 
-FastAPI, LangGraph 등 async 환경에서는 `mdb_handler.aio`를 사용하세요.
+FastAPI, LangGraph 등 async 환경에서는 `mdb_manager.aio`를 사용하세요.
 동기 인터페이스(`MongoDBHandler`)는 그대로 유지되며, 비동기 인터페이스는 별도 경로로 제공됩니다.
 
 ### 기본 사용 (context manager 권장)
 
 ```python
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBHandler
 
 async def handler():
     async with AsyncMongoDBHandler(database="kw_rag", collection="kw_gp") as mdb:
@@ -265,7 +265,7 @@ async def handler():
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBHandler
 
 
 @asynccontextmanager
@@ -289,7 +289,7 @@ async def list_docs(request: Request):
 
 ```python
 import asyncio
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBHandler
 
 async def fan_out():
     async with AsyncMongoDBHandler() as mdb:
@@ -305,7 +305,7 @@ async def fan_out():
 
 | 기능 | 동기 | 비동기 |
 |------|------|--------|
-| import | `from mdb_handler import MongoDBHandler` | `from mdb_handler.aio import AsyncMongoDBHandler` |
+| import | `from mdb_manager import MongoDBHandler` | `from mdb_manager.aio import AsyncMongoDBHandler` |
 | 인스턴스 | Singleton (`MongoDBHandler()`) | 명시적 인스턴스 (매 호출 새 인스턴스 가능) |
 | 호출 | `mdb.find(...)` | `await mdb.find(...)` |
 | 종료 | `mdb.close()` / `MongoDBHandler.reset()` | `await mdb.aclose()` 또는 `async with` |

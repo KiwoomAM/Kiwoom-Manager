@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-"""mdb_handler.aio — 비동기 인터페이스.
+"""mdb_manager.aio — 비동기 인터페이스.
 
 사용법:
-    from mdb_handler.aio import AsyncMongoDBHandler
+    from mdb_manager.aio import AsyncMongoDBHandler
 
     async with AsyncMongoDBHandler(database="kw_rag", collection="kw_gp") as mdb:
         docs = await mdb.find({"type": "table"}, limit=10)
 """
 
-from mdb_handler._async_client import AsyncClient
-from mdb_handler.aio.collections.agent_envelope import (
+from mdb_manager._async_client import AsyncClient
+from mdb_manager.aio.collections.agent_envelope import (
     AsyncAgentEnvelopeCollection,
 )
-from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
-from mdb_handler.aio.handler import AsyncMongoDBHandler
-from mdb_handler.exceptions import (
+from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
+from mdb_manager.aio.handler import AsyncMongoDBHandler
+from mdb_manager.exceptions import (
     MDBConnectionError,
     MDBError,
     MDBHandlerError,

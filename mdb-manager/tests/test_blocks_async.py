@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
 
 
 def _make_collection() -> tuple[AsyncBlocksCollection, AsyncMock]:
@@ -56,7 +56,7 @@ async def test_insert_many_empty_skips_request():
 
 @pytest.mark.asyncio
 async def test_async_insert_agent_data_posts_to_envelope_endpoint():
-    from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+    from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
     from unittest.mock import AsyncMock, MagicMock
 
     client = MagicMock()
@@ -78,7 +78,7 @@ async def test_async_insert_agent_data_posts_to_envelope_endpoint():
 
 @pytest.mark.asyncio
 async def test_async_insert_agent_output_posts_to_envelope_endpoint():
-    from mdb_handler.aio.collections.blocks import AsyncBlocksCollection
+    from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
     from unittest.mock import AsyncMock, MagicMock
 
     client = MagicMock()

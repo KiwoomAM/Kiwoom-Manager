@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mdb_handler.collections.agent_envelope import AgentEnvelopeCollection
+from mdb_manager.collections.agent_envelope import AgentEnvelopeCollection
 
 
 def _make_col(

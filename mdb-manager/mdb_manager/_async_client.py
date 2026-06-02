@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from mdb_handler.exceptions import MDBConnectionError, MDBHandlerError
+from mdb_manager.exceptions import MDBConnectionError, MDBHandlerError
 
 BASE_URL = os.environ.get("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 DEFAULT_TIMEOUT = 30.0
