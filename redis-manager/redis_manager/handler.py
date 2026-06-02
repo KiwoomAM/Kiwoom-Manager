@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/handler.py
+"""redis_manager/handler.py
 
 RedisHandler — Redis 백엔드와 메모리 백엔드를 조율하는 orchestrator.
 

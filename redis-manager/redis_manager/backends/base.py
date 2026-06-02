@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/backends/base.py
+"""redis_manager/backends/base.py
 
 KeyValueBackend Protocol — Redis 백엔드와 메모리 백엔드의 공통 계약.
 

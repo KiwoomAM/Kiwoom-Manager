@@ -42,7 +42,7 @@ pip install -e packages/redis-handler
 ## Quick Start
 
 ```python
-from redis_handler import RedisHandler
+from redis_manager import RedisHandler
 
 rh = RedisHandler()
 
@@ -117,7 +117,7 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 ### 예외 처리
 
 ```python
-from redis_handler import RedisHandler, RedisUnavailableError, RedisRetryExhausted
+from redis_manager import RedisHandler, RedisUnavailableError, RedisRetryExhausted
 
 rh = RedisHandler()
 
@@ -138,7 +138,7 @@ except RedisRetryExhausted:
 ### BaseJsonStore (도메인 store 작성용)
 
 ```python
-from redis_handler import BaseJsonStore
+from redis_manager import BaseJsonStore
 
 class MyStore(BaseJsonStore):
     def __init__(self):
@@ -192,6 +192,6 @@ KeyValueBackend Protocol
 - **메모리 폴백**: Redis 불가 시 인메모리 dict로 동작. 프로세스 종료 시 데이터 소실
 - **TTL**: 초 단위. `None`이면 영구 저장
 - **Thread-safe**: 메모리 백엔드는 `threading.Lock`으로 동시 접근 보호
-- **자동 초기화**: `import redis_handler` 시 `init_redis()`가 자동 호출됨
+- **자동 초기화**: `import redis_manager` 시 `init_redis()`가 자동 호출됨
 - **재시도 비용**: 최악 ~16초 지연 (`socket_timeout=5s × 3 + backoff`)
 - **NX/XX 폴백 없음**: 분산 의미론 보호. Redis 미연결 시 `RedisUnavailableError`

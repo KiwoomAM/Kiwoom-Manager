@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 import redis
 
-from redis_handler import connection
-from redis_handler.exceptions import (
+from redis_manager import connection
+from redis_manager.exceptions import (
     RedisHandlerError,
     RedisRetryExhausted,
     RedisUnavailableError,
 )
-from redis_handler.handler import RedisHandler
+from redis_manager.handler import RedisHandler
 
 
 @pytest.fixture

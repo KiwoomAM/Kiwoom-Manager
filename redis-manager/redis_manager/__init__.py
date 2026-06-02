@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-redis_handler
+redis_manager
 
 범용 Redis 핸들러 패키지 — 메모리 폴백 + 재시도 + SET 옵션 내장.
 
@@ -8,7 +8,7 @@ redis_handler
 
 사용법:
     # 범용 Redis CRUD
-    from redis_handler import RedisHandler
+    from redis_manager import RedisHandler
     rh = RedisHandler()
     rh.set("key", "value", ttl=3600)
     val = rh.get("key")
@@ -59,7 +59,7 @@ from .base_store import BaseJsonStore
 
 # ── 전역 인스턴스 ─────────────────────────────────────────
 init_redis()
-redis_handler = RedisHandler()
+redis_manager = RedisHandler()
 
 
 __all__ = [
@@ -85,7 +85,7 @@ __all__ = [
     "RedisBackend",
     # Handler
     "RedisHandler",
-    "redis_handler",
+    "redis_manager",
     # BaseJsonStore
     "BaseJsonStore",
 ]

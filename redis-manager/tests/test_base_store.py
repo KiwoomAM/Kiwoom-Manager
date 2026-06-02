@@ -2,8 +2,8 @@
 """BaseJsonStore 확장 테스트."""
 
 import pytest
-from redis_handler import BaseJsonStore, RedisHandler
-from redis_handler.exceptions import RedisUnavailableError
+from redis_manager import BaseJsonStore, RedisHandler
+from redis_manager.exceptions import RedisUnavailableError
 
 
 class _TestStore(BaseJsonStore):

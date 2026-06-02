@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/backends/redis_backend.py
+"""redis_manager/backends/redis_backend.py
 
 redis-py 클라이언트 래핑 + 재시도 적용.
 

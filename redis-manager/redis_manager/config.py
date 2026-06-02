@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-redis_handler/config.py
+redis_manager/config.py
 
 Redis 연결 설정 클래스
 
@@ -12,7 +12,7 @@ Redis 연결 설정 클래스
 
     >>> from dotenv import load_dotenv
     >>> load_dotenv()
-    >>> from redis_handler.config import RedisConfig
+    >>> from redis_manager.config import RedisConfig
 
     또는 명시적으로 설정:
 

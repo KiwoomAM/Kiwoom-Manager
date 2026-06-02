@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-redis_handler/base_store.py
+redis_manager/base_store.py
 
 Redis JSON 저장소 베이스 클래스
 
@@ -10,7 +10,7 @@ Redis 위에 JSON 직렬화/역직렬화, 키 프리픽스, TTL 관리 등
 각 도메인 Store는 이 클래스를 상속하여 도메인 로직만 구현합니다.
 
 사용법:
-    from redis_handler import BaseJsonStore
+    from redis_manager import BaseJsonStore
 
     class MyStore(BaseJsonStore):
         def __init__(self):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/exceptions.py
+"""redis_manager/exceptions.py
 
 redis-handler 패키지의 도메인 예외 계층.
 

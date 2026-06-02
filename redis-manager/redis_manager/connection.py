@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-redis_handler/connection.py
+redis_manager/connection.py
 
 Redis 연결 관리 (Singleton)
 

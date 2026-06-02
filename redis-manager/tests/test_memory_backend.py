@@ -3,7 +3,7 @@
 
 import time
 import pytest
-from redis_handler.backends.memory_backend import MemoryBackend
+from redis_manager.backends.memory_backend import MemoryBackend
 
 
 class TestMemoryBackendBasic:

@@ -6,7 +6,7 @@
 
 import pytest
 
-from redis_handler.handler import RedisHandler
+from redis_manager.handler import RedisHandler
 
 
 @pytest.fixture

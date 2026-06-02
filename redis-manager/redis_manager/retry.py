@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/retry.py
+"""redis_manager/retry.py
 
 재시도 정책 + @retryable 데코레이터.
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""redis_handler/backends/memory_backend.py
+"""redis_manager/backends/memory_backend.py
 
 In-memory 키-값 백엔드. Redis 불가 시 폴백용.
 
