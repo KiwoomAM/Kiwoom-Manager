@@ -37,11 +37,6 @@ __all__ = [
     "execute_many_dml",
     "execute_insert",
     "execute_update",
-    # API — Index
-    "search_index",
-    "list_all_indexes",
-    "get_index_data",
-    "get_index_data_multi",
     # API — Health
     "check_database_connection",
     # Config / Lifecycle
@@ -149,33 +144,6 @@ def execute_update(
 ) -> int:
     """UPDATE 전용."""
     return _get_client().execute_update(query, params)
-
-
-# ── Index ──────────────────────────────────────────
-
-
-def search_index(keyword: str) -> list[dict]:
-    """지수 검색. 한글↔영문 동의어, 정확 매칭 우선."""
-    return _get_client().search_index(keyword)
-
-
-def list_all_indexes() -> list[dict]:
-    """전체 지수 목록 조회 (DW_내부코드 MK002, 사용여부='Y')."""
-    return _get_client().list_all_indexes()
-
-
-def get_index_data(
-    bm_code: str, start_date: str, end_date: str,
-) -> pd.DataFrame:
-    """지수 일자별 데이터 → pandas DataFrame."""
-    return _get_client().get_index_data(bm_code, start_date, end_date)
-
-
-def get_index_data_multi(
-    codes: list[str], start_date: str, end_date: str,
-) -> pd.DataFrame:
-    """다중 지수 일자별 데이터 → pandas DataFrame (wide format)."""
-    return _get_client().get_index_data_multi(codes, start_date, end_date)
 
 
 # ── Health ─────────────────────────────────────────
