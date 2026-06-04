@@ -1,28 +1,52 @@
 [project]
-name = "LLM-Request"
-version = "0.2.0"
-description = "LLM Request - uv workspace root"
+name = "kiwoom-llm-request"
+version = "0.3.0"
+description = "LLM Request SDK - LLM 응답 캐싱 manager (순수 SDK)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "kiwoom-llm-request[dev]",
-    "kiwoom-llm-request-service[dev]",
+    "kiwoom-llm-handler>=0.1.0",
+    "kiwoom-mdb-handler>=2.0.0",
+    "kiwoom-redis-handler>=2.0.0",
+    "kiwoom-file-manager>=0.1.0",
+    "pydantic>=2.0",
+    "filetype>=1.2.0",
+    "PyMuPDF>=1.24.0",
 ]
 
-[tool.uv.workspace]
-members = ["sdk", "service"]
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
+]
 
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["llm_request*"]
+
+# 핸들러 로컬 editable 경로 (uv workspace member 였던 sdk/service 는 단일 패키지로 통합되며 제거).
 [tool.uv.sources]
-kiwoom-llm-request = { workspace = true }
-kiwoom-llm-request-service = { workspace = true }
 kiwoom-llm-handler = { path = "../llm-handler/sdk", editable = true }
 kiwoom-mdb-handler = { path = "../mdb-handler/sdk", editable = true }
 kiwoom-redis-handler = { path = "../redis-handler", editable = true }
 kiwoom-file-manager = { path = "../file-manager/sdk", editable = true }
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.ruff]
+target-version = "py311"
+line-length = 120
 
-[tool.hatch.build.targets.wheel]
-packages = []
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
