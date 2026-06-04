@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-API Handler SDK - HTTP 클라이언트
+API Manager - API Handler HTTP 클라이언트
 
 사용법:
-    from api_handler_sdk import APIHandlerSDK
+    from api_manager import APIManager
 
-    api = APIHandlerSDK()
+    api = APIManager()
 
     # 도구 실행
     result = api.execute("finnhub_price", params={"symbol": "AAPL"})
@@ -21,11 +21,11 @@ API Handler SDK - HTTP 클라이언트
     limits = api.rate_limits()
 """
 
-from .handler import APIHandlerSDK
-from .exceptions import APIHandlerSDKError, APIHandlerConnectionError
+from .handler import APIManager
+from .exceptions import APIManagerError, APIManagerConnectionError
 
 __all__ = [
-    "APIHandlerSDK",
-    "APIHandlerSDKError",
-    "APIHandlerConnectionError",
+    "APIManager",
+    "APIManagerError",
+    "APIManagerConnectionError",
 ]

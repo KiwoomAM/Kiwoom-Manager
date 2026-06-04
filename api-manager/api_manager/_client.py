@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from api_handler_sdk.exceptions import APIHandlerConnectionError, APIHandlerSDKError
+from api_manager.exceptions import APIManagerConnectionError, APIManagerError
 
 BASE_URL = os.environ.get("API_HANDLER_URL", "http://192.7.9.45:8400")
 
@@ -28,7 +28,7 @@ class SyncClient:
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:
-            raise APIHandlerConnectionError(
+            raise APIManagerConnectionError(
                 f"API Handler Service 연결 실패: {e}"
             ) from e
 
@@ -38,7 +38,7 @@ class SyncClient:
                 error_msg = body.get("error", response.text)
             except Exception:
                 error_msg = response.text
-            raise APIHandlerSDKError(error_msg, status_code=response.status_code)
+            raise APIManagerError(error_msg, status_code=response.status_code)
 
         return response
 
@@ -64,7 +64,7 @@ class AsyncClient:
         try:
             response = await self._http.request(method, path, **kwargs)
         except httpx.ConnectError as e:
-            raise APIHandlerConnectionError(
+            raise APIManagerConnectionError(
                 f"API Handler Service 연결 실패: {e}"
             ) from e
 
@@ -74,7 +74,7 @@ class AsyncClient:
                 error_msg = body.get("error", response.text)
             except Exception:
                 error_msg = response.text
-            raise APIHandlerSDKError(error_msg, status_code=response.status_code)
+            raise APIManagerError(error_msg, status_code=response.status_code)
 
         return response
 
