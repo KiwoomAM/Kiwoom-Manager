@@ -10,26 +10,27 @@ LOCKED_URL = "http://192.7.9.45:8200"
 
 @pytest.fixture(autouse=True)
 def _reset_modules(monkeypatch):
-    """매 테스트마다 winus_handler / winus_handler.aio 의 _instance를 초기화."""
-    import winus_handler
-    import winus_handler.aio as aio
+    """매 테스트마다 winus_manager / winus_manager.aio 의 _instance를 초기화."""
+    import winus_manager
+    import winus_manager.aio as aio
 
-    winus_handler.close()
+    winus_manager.close()
     yield
-    winus_handler.close()
+    winus_manager.close()
     # async close는 호출하지 않음 — 테스트마다 _instance None이면 충분
     aio._instance = None
 
 
 def _get_sync_client(env_value: str | None, monkeypatch):
+    # WINUS_HANDLER_URL: 구 SDK가 읽던 실재 env 이름. 잠금이 이를 무시함을 검증하므로 이름을 유지한다.
     if env_value is None:
         monkeypatch.delenv("WINUS_HANDLER_URL", raising=False)
     else:
         monkeypatch.setenv("WINUS_HANDLER_URL", env_value)
 
-    import winus_handler
-    importlib.reload(winus_handler)
-    return winus_handler._get_client()
+    import winus_manager
+    importlib.reload(winus_manager)
+    return winus_manager._get_client()
 
 
 def _get_async_client(env_value: str | None, monkeypatch):
@@ -38,7 +39,7 @@ def _get_async_client(env_value: str | None, monkeypatch):
     else:
         monkeypatch.setenv("WINUS_HANDLER_URL", env_value)
 
-    import winus_handler.aio as aio
+    import winus_manager.aio as aio
     importlib.reload(aio)
     return aio._get_client()
 
@@ -92,11 +93,11 @@ def test_async_env_is_ignored(monkeypatch, wrong_url):
 
 def test_sync_configure_base_url_is_ignored(monkeypatch):
     monkeypatch.delenv("WINUS_HANDLER_URL", raising=False)
-    import winus_handler
-    importlib.reload(winus_handler)
+    import winus_manager
+    importlib.reload(winus_manager)
 
-    winus_handler.configure(base_url="http://malicious-host:9999", timeout=10.0)
-    client = winus_handler._get_client()
+    winus_manager.configure(base_url="http://malicious-host:9999", timeout=10.0)
+    client = winus_manager._get_client()
     assert str(client._http.base_url) == LOCKED_URL
     # timeout은 적용되어야 함
     assert client._http.timeout.connect == 10.0
@@ -104,7 +105,7 @@ def test_sync_configure_base_url_is_ignored(monkeypatch):
 
 def test_async_configure_base_url_is_ignored(monkeypatch):
     monkeypatch.delenv("WINUS_HANDLER_URL", raising=False)
-    import winus_handler.aio as aio
+    import winus_manager.aio as aio
     importlib.reload(aio)
 
     aio.configure(base_url="http://malicious-host:9999", timeout=12.0)
@@ -118,13 +119,13 @@ def test_async_configure_base_url_is_ignored(monkeypatch):
 
 def test_sync_resolve_base_url_is_constant(monkeypatch):
     monkeypatch.setenv("WINUS_HANDLER_URL", "http://something-else:1")
-    import winus_handler
-    importlib.reload(winus_handler)
-    assert winus_handler._resolve_base_url() == LOCKED_URL
+    import winus_manager
+    importlib.reload(winus_manager)
+    assert winus_manager._resolve_base_url() == LOCKED_URL
 
 
 def test_async_resolve_base_url_is_constant(monkeypatch):
     monkeypatch.setenv("WINUS_HANDLER_URL", "http://something-else:1")
-    import winus_handler.aio as aio
+    import winus_manager.aio as aio
     importlib.reload(aio)
     assert aio._resolve_base_url() == LOCKED_URL

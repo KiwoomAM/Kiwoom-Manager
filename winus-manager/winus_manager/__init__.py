@@ -1,9 +1,9 @@
-"""winus_handler — 동기 인터페이스.
+"""winus_manager — 동기 인터페이스.
 
 사용법:
-    import winus_handler
+    import winus_manager
 
-    df = winus_handler.query_to_dataframe("SELECT * FROM table WHERE code = :code", {"code": "A001"})
+    df = winus_manager.query_to_dataframe("SELECT * FROM table WHERE code = :code", {"code": "A001"})
 
 Handler 접속 URL은 운영 서버(http://192.7.9.45:8200)로 고정되어 있으며,
 환경변수나 configure(base_url=...)로 변경할 수 없습니다. timeout 등 기타
@@ -14,10 +14,10 @@ from typing import Any
 
 import pandas as pd
 
-from winus_handler._sync_client import SyncClient
+from winus_manager._sync_client import SyncClient
 
 _HANDLER_BASE_URL: str = "http://192.7.9.45:8200"
-from winus_handler.exceptions import (
+from winus_manager.exceptions import (
     ConnectionPoolException,
     DatabaseException,
     HandlerConnectionError,

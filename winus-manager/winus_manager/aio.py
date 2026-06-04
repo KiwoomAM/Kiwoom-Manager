@@ -1,7 +1,7 @@
-"""winus_handler.aio — 비동기 인터페이스.
+"""winus_manager.aio — 비동기 인터페이스.
 
 사용법:
-    from winus_handler.aio import query_to_dataframe
+    from winus_manager.aio import query_to_dataframe
 
     df = await query_to_dataframe("SELECT * FROM table WHERE code = :code", {"code": "A001"})
 
@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from winus_handler._client import AsyncClient
+from winus_manager._client import AsyncClient
 
 _HANDLER_BASE_URL: str = "http://192.7.9.45:8200"
 
