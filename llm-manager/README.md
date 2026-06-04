@@ -22,76 +22,59 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 | 항목 | 설명 |
 | --- | --- |
 | 패키지명 | `kiwoom-llm-request` |
-| 버전 | `0.2.0` |
+| 버전 | `0.3.0` |
 | Python | **`>=3.11`** |
-| 구성 | **SDK** (에이전트 설치) + **Service** (FastAPI, port 8101) |
-| SDK 의존성 | `httpx>=0.27.0`, `kiwoom-llm-handler>=0.1.0` |
-| Service 의존성 | `kiwoom-llm-handler`, `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `PyMuPDF` |
-| 통신 방식 | SDK → **HTTP(httpx)** → Service(8101). MDB·Redis·LLM 호출은 Service가 일괄 담당 |
+| 구성 | **순수 SDK manager** (별도 서버 없음). agent 프로세스 안에서 직접 실행 |
+| 의존성 | `kiwoom-llm-handler`, `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `pydantic`, `filetype`, `PyMuPDF` |
+| 동작 방식 | SDK가 handler(mdb·redis·llm·file) 서버들을 **직접 조합 호출**. (구 0.2.0의 FastAPI Service(8101) 레이어는 제거됨 — 근거: [docs/23](docs/23.manager-sdk-refactoring-plan.md)) |
 
 # 3. 디렉터리 구조
 
 ```
 packages/llm-request/
-├── sdk/
-│   ├── llm_request/
-│   │   ├── __init__.py        # 공개 API (llm_request_async)
-│   │   ├── _client.py         # HTTP 클라이언트 (httpx)
-│   │   ├── aio.py             # 비동기 헬퍼
-│   │   ├── models.py          # StoredFile, RequestMeta, FileKeyingMeta 등 SDK 모델
-│   │   └── exceptions.py      # SDK 예외
-│   └── pyproject.toml
-├── service/
-│   ├── app/
-│   │   ├── main.py            # FastAPI 앱 진입점 (port 8101)
-│   │   ├── config.py          # 환경변수 설정
-│   │   ├── core/
-│   │   │   ├── errors.py      # 예외 핸들러
-│   │   │   └── providers.py   # 의존성 주입 (MDB, Redis, LLM)
-│   │   ├── routers/
-│   │   │   └── request.py     # POST /request 엔드포인트
-│   │   ├── models/
-│   │   │   ├── requests.py    # 요청 스키마
-│   │   │   └── responses.py   # 응답 스키마
-│   │   └── logic/
-│   │       ├── runner.py       # LLM 호출
-│   │       ├── keying.py       # 캐시 키 생성
-│   │       ├── done_check.py   # 캐시 조회
-│   │       ├── store.py        # MongoDB 캐시 저장
-│   │       ├── meta.py         # 저장용 메타 생성
-│   │       ├── stored_file_resolver.py # stored_files → placeholder FileInput (lazy fetch)
-│   │       └── file_processing/
-│   │           ├── resolver.py    # 파일 분류 (inline / Files API / context cache)
-│   │           ├── uploader.py    # Files API 업로드
-│   │           ├── cache_store.py # URI 캐시 (Redis)
-│   │           ├── dedup.py       # Cache stampede dedup
-│   │           ├── splitter.py    # PDF 분할
-│   │           └── validators.py  # 파일 유효성 검사
-│   └── pyproject.toml
-└── quickstarts/
-    ├── quickstart_sdk.ipynb
-    └── verify_all.ipynb
+├── llm_request/                  # 단일 SDK manager 패키지
+│   ├── __init__.py               # 공개 API (llm_request_async 등)
+│   ├── aio.py                    # llm_handler.aio re-export
+│   ├── models.py                 # StoredFile, RequestMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
+│   ├── exceptions.py             # 공개 예외 (LLMRequestServiceError 계층)
+│   └── _internal/                # manager 로직 (외부 사용 X)
+│       ├── runner.py             # LLM 호출 (캐시 조회/저장 + standby dedup)
+│       ├── keying.py             # 캐시 키 생성
+│       ├── done_check.py         # 캐시 조회
+│       ├── store.py              # MongoDB 캐시 저장/조회
+│       ├── meta.py               # 저장용 메타 생성
+│       ├── gemini_errors.py      # Gemini 404 / too-small 판별
+│       ├── context_cache_lifecycle.py  # context cache expire
+│       ├── stored_file_resolver.py     # stored_files → FileInput (lazy fetch)
+│       ├── _config.py            # 하드코딩 handler URL + lazy 초기화
+│       └── file_processing/
+│           ├── resolver.py       # 파일 분류 (inline / Files API / context cache)
+│           ├── uploader.py       # Files API 업로드 + context cache 생성
+│           ├── cache_store.py    # URI 캐시 (Redis)
+│           ├── dedup.py          # cache stampede dedup
+│           ├── splitter.py       # PDF 분할
+│           └── validators.py     # 파일 유효성 검사
+├── tests/
+├── quickstarts/
+│   ├── quickstart_sdk.ipynb
+│   └── verify_all.ipynb
+└── pyproject.toml
 ```
 
 
 # 4. 설정 및 준비사항
 
-## SDK 설치
+## 설치
 
 ```bash
-pip install -e ./packages/llm-request/sdk
+pip install -e ./packages/llm-request
 ```
 
-SDK는 `LLM_REQUEST_URL` 하나만 보고 Service에 연결한다.
+별도 서버를 띄울 필요가 없다. 첫 호출 시 SDK가 handler 들을 하드코딩된 사내 URL로 자동 초기화한다 (`LLM_REQUEST_URL` 같은 설정 불필요).
 
-```python
-import os
-os.environ["LLM_REQUEST_URL"] = "http://192.7.9.45:8101"  # 기본값, 생략 가능
-```
+## 환경변수 (선택 — 기본값 내장)
 
-## Service 환경변수
-
-Service는 `.env` 또는 환경변수로 설정한다. 기본값이 내부 서버 주소이므로 그대로 두면 된다.
+handler URL 기본값이 사내 주소이므로 보통 그대로 두면 된다. 다른 주소를 쓸 때만 환경변수로 override.
 
 | 환경변수 | 기본값 | 설명 |
 | --- | --- | --- |
@@ -99,9 +82,7 @@ Service는 `.env` 또는 환경변수로 설정한다. 기본값이 내부 서�
 | `MDB_HANDLER_URL` | `http://192.7.9.45:8300` | MDB Handler 서비스 |
 | `REDIS_URL` | `redis://192.7.9.45:7617/0` | Redis |
 | `FILE_MANAGER_URL` | `http://192.7.9.45:8600` | file-manager 서비스 |
-| `FILE_MANAGER_TIMEOUT` | `30.0` | file-manager 요청 타임아웃 (초) |
-| `MONGODB_DATABASE` | `kw_ai` | MongoDB 데이터베이스명 |
-| `PORT` | `8101` | Service 포트 |
+| `MONGODB_DATABASE` | `kw_ai` | MongoDB 데이터베이스명 (`database=` 인자로도 지정 가능) |
 
 ## 데이터베이스 안내
 
@@ -215,24 +196,21 @@ response, _ = await llm_request_async(
 
 > ⚠️ `resolved_via` 필드 도입 이전에 MDB 에 저장된 옛 doc 의 cache hit 응답에는 이 키가 없을 수 있다. 직접 인덱싱 (`fm["resolved_via"]`) 대신 `fm.get("resolved_via")` 사용 권장.
 
-### 에러 처리 — `FileResolveError` → SDK `ServiceError`
+### 에러 처리 — `FileResolveError`
 
-`get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → 서버가 `FileResolveError` raise (status_code=502, error_type='file_resolve'). SDK 가 `ServiceError` 로 caller 에게 전파. caller 는 `error_type='file_resolve'` 로 식별 후 `register_or_get` 으로 재등록 후 재호출.
+`get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → `FileResolveError` raise (error_type='file_resolve'). caller 는 이를 catch 후 `register_or_get` 으로 재등록하여 재호출.
 
 ```python
-from llm_request import llm_request_async, StoredFile, ServiceError
+from llm_request import llm_request_async, StoredFile, FileResolveError
 
 try:
     response, _ = await llm_request_async(llm_input, stored_files=refs)
-except ServiceError as e:
-    if e.error_type == "file_resolve":
-        # file-manager 에 정말로 없음 → 파일 재등록
-        sf_dict = await fm.register_or_get(p.read_bytes(), fm.build_metadata(...))
-        response, _ = await llm_request_async(
-            llm_input, stored_files=[StoredFile(**sf_dict)],
-        )
-    else:
-        raise
+except FileResolveError:
+    # file-manager 에 정말로 없음 → 파일 재등록
+    sf_dict = await fm.register_or_get(p.read_bytes(), fm.build_metadata(...))
+    response, _ = await llm_request_async(
+        llm_input, stored_files=[StoredFile(**sf_dict)],
+    )
 ```
 
 
@@ -252,7 +230,7 @@ except ServiceError as e:
 | `fetch_by_cache_key` | `tuple[LLMResponse, RequestMeta]` | 캐시 키로 직접 조회 |
 | `delete_cache_async` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (비동기) |
 | `delete_cache` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (`asyncio.run` 래퍼) |
-| `close` | `None` (async) | SDK 내부 `AsyncClient` 커넥션 풀 정리 — agent 프로세스 종료 전 호출 권장 ([주의사항](#agent-프로세스-종료-전-close-호출) 참고) |
+| `close` | `None` (async) | 하위호환 no-op (httpx 클라이언트 제거됨). 호출해도 안전 |
 
 ## llm_input 구조
 
@@ -417,7 +395,7 @@ print(meta.source)   # "cache"
 
 ---
 
-파일이 `llm_request_async`에 전달되면 Service 내부에서 아래 순서로 처리된다.
+파일이 `llm_request_async`에 전달되면 내부(`_internal/file_processing`)에서 아래 순서로 처리된다.
 
 ```
 StoredFile 리스트 (file_path + 5 메타)
@@ -657,13 +635,16 @@ llm_input = {"contents": "안녕", "temperature": None}
 상세 스키마는 [10. MDB 저장 구조](#10-mdb-저장-구조) 참고.
 
 
-# 9. Service API
+# 9. (구) Service API — 제거됨
 
 ---
 
-FastAPI 서버 (port 8101). SDK가 내부적으로 호출하며, 직접 HTTP 요청도 가능하다.
+> ⚠️ **0.3.0 에서 FastAPI 서버(port 8101)와 아래 HTTP 엔드포인트는 전부 제거됐다.**
+> 이제 SDK 공개 함수(§6)가 같은 프로세스에서 manager 로직을 직접 호출한다. HTTP 요청 경로는 없다.
+> 아래 요청/응답 표는 **각 공개 함수가 받고 돌려주는 데이터 형태의 참고**로만 남겨둔다
+> (`/v1/request` ≈ `llm_request_async`, `/v1/done-check` ≈ `done_check`, `/v1/fetch` ≈ `fetch_by_cache_key`).
 
-## POST /v1/request
+## (구) POST /v1/request
 
 LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 
@@ -796,60 +777,64 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 
 ---
 
-## SDK 예외 계층
+## 공개 예외 계층
 
-| 예외 | 발생 조건 |
-| --- | --- |
-| `ServiceConnectionError` | Service 연결 실패 (네트워크 오류, 타임아웃) |
-| `ServiceError` | Service가 4xx/5xx 에러 응답 반환. `error_type`으로 원인 구분 |
+서버가 제거되어 manager 로직의 예외가 호출자에게 **직접** 전파된다. 모두 `LLMRequestServiceError` 를 상속하며 `.error_type` / `.status_code` 속성을 갖는다 (속성은 분기/로깅용으로 유지).
+
+| 예외 | `error_type` | `status_code` | 발생 조건 |
+| --- | --- | --- | --- |
+| `ValidationError` | `validation` | 422 | 입력 검증 실패 |
+| `UnsupportedFileTypeError` | `unsupported_file_type` | 422 | Gemini 지원 외 MIME 타입 |
+| `FileTooLargeError` | `file_too_large` | 422 | 개별 파일 2GB 초과 |
+| `FileUploadError` | `file` | 502 | Files API 업로드 실패 |
+| `FileResolveError` | `file_resolve` | 502 | stored_files resolve 실패 (file-manager에서 파일 못 찾음) |
+| `CacheError` | `cache` | 502 | MDB / Redis 캐시 조회·저장 실패 |
+| `CacheKeyNotFoundError` | `not_found` | 404 | `fetch_by_cache_key` 대상 캐시 문서 없음 |
+| `LLMRequestServiceError` | `handler` | 500 | 베이스 / 그 외 fallback |
+
+LLM 호출 실패는 llm-handler 의 `HandlerError` / `HandlerConnectionError` 가 그대로 전파된다 (re-export 됨).
 
 ```python
-from llm_request import llm_request_async, ServiceConnectionError, ServiceError
+from llm_request import (
+    llm_request_async, CacheError, FileResolveError,
+    LLMRequestServiceError, HandlerError, HandlerConnectionError,
+)
 
 try:
     response, meta = await llm_request_async(llm_input)
-except ServiceConnectionError:
-    # llm-request 서비스 자체에 연결 못 함
-    ...
-except ServiceError as e:
-    print(e.status_code, e.error_type, e.message)
+except FileResolveError:
+    ...                       # 파일 재등록 후 재호출
+except (HandlerError, HandlerConnectionError) as e:
+    ...                       # LLM 호출 자체 실패
+except LLMRequestServiceError as e:
+    print(e.error_type, e.status_code, e.message)
 ```
 
-## Service 에러 타입 (`error_type`)
-
-| `error_type` | HTTP | 발생 조건 |
-| --- | --- | --- |
-| `validation` | 422 | 요청 스키마 검증 실패 |
-| `unsupported_file_type` | 422 | Gemini 지원 외 MIME 타입 |
-| `file_too_large` | 422 | 개별 파일 2GB 초과 |
-| `file` | 502 | Files API 업로드 실패 |
-| `file_resolve` | 502 | stored_files resolve 실패 (file-manager에서 파일 못 찾음) |
-| `cache` | 502 | MDB / Redis 캐시 조회·저장 실패 |
-| `handler` | 500 | 그 외 미처리 예외의 fallback (LLM 호출 실패 포함) |
-
-## 에러 응답 형식
-
-```json
-{
-  "error": "에러 메시지",
-  "detail": "상세 내용 (선택)",
-  "error_type": "validation | cache | file | handler | ...",
-  "request_id": "uuid"
-}
-```
-
-`request_id`는 서버 로그와 대조하여 원인을 추적할 수 있다.
-
-> **오류 발생 시**: 서버 로그 포맷, `[route]` / `[dedup]` 로그 패턴, `route_reason` 값 목록을 담은 디버깅 가이드 → [docs/14.observability-backlog.md](docs/14.observability-backlog.md)
+> **오류 발생 시**: `[route]` / `[dedup]` 로그 패턴, `route_reason` 값(`debug=True`) 으로 처리 경로를 추적할 수 있다.
 
 ## LLM 오류는 MDB에 저장되지 않음
 
 LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐시 문서가 생성되지 않는다.
 
 
-# 12. v0.1.0 → v0.2.0 마이그레이션
+# 12. 마이그레이션
 
 ---
+
+## v0.2.0 → v0.3.0 (서버 제거 → 순수 SDK)
+
+| 항목 | v0.2.0 | v0.3.0 |
+| --- | --- | --- |
+| 설치 경로 | `packages/llm-request/sdk` | **`packages/llm-request`** (루트가 곧 패키지) |
+| Service 실행 | FastAPI(8101) 필수 | **불필요 — 서버 제거** |
+| 환경변수 | `LLM_REQUEST_URL` | 불필요 (handler URL 하드코딩, 필요 시 개별 override) |
+| 예외 | `ServiceError` / `ServiceConnectionError` | 구체 예외(`FileResolveError`·`CacheError` 등) + `HandlerError` 직접 전파 ([11. 에러 처리](#11-에러-처리)) |
+| `close()` | httpx 풀 정리 | no-op (그대로 둬도 안전) |
+| **공개 API 시그니처·호출** | — | **불변** (`llm_request_async`, `stored_files`, `meta.*` 그대로) |
+
+> 핵심: **호출 코드는 거의 그대로**다. 바뀌는 건 (1) 설치 경로, (2) 서버 안 띄움, (3) `except ServiceError` 쓰던 곳을 구체 예외로 교체. `ServiceError` 를 import 하던 코드만 수정 필요.
+
+## v0.1.0 → v0.2.0 (이력)
 
 ## 변경 요약
 
@@ -1003,26 +988,9 @@ response, meta = await llm_request_async(..., database="kw_ai_dev")
 
 ---
 
-### agent 프로세스 종료 전 `close()` 호출
+### `close()` 는 이제 no-op
 
-SDK 는 내부적으로 httpx `AsyncClient` 싱글톤을 유지한다. 커넥션 풀(TCP 소켓, 파일 디스크립터 등) 을 재사용하기 위함이다. agent 프로세스가 종료될 때 이 리소스를 graceful 하게 반납하려면 `close()` 를 호출해야 한다.
-
-```python
-from llm_request import llm_request_async, close
-
-async def main():
-    try:
-        response, meta = await llm_request_async(
-            {"contents": "...", "model": "gemini-2.5-flash"},
-        )
-        ...
-    finally:
-        await close()
-
-asyncio.run(main())
-```
-
-호출하지 않아도 프로세스 종료 시 OS 가 소켓을 회수하지만 `ResourceWarning: unclosed <httpx.AsyncClient>` 경고가 로그에 뜰 수 있다. 장시간 실행되는 agent 에서는 종료 시 명시적 호출을 권장한다.
+0.2.0 까지는 SDK 가 httpx `AsyncClient` 풀을 소유해 `close()` 로 정리해야 했다. 서버 제거(0.3.0)로 SDK 가 소유한 커넥션이 없어져 **`close()` 는 하위호환 no-op** 이다. 기존 코드의 `await close()` 호출은 그대로 둬도 안전(무동작)하다. handler 호출의 커넥션은 각 handler SDK 가 자체 관리한다.
 
 
 # 14. 향후 계획
@@ -1039,7 +1007,7 @@ Gemini Files API는 계정당 20GB 저장 한도가 있다.
 
 여러 에이전트가 동시에 실행될 때 특정 에이전트가 LLM 호출을 독점하지 않도록
 에이전트 단위의 quota / rate limit을 두는 방식을 검토 중이다.
-Service 레이어에서 Semaphore 기반으로 동시 호출 수를 제한하여 에이전트 간 공정한 리소스 배분을 목표로 한다.
+호출량 제어는 공용 서버인 `llm-handler` 레이어의 책임이며, 거기서 동시 호출 수 제한을 두는 방향이다.
 
 
 
