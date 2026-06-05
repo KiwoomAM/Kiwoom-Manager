@@ -66,7 +66,7 @@ class AsyncClient:
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = await self._http.request(method, path, **kwargs)
-        except httpx.ConnectError as e:
+        except httpx.TransportError as e:
             raise MDBConnectionError(f"MDB Handler Service 연결 실패: {e}") from e
 
         if response.status_code >= 400:
