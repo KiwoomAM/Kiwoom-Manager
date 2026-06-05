@@ -8,9 +8,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from llm_handler.models import Part
 
 from llm_request._internal.file_processing.resolver import ResolvedFiles
+from llm_request._internal.handler_client.models import Part
 from llm_request._internal.runner import _apply_resolved, _build_server_call_input, _Prepared
 from llm_request.models import FileInput
 

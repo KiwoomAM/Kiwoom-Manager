@@ -10,12 +10,12 @@ from unittest.mock import AsyncMock, patch
 
 import fitz
 import pytest
-from llm_handler.models import CacheRef, FileRef
 
 from llm_request._internal.file_processing.uploader import (
     create_context_cache,
     upload_pdf_parts,
 )
+from llm_request._internal.handler_client.models import CacheRef, FileRef
 
 # ── 헬퍼 ─────────────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ class TestCreateContextCache:
 
     @pytest.mark.asyncio
     async def test_tools_and_tool_config_passed_to_aio_create_cache(self):
-        """Critical 회귀 방지: tools/tool_config 가 llm_handler 까지 전달되는지.
+        """Critical 회귀 방지: tools/tool_config 가 llm_request._internal.handler_client 까지 전달되는지.
 
         이전 버그: uploader 가 tools/tool_config 를 받지도 않아 request 의 tools 가
         cache 에 반영되지 않은 채 runner 가 'cache 에 있다' 가정으로 pop → silent drop.
@@ -212,7 +212,7 @@ class TestCreateContextCache:
 
         assert captured["tools"] == [{"name": "calculator"}]
         assert captured["tool_config"] == "auto"
-        # llm_handler.aio.create_cache 는 system_instruction 이 아닌 system 키 사용
+        # llm_request._internal.handler_client.aio.create_cache 는 system_instruction 이 아닌 system 키 사용
         assert captured["system"] == "sys"
         assert captured["ttl"] == 600
 

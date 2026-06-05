@@ -93,16 +93,14 @@ def ensure_configured() -> None:
         _ensure_redis_connected()
         _flush_stale_standbys()
 
-        # llm-handler — Vision/대용량 PDF 분 단위 호출 대응 (SDK 기본 120s 초과)
+        # llm-handler 클라이언트 — Vision/대용량 PDF 분 단위 호출 대응 (기본 120s 초과)
         os.environ.setdefault("LLM_HANDLER_URL", LLM_HANDLER_URL)
-        import llm_handler
-        import llm_handler.aio
-        # base_url 을 명시 전달한다 — llm_handler 의 sdk_settings 는 **import 시점에 한 번만**
-        # env 를 읽어(기본 localhost:8100) 캐시하므로, 위 setdefault 는 이미 늦다. 서버 시절엔
-        # llm-handler 와 같은 머신(localhost)이라 우연히 동작했지만, SDK(원격 agent)에선 하드코딩
-        # URL 을 직접 주입해야 한다.
-        llm_handler.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
-        llm_handler.aio.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
+        from llm_request._internal import handler_client
+        from llm_request._internal.handler_client import aio as handler_client_aio
+        # base_url 을 명시 주입한다. handler_client.get_settings() 가 lazy 라 위 setdefault 로도
+        # 반영되지만, 원격 agent 에선 하드코딩 URL 을 직접 전달하는 편이 명확하고 안전하다.
+        handler_client.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
+        handler_client_aio.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
 
         # MongoDB database (store.py 에서 사용)
         os.environ.setdefault("MONGODB_DATABASE", MONGODB_DATABASE)

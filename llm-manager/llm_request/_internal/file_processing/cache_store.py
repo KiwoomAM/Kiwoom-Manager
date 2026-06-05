@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from llm_handler.models import FileRef
 from redis_handler import BaseJsonStore
 
+from llm_request._internal.handler_client.models import FileRef
 from llm_request._internal.keying import canonicalize_llm_input, make_cache_key
 
 logger = logging.getLogger(__name__)

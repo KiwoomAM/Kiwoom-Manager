@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_handler.models import CacheRef, FileRef
-
 from llm_request._internal.file_processing import cache_store
 from llm_request._internal.file_processing.resolver import _process_files_api
+from llm_request._internal.handler_client.models import CacheRef, FileRef
 from llm_request._internal.keying import make_file_checksum
 from llm_request.models import FileInput
 

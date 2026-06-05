@@ -8,11 +8,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from llm_handler.aio import call as aio_call
-from llm_handler.aio import last_assistant_message
-from llm_handler.aio import stream as aio_stream
-from llm_handler.models import Content, LLMResponse, StreamChunk
-
 from llm_request._internal.done_check import DoneCheckResult, done_check
 from llm_request._internal.file_processing import (
     ResolvedFiles,
@@ -21,6 +16,10 @@ from llm_request._internal.file_processing import (
     resolve_files_after_404,
 )
 from llm_request._internal.gemini_errors import is_gemini_404
+from llm_request._internal.handler_client.aio import call as aio_call
+from llm_request._internal.handler_client.aio import last_assistant_message
+from llm_request._internal.handler_client.aio import stream as aio_stream
+from llm_request._internal.handler_client.models import Content, LLMResponse, StreamChunk
 from llm_request._internal.keying import make_file_checksum
 from llm_request._internal.meta import build_meta
 from llm_request._internal.store import cache_get, save_result

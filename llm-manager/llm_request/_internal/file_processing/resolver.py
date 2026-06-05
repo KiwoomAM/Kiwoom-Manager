@@ -24,13 +24,13 @@ import time
 from dataclasses import dataclass
 
 from file_manager import FileManagerHandler
-from llm_handler.aio import upload_file
-from llm_handler.exceptions import HandlerConnectionError, HandlerError
-from llm_handler.models import FileRef, Part
 
 from llm_request._internal.file_processing import cache_store, dedup
 from llm_request._internal.file_processing.uploader import create_context_cache, upload_pdf_parts
 from llm_request._internal.gemini_errors import is_cache_too_small
+from llm_request._internal.handler_client.aio import upload_file
+from llm_request._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
+from llm_request._internal.handler_client.models import FileRef, Part
 from llm_request._internal.keying import make_file_checksum
 from llm_request._internal.stored_file_resolver import fetch_with_fallback
 from llm_request.exceptions import CacheError, FileUploadError

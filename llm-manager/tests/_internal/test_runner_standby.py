@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_handler.models import Content, LLMResponse, StreamChunk, TokenUsage
-
 from llm_request._internal import runner
+from llm_request._internal.handler_client.models import Content, LLMResponse, StreamChunk, TokenUsage
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -332,9 +331,9 @@ class TestPhase3LazyFetchDedup:
             lambda: fm_instance,
         )
 
-        # llm_handler.upload_file mock — Files API URI 1개만 반환
+        # llm_request._internal.handler_client.upload_file mock — Files API URI 1개만 반환
         async def fake_upload(path, mime_type):
-            from llm_handler.models import FileRef
+            from llm_request._internal.handler_client.models import FileRef
             return FileRef(
                 name="files/x", uri="https://example.com/x",
                 mime_type=mime_type, state="ACTIVE",

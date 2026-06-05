@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from conftest import SAMPLE_RESPONSE
-from llm_handler.models import LLMResponse
 
+from llm_request._internal.handler_client.models import LLMResponse
 from llm_request._internal.store import cache_get, fetch_by_cache_key, save_result
 
 COLLECTION = "agent_llm"

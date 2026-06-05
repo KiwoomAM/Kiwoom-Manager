@@ -9,9 +9,9 @@ import asyncio
 import logging
 import os
 
-from llm_handler.aio import create_cache as _aio_create_cache
-from llm_handler.aio import upload_file
-from llm_handler.models import CacheRef, FileRef
+from llm_request._internal.handler_client.aio import create_cache as _aio_create_cache
+from llm_request._internal.handler_client.aio import upload_file
+from llm_request._internal.handler_client.models import CacheRef, FileRef
 
 from .splitter import split_pdf
 

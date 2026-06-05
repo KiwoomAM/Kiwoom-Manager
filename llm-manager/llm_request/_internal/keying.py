@@ -13,7 +13,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from llm_handler.models import FileRef, Part
+from llm_request._internal.handler_client.models import FileRef, Part
 
 logger = logging.getLogger(__name__)
 

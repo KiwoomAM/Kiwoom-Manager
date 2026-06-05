@@ -1,8 +1,7 @@
 """gemini_errors 판정 유틸 테스트."""
 
-from llm_handler.exceptions import HandlerError
-
 from llm_request._internal.gemini_errors import is_cache_too_small
+from llm_request._internal.handler_client.exceptions import HandlerError
 
 
 def test_too_small_handler_error_true():

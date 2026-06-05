@@ -46,7 +46,7 @@ async def test_gemini_404_message_fallback_is_expired(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_error_404_type_based_is_expired(monkeypatch):
     """HandlerError(status_code=404) 타입 기반 정식 경로 — expired."""
-    from llm_handler.exceptions import HandlerError
+    from llm_request._internal.handler_client.exceptions import HandlerError
 
     monkeypatch.setattr(
         "llm_request._internal.file_processing.cache_store.find_context_cache",
@@ -68,7 +68,7 @@ async def test_handler_error_404_type_based_is_expired(monkeypatch):
 @pytest.mark.asyncio
 async def test_handler_error_500_type_based_is_failed(monkeypatch):
     """HandlerError(status_code=500) — 404 아님 → failed."""
-    from llm_handler.exceptions import HandlerError
+    from llm_request._internal.handler_client.exceptions import HandlerError
 
     monkeypatch.setattr(
         "llm_request._internal.file_processing.cache_store.find_context_cache",

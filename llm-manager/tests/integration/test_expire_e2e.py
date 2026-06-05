@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 from file_manager import FileManagerHandler
-from llm_handler import aio as llm_aio
 
 from llm_request import (
     StoredFile,
@@ -25,6 +24,7 @@ from llm_request import (
     llm_request_async,
 )
 from llm_request._internal.file_processing import cache_store
+from llm_request._internal.handler_client import aio as llm_aio
 
 SAMPLE_PDF = (
     Path(__file__).resolve().parents[3] / "quickstarts" / "medium_file.pdf"

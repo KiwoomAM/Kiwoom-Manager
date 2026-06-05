@@ -11,7 +11,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from llm_handler.models import CacheRef, FileRef
 
 from llm_request._internal.file_processing import resolver
 from llm_request._internal.file_processing.resolver import (
@@ -23,6 +22,7 @@ from llm_request._internal.file_processing.resolver import (
     classify_files,
     resolve_files,
 )
+from llm_request._internal.handler_client.models import CacheRef, FileRef
 from llm_request.exceptions import FileUploadError
 from llm_request.models import FileInput
 
@@ -485,7 +485,7 @@ class TestUploadErrorPassthrough:
     진짜 로컬 실패만 FileUploadError 로 wrap."""
 
     async def test_handler_error_passes_through(self, monkeypatch):
-        from llm_handler.exceptions import HandlerError
+        from llm_request._internal.handler_client.exceptions import HandlerError
 
         async def fake_upload(path, mime_type):
             raise HandlerError("Gemini 차단", status_code=422, error_type="content_blocked")
@@ -501,7 +501,7 @@ class TestUploadErrorPassthrough:
         assert exc_info.value.status_code == 422
 
     async def test_handler_connection_error_passes_through(self, monkeypatch):
-        from llm_handler.exceptions import HandlerConnectionError
+        from llm_request._internal.handler_client.exceptions import HandlerConnectionError
 
         async def fake_upload(path, mime_type):
             raise HandlerConnectionError()
@@ -536,7 +536,7 @@ class TestContextCacheTooSmallFailSoft:
                        mime_type="application/pdf", state="ACTIVE")
 
     async def test_too_small_returns_none_and_skips_redis_save(self, monkeypatch):
-        from llm_handler.exceptions import HandlerError
+        from llm_request._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
@@ -566,7 +566,7 @@ class TestContextCacheTooSmallFailSoft:
         assert save_called is False
 
     async def test_other_400_still_raises(self, monkeypatch):
-        from llm_handler.exceptions import HandlerError
+        from llm_request._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
@@ -583,7 +583,7 @@ class TestContextCacheTooSmallFailSoft:
             )
 
     async def test_503_still_raises(self, monkeypatch):
-        from llm_handler.exceptions import HandlerError
+        from llm_request._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
@@ -620,7 +620,7 @@ class TestContextCacheIdGating:
     async def test_too_small_skip_nulls_context_cache_id(
         self, fake_redis, fast_backoff, monkeypatch,
     ):
-        from llm_handler.exceptions import HandlerError
+        from llm_request._internal.handler_client.exceptions import HandlerError
 
         self._ok_upload(monkeypatch)
 

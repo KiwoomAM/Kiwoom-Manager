@@ -5,7 +5,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from llm_handler.models import LLMResponse, StreamChunk, TokenUsage
+
+from llm_request._internal.handler_client.models import LLMResponse, StreamChunk, TokenUsage
 
 # ── 공통 데이터 (테스트 모듈에서 직접 import) ────────────────────
 

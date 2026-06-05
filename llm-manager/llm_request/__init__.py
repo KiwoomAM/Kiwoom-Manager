@@ -32,28 +32,37 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, TypedDict
 
-# llm_handler 직접 호출은 이 모듈 경로 하나로 일원화한다 (sync: llm_handler.call,
-# async: llm_handler.aio.call). 함수 flat re-export 는 제거 (3중 경로 정리).
-import llm_handler as llm_handler  # noqa: PLC0414
-import llm_handler.aio  # noqa: F401  (llm_handler.aio 속성 보장)
+from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
+from llm_request._internal import runner
+from llm_request._internal._config import ensure_configured
+from llm_request._internal.context_cache_lifecycle import expire_caches
+from llm_request._internal.done_check import done_check as _done_check
 
-# 타입/예외만 flat 유지 — llm_request 공개 API 의 반환·시그니처 타입이라 직접 import 편의 유지.
-from llm_handler import (
+# handler_client(흡수한 HTTP 클라이언트)는 llm_request 내부. 공개 표면은 매니저가 큐레이션한다:
+#   - 생성 primitive (매니저가 캐싱 의견 없음): call/stream/embed/session
+#   - 모델·타입·예외 (항상 공개)
+# 캐시/파일 생명주기 ops (create_cache/upload_file/configure 등)는 매니저의 결정 역할이라
+# 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 됨.
+from llm_request._internal.handler_client import (
     CacheRef,
+    ContentsType,
+    EmbeddingStatistics,
+    EmbeddingValue,
+    EmbedResponse,
     FileRef,
     FunctionCall,
     HandlerConnectionError,
     HandlerError,
     LLMResponse,
     Part,
+    Session,
     StreamChunk,
     TokenUsage,
+    call,
+    embed,
+    session,
+    stream,
 )
-
-from llm_request._internal import runner
-from llm_request._internal._config import ensure_configured
-from llm_request._internal.context_cache_lifecycle import expire_caches
-from llm_request._internal.done_check import done_check as _done_check
 from llm_request._internal.keying import make_file_checksum
 from llm_request._internal.store import fetch_by_cache_key as _fetch_by_cache_key
 from llm_request.exceptions import (
@@ -105,16 +114,27 @@ __all__ = [
     "FileTooLargeError",
     "CacheKeyNotFoundError",
     "FileResolveError",
-    # llm_handler 직접 호출 경로 (sync: llm_handler.call, async: llm_handler.aio.call)
-    "llm_handler",
-    # llm_handler 타입/예외 — llm_request 공개 API 의 반환·시그니처 타입
+    # 비동기 표면 (llm_request.aio)
+    "aio",
+    # handler 생성 primitive 재노출 (매니저가 캐싱 의견 없는 stateless 호출)
+    "call",
+    "stream",
+    "embed",
+    "session",
+    "Session",
+    # handler 모델·타입 (타입힌트/Part 생성용 — 항상 공개)
+    "CacheRef",
+    "ContentsType",
+    "EmbeddingStatistics",
+    "EmbeddingValue",
+    "EmbedResponse",
+    "FileRef",
+    "FunctionCall",
     "LLMResponse",
     "Part",
     "StreamChunk",
-    "FunctionCall",
     "TokenUsage",
-    "FileRef",
-    "CacheRef",
+    # handler 예외
     "HandlerConnectionError",
     "HandlerError",
 ]

@@ -7,14 +7,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from llm_handler.models import FileRef
-
 from llm_request._internal.file_processing import cache_store
 from llm_request._internal.file_processing.cache_store import (
     FILES_API_TTL,
     FILES_API_TTL_FLOOR,
     compute_files_api_ttl,
 )
+from llm_request._internal.handler_client.models import FileRef
 
 
 class TestFilesApi:

@@ -7,8 +7,9 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from llm_handler.models import LLMResponse
 from mdb_handler import MongoDBHandler
+
+from llm_request._internal.handler_client.models import LLMResponse
 
 logger = logging.getLogger(__name__)
 

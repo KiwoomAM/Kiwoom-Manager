@@ -3,8 +3,8 @@
 #
 # 순서: 의존 handler/manager → kiwoom-llm-request
 # (서버 제거 후 redis-handler·file-manager 도 직접 의존)
+# llm-handler SDK(llm_handler) 는 llm-request 에 흡수됨 — 별도 -e 설치 불필요.
 
--e packages/llm-handler/sdk
 -e packages/mdb-handler/sdk
 -e packages/redis-handler
 -e packages/file-manager/sdk
