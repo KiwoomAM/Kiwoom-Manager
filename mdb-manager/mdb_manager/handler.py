@@ -30,11 +30,54 @@ import logging
 import warnings
 from typing import Dict, List, Optional
 
-from mdb_manager._client import SyncClient
+from mdb_manager._client import SyncClient, _CallerBoundClient
 from mdb_manager.collections.agent_envelope import AgentEnvelopeCollection
 from mdb_manager.collections.blocks import BlocksCollection
 
 logger = logging.getLogger(__name__)
+
+
+class _BoundManager:
+    """특정 caller로 묶인 MongoDBManager view (불변).
+
+    CRUD는 caller-bound 기본 컬렉션으로 __getattr__ 위임하고, 컬렉션 getter는
+    같은 caller로 bound된 컬렉션을 반환한다. 싱글톤을 변경하지 않으므로
+    호스트 기본 호출과 격리되어 정체성 leak이 없다.
+    """
+
+    def __init__(
+        self, base_client: SyncClient, database: str, collection: str, caller: str
+    ) -> None:
+        self._client = _CallerBoundClient(base_client, caller)
+        self.database = database
+        self.collection_name = collection
+        self._default = BlocksCollection(self._client, collection, database)
+
+    def __getattr__(self, name: str):
+        # 내부/dunder는 위임하지 않는다 (특히 _default 미설정 시점의 재귀 방지)
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._default, name)
+
+    def get_collection(self, collection_name: str) -> BlocksCollection:
+        return BlocksCollection(self._client, collection_name, self.database)
+
+    def get_database(self, database: str, collection: str = None) -> BlocksCollection:
+        return BlocksCollection(self._client, collection or "agent_data", database)
+
+    def get_agent_data(self, database: str | None = None) -> AgentEnvelopeCollection:
+        return AgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_data",
+            database=database or self.database,
+        )
+
+    def get_agent_output(self, database: str | None = None) -> AgentEnvelopeCollection:
+        return AgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_output",
+            database=database or self.database,
+        )
 
 
 class MongoDBManager:
@@ -234,6 +277,18 @@ class MongoDBManager:
             client=self._client,
             collection_name="agent_output",
             database=database or self.database,
+        )
+
+    def with_caller(self, caller: str) -> "_BoundManager":
+        """주어진 caller(X-Caller-Service)로 묶인 view를 반환한다.
+
+        inline 사용 시 per-call override, 보관 후 재사용 시 bound 동작.
+        싱글톤을 변경하지 않으므로 호스트 기본 호출과 격리된다.
+
+        예) mdb.with_caller("llm-manager").insert_one(doc)
+        """
+        return _BoundManager(
+            self._client, self.database, self.collection_name, caller
         )
 
     def list_collections(self, database: str = None) -> List[str]:
