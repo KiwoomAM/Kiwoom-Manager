@@ -62,7 +62,9 @@ class _BoundManager:
     def get_collection(self, collection_name: str) -> BlocksCollection:
         return BlocksCollection(self._client, collection_name, self.database)
 
-    def get_database(self, database: str, collection: str = None) -> BlocksCollection:
+    def get_database(
+        self, database: str, collection: str | None = None
+    ) -> BlocksCollection:
         return BlocksCollection(self._client, collection or "agent_data", database)
 
     def get_agent_data(self, database: str | None = None) -> AgentEnvelopeCollection:
