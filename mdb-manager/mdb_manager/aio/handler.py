@@ -22,13 +22,63 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional
 
-from mdb_manager._async_client import AsyncClient
+from mdb_manager._async_client import AsyncClient, _AsyncCallerBoundClient
 from mdb_manager.aio.collections.agent_envelope import (
     AsyncAgentEnvelopeCollection,
 )
 from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
 
 logger = logging.getLogger(__name__)
+
+
+class _BoundAsyncManager:
+    """특정 caller로 묶인 AsyncMongoDBManager view (불변).
+
+    CRUD는 caller-bound 기본 컬렉션으로 __getattr__ 위임, 컬렉션 getter는
+    같은 caller로 bound된 컬렉션을 반환한다. 부모 핸들러의 httpx 클라이언트를
+    공유하며 lifecycle은 부모가 관리한다. 싱글톤/공유 상태를 변경하지 않는다.
+    """
+
+    def __init__(
+        self, base_client: AsyncClient, database: str, collection: str, caller: str
+    ) -> None:
+        self._client = _AsyncCallerBoundClient(base_client, caller)
+        self.database = database
+        self.collection_name = collection
+        self._default = AsyncBlocksCollection(self._client, collection, database)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._default, name)
+
+    def get_collection(self, collection_name: str) -> AsyncBlocksCollection:
+        return AsyncBlocksCollection(self._client, collection_name, self.database)
+
+    def get_database(
+        self, database: str, collection: str | None = None
+    ) -> AsyncBlocksCollection:
+        return AsyncBlocksCollection(
+            self._client, collection or "agent_data", database
+        )
+
+    def get_agent_data(
+        self, database: str | None = None
+    ) -> AsyncAgentEnvelopeCollection:
+        return AsyncAgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_data",
+            database=database or self.database,
+        )
+
+    def get_agent_output(
+        self, database: str | None = None
+    ) -> AsyncAgentEnvelopeCollection:
+        return AsyncAgentEnvelopeCollection(
+            client=self._client,
+            collection_name="agent_output",
+            database=database or self.database,
+        )
 
 
 class AsyncMongoDBManager:
@@ -225,6 +275,17 @@ class AsyncMongoDBManager:
             client=self._client,
             collection_name="agent_output",
             database=database or self.database,
+        )
+
+    def with_caller(self, caller: str) -> "_BoundAsyncManager":
+        """주어진 caller로 묶인 view를 반환한다 (per-call/bound override).
+
+        싱글톤이 아니지만 부모의 공유 클라이언트를 사용하며, 정체성은
+        per-request로만 흐르므로 부모 기본 호출과 격리된다.
+        """
+        self._ensure_open()
+        return _BoundAsyncManager(
+            self._client, self.database, self.collection_name, caller
         )
 
     def __repr__(self) -> str:
