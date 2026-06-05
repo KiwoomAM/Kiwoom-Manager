@@ -71,7 +71,13 @@ class MongoDBHandler:
 
         self.database = database or "kw_ai"
         self.collection_name = collection or "agent_data"
-        self._client = SyncClient()
+        try:
+            self._client = SyncClient()
+        except Exception:
+            # 생성 실패(예: SERVICE_NAME 미설정) 시 Singleton 캐시를 비워
+            # 다음 생성 시도가 정상 재초기화되도록 한다 (poisoned singleton 방지).
+            type(self)._instance = None
+            raise
         self._default_collection = BlocksCollection(
             self._client, self.collection_name, self.database
         )

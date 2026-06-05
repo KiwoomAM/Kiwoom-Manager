@@ -8,21 +8,31 @@ from typing import Any
 
 import httpx
 
-from mdb_manager.exceptions import MDBConnectionError, MDBHandlerError
+from mdb_manager.exceptions import (
+    MDBConfigError,
+    MDBConnectionError,
+    MDBHandlerError,
+)
 
 BASE_URL = os.environ.get("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 
 
 def _default_headers() -> dict[str, str]:
-    """SERVICE_NAME env가 있으면 X-Caller-Service 헤더를 부착한다.
+    """SERVICE_NAME을 X-Caller-Service 헤더로 부착한다.
 
-    Service 측이 write 요청에 헤더 누락 시 400을 반환하므로,
-    누락된 caller는 명시적 실패로 이어진다 (조용한 'unknown' 대신).
+    mdb-manager는 caller 식별이 필요한 작업(write / envelope read·write)을
+    위해 SERVICE_NAME을 요구한다. 미설정 시 클라이언트 생성 시점에 즉시
+    MDBConfigError를 던져 fail-fast 한다 (서버측 400을 첫 요청까지 기다리지 않음).
     """
     service_name = os.environ.get("SERVICE_NAME")
-    if service_name:
-        return {"X-Caller-Service": service_name}
-    return {}
+    if not service_name:
+        raise MDBConfigError(
+            "SERVICE_NAME 환경변수가 설정되지 않았습니다. "
+            "mdb-manager는 caller 식별을 위해 SERVICE_NAME이 필요합니다. "
+            "호출 서비스에 SERVICE_NAME=<your-service>를 설정하세요 "
+            "(예: .env에 SERVICE_NAME=kiwoom-js 추가 후 load_dotenv())."
+        )
+    return {"X-Caller-Service": service_name}
 
 
 class SyncClient:

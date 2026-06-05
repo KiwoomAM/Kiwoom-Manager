@@ -21,6 +21,7 @@ from mdb_manager import aio
 from mdb_manager.collections.agent_envelope import AgentEnvelopeCollection
 from mdb_manager.collections.blocks import BlocksCollection
 from mdb_manager.exceptions import (
+    MDBConfigError,
     MDBConnectionError,
     MDBError,
     MDBHandlerError,
@@ -34,5 +35,6 @@ __all__ = [
     "MDBError",
     "MDBConnectionError",
     "MDBHandlerError",
+    "MDBConfigError",
     "aio",
 ]

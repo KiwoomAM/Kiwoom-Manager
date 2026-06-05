@@ -25,3 +25,10 @@ class MDBHandlerError(MDBError):
 
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message, status_code)
+
+
+class MDBConfigError(MDBError):
+    """SDK 설정 누락 (HTTP 요청 이전에 발생). 예: SERVICE_NAME 미설정."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=0)

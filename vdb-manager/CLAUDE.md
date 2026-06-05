@@ -1,0 +1,60 @@
+# VDB Manager
+
+Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-handler`)에 HTTP로
+요청을 보내는 SDK다. Dense/Sparse 임베딩, Hybrid 검색, ColBERT 리랭킹, 컬렉션 CRUD를
+서버측에 위임한다. 외부 에이전트가 GitHub에서 import해 쓰는 것을 전제로 한다.
+
+> 사용자 가이드·예시는 @README.md 참조. 이 문서는 코드 수정 시 알아야 할 것만 담는다.
+
+## 편집 범위
+
+- **이 패키지(`packages/vdb-manager/`)만 수정한다.** mdb-manager·redis-manager는 같은 팀
+  영역이지만 그 외 `*-manager` / `*-handler`는 **다른 담당자 영역 — 절대 수정 금지.**
+- 임베딩 모델 로드·SPLADE/ColBERT 추론·Qdrant 직접 접근은 **서버측(`packages/vdb-handler`)**
+  소관이다. 이 패키지는 HTTP 클라이언트일 뿐 모델을 직접 로드하지 않는다.
+
+## Architecture
+
+```
+[Agent 코드]  →  vdb_manager (httpx, sync)  →  VDB Handler Service  →  Qdrant / SPLADE / ColBERT
+```
+
+- `VDBHandler` — Singleton 통합 진입점. 하위 클라이언트를 속성으로 노출:
+  - `.dense` (DenseClient) — Gemini Dense 임베딩/검색
+  - `.sparse` (SparseClient) — SPLADE sparse 임베딩/검색
+  - `.hybrid` (HybridClient) — Dense+Sparse RRF 하이브리드 검색
+  - `.collection` (CollectionClient) — 컬렉션 생성/upsert/조회 CRUD
+  - `.reranker` (RerankerClient) — ColBERT/Gemini 리랭킹
+- 내부 `_client.py`의 `SyncClient`(httpx.Client)에 위임.
+
+## Conventions
+
+- **sync only.** async 인터페이스가 없다 (mdb-manager와 다름). async 컨텍스트에서 호출하면
+  이벤트 루프를 블록하므로, 필요 시 `asyncio.to_thread` 등으로 감싼다.
+- 환경변수는 `os.environ`에서 직접 읽는다. **이 패키지는 `.env`를 자동 로드하지 않는다** —
+  호출 애플리케이션이 `load_dotenv()`를 먼저 실행할 책임.
+
+## Gotchas
+
+- **sync only → 이벤트 루프 블록 주의**: FastAPI/LangGraph 등 async 환경에서 직접 호출 시
+  루프가 막힌다. 별도 스레드로 오프로딩 권장.
+- **HANDLER URL은 고정 기본값**: `VDB_HANDLER_URL` 미설정 시 `http://192.7.9.45:8500`.
+  사용자는 보통 설정하지 않는다. env override는 테스트/특수 환경용 escape hatch.
+- **SERVICE_NAME 불필요**: mdb-manager와 달리 vdb-manager는 caller 식별(write ACL)을 쓰지
+  않는다. 설정할 env가 `VDB_HANDLER_URL` 하나뿐이고 그것도 기본값이 있어, 일반 사용에서는
+  **아무것도 설정하지 않아도 된다.**
+- **서버 기동이 느리다**: VDB Handler Service는 SPLADE/ColBERT 모델 로드로 기동이 ~120s
+  걸린다. 클라이언트 타임아웃/헬스체크 시 고려.
+- **Singleton**: `VDBHandler()`는 항상 같은 인스턴스. 재초기화는 `reset()`(있으면) 또는 프로세스 재시작.
+
+## Environment Variables
+
+| 변수 | 기본값 | 설정 필요? |
+|---|---|---|
+| `VDB_HANDLER_URL` | `http://192.7.9.45:8500` | 불필요 (고정 기본값). 테스트/특수 환경만 override |
+
+## Commands
+
+- 이 패키지에는 아직 **테스트 스위트가 없다** (`tests/` 부재). 동작 확인은 실제 VDB Handler
+  Service를 띄운 상태에서 `VDBHandler().health_check()`로 한다.
+- 클라이언트 동작을 바꾸면 회귀 방지를 위해 최소 단위 테스트 추가를 우선 고려한다.
