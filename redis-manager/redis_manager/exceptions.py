@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """redis_manager/exceptions.py
 
-redis-handler 패키지의 도메인 예외 계층.
+redis_manager 패키지의 도메인 예외 계층.
 
 - RedisHandlerError: 모든 패키지 예외의 베이스
 - RedisRetryExhausted: 재시도 정책 소진 후 실패
@@ -10,7 +10,7 @@ redis-handler 패키지의 도메인 예외 계층.
 
 
 class RedisHandlerError(Exception):
-    """redis-handler 패키지의 모든 도메인 예외 베이스."""
+    """redis_manager 패키지의 모든 도메인 예외 베이스."""
 
 
 class RedisRetryExhausted(RedisHandlerError):

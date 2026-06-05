@@ -1,4 +1,4 @@
-# Redis Handler
+# Redis Manager
 
 > Kiwoom Redis Handler v2.0 — 메모리 폴백 + 재시도 + SET 옵션 내장 Redis 클라이언트
 
@@ -23,7 +23,7 @@ Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라�
 ## 설치
 
 ```bash
-pip install -e packages/redis-handler
+pip install -e packages/redis-manager
 ```
 
 ## 환경변수
