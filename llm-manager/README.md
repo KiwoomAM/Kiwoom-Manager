@@ -33,11 +33,13 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 ```
 packages/llm-request/
 ├── llm_request/                  # 단일 SDK manager 패키지
-│   ├── __init__.py               # 공개 API (llm_request_async 등)
-│   ├── aio.py                    # llm_handler.aio re-export
+│   ├── __init__.py               # 공개 API (llm_request_async + 큐레이션한 handler primitive)
+│   ├── aio.py                    # 비동기 공개 표면 (call/stream/embed/session — handler_client.aio 큐레이션)
 │   ├── models.py                 # StoredFile, RequestMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
-│   ├── exceptions.py             # 공개 예외 (LLMRequestServiceError 계층)
+│   ├── exceptions.py             # 공개 예외 (LLMRequestError 계층)
 │   └── _internal/                # manager 로직 (외부 사용 X)
+│       ├── handler_client/       # 흡수한 handler HTTP 클라이언트 (구 llm-handler/sdk)
+│       │                         #   call/stream/embed/session, _client, models, exceptions, aio
 │       ├── runner.py             # LLM 호출 (캐시 조회/저장 + standby dedup)
 │       ├── keying.py             # 캐시 키 생성
 │       ├── done_check.py         # 캐시 조회
@@ -779,7 +781,7 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 
 ## 공개 예외 계층
 
-서버가 제거되어 manager 로직의 예외가 호출자에게 **직접** 전파된다. 모두 `LLMRequestServiceError` 를 상속하며 `.error_type` / `.status_code` 속성을 갖는다 (속성은 분기/로깅용으로 유지).
+서버가 제거되어 manager 로직의 예외가 호출자에게 **직접** 전파된다. 모두 `LLMRequestError` 를 상속하며 `.error_type` / `.status_code` 속성을 갖는다 (속성은 분기/로깅용으로 유지).
 
 | 예외 | `error_type` | `status_code` | 발생 조건 |
 | --- | --- | --- | --- |
@@ -790,14 +792,14 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 | `FileResolveError` | `file_resolve` | 502 | stored_files resolve 실패 (file-manager에서 파일 못 찾음) |
 | `CacheError` | `cache` | 502 | MDB / Redis 캐시 조회·저장 실패 |
 | `CacheKeyNotFoundError` | `not_found` | 404 | `fetch_by_cache_key` 대상 캐시 문서 없음 |
-| `LLMRequestServiceError` | `handler` | 500 | 베이스 / 그 외 fallback |
+| `LLMRequestError` | `handler` | 500 | 베이스 / 그 외 fallback |
 
 LLM 호출 실패는 llm-handler 의 `HandlerError` / `HandlerConnectionError` 가 그대로 전파된다 (re-export 됨).
 
 ```python
 from llm_request import (
     llm_request_async, CacheError, FileResolveError,
-    LLMRequestServiceError, HandlerError, HandlerConnectionError,
+    LLMRequestError, HandlerError, HandlerConnectionError,
 )
 
 try:
@@ -806,7 +808,7 @@ except FileResolveError:
     ...                       # 파일 재등록 후 재호출
 except (HandlerError, HandlerConnectionError) as e:
     ...                       # LLM 호출 자체 실패
-except LLMRequestServiceError as e:
+except LLMRequestError as e:
     print(e.error_type, e.status_code, e.message)
 ```
 
@@ -1013,79 +1015,44 @@ Gemini Files API는 계정당 20GB 저장 한도가 있다.
 
 
 
-# 15. llm_handler re-export
+# 15. handler 호출 primitive (공개 표면)
 
 ---
 
-`llm_request` 패키지만 설치하면 `llm_handler`의 모든 public API를 별도 import 없이 사용할 수 있다.
+handler 클라이언트는 `llm_request._internal.handler_client` 로 **내부화**되어 있고, `llm_request` 는 그중 **생성 primitive 만 큐레이션해 노출**한다. 캐시/파일 생명주기 ops(`create_cache`/`upload_file`/`configure`/...)는 **매니저의 결정 역할**이라 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 되기 때문. (캐시 생성은 `llm_request_async(timings={"context_cache_ttl": ...})`, 만료는 `delete_cache(grace_seconds=...)` 같은 매니저 API 로.) handler URL 주입 등 설정은 첫 호출 시 `_internal/_config.py` 가 자동(lazy) 처리한다.
 
-## 방법 1: flat import (sync)
+## sync — flat import
 
 ```python
-from llm_request import call, stream, embed, configure, Part, LLMResponse
+from llm_request import call, stream, embed, session, Part, LLMResponse
 
-# 초기화 (기본값 내장, URL이 다를 때만 필요)
-configure(base_url="http://192.7.9.45:8100")
-
-# 동기 호출
 response = call("안녕하세요")
 print(response.text)
 
-# 스트리밍
 for chunk in stream("질문", model="gemini-2.5-flash"):
     print(chunk.text or "", end="", flush=True)
 
-# 임베딩
 result = embed("텍스트", model="text-embedding-004")
 ```
 
-### re-export 목록
+## async — `llm_request.aio`
+
+```python
+from llm_request.aio import call, stream, embed   # 또는: from llm_request import aio; await aio.call(...)
+
+response = await call("안녕하세요")
+
+async for chunk in stream("질문", model="gemini-2.5-flash"):
+    print(chunk.text or "", end="", flush=True)
+```
+
+## 공개 목록
 
 | 분류 | 이름 |
 | --- | --- |
-| 호출 | `call`, `stream`, `embed`, `session` |
-| 파일 | `upload_file`, `delete_file`, `get_file`, `list_files` |
-| Context Cache | `create_cache`, `delete_cache`, `get_cache`, `update_cache`, `list_caches` |
-| 설정 | `configure` |
-| 클래스 | `Session` |
-| 모델 | `Part`, `LLMResponse`, `StreamChunk`, `FunctionCall`, `CacheRef`, `FileRef`, `TokenUsage`, `ContentsType` |
-| 임베딩 모델 | `EmbedResponse`, `EmbeddingStatistics`, `EmbeddingValue` |
-| 예외 | `SDKError`, `HandlerConnectionError`, `HandlerError` |
+| 생성 primitive | `call`, `stream`, `embed`, `session` |
+| 클래스 | `Session` (sync) / `AsyncSession` (`llm_request.aio`) |
+| 모델 | `Part`, `LLMResponse`, `StreamChunk`, `FunctionCall`, `CacheRef`, `FileRef`, `TokenUsage`, `ContentsType`, `EmbedResponse`, `EmbeddingStatistics`, `EmbeddingValue` |
+| 예외 | `HandlerError`, `HandlerConnectionError` |
 
-## 방법 2: aio 서브모듈 (async)
-
-```python
-from llm_request import aio
-
-# 초기화
-aio.configure(base_url="http://192.7.9.45:8100")
-
-# 비동기 호출
-response = await aio.call("안녕하세요")
-
-# 비동기 스트리밍
-async for chunk in aio.stream("질문", model="gemini-2.5-flash"):
-    print(chunk.text or "", end="", flush=True)
-
-# 비동기 임베딩
-result = await aio.embed("텍스트")
-```
-
-`aio` 서브모듈은 `llm_handler.aio`를 그대로 re-export한다.
-`AsyncSession`, `configure`, `upload_file`, `create_cache` 등 sync와 동일한 구성.
-
-## 방법 3: 모듈 접근
-
-```python
-from llm_request import llm_handler
-
-# sync
-response = llm_handler.call("안녕하세요")
-
-# async (llm_handler.aio 접근 가능)
-response = await llm_handler.aio.call("안녕하세요")
-
-# 설정
-llm_handler.configure(base_url="http://192.7.9.45:8100")
-llm_handler.aio.configure(base_url="http://192.7.9.45:8100")
-```
+> **비공개 (매니저 결정 역할)**: `create_cache`/`update_cache`/`get_cache`/`list_caches`/`upload_file`/`delete_file`/`get_file`/`list_files`/`configure`. 직접 raw 핸들러 제어가 필요하면 매니저 API 를 쓰거나 별도 논의.
