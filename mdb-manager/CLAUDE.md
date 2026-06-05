@@ -47,9 +47,9 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
   사용자는 보통 설정하지 않는다. env override는 테스트/특수 환경용 escape hatch.
 - **AsyncMongoDBHandler는 Singleton 아님**: 명시적 `aclose()` 필요 (`async with` 또는 FastAPI
   lifespan). `aclose()` 후 호출 시 `RuntimeError`.
-- **mdb-handler/sdk와의 관계**: 이 패키지는 `packages/mdb-handler/sdk`와 같은 계보의 클라이언트지만
-  **독립적으로 관리되며 자동 동기화되지 않는다.** 예: SERVICE_NAME 가드는 mdb-manager에만 있다.
-  한쪽 변경이 다른쪽에 자동 반영되지 않으니 의도한 쪽만 고친다.
+- **단일 SDK (과거 mdb-handler/sdk 승격)**: 이 패키지는 과거 `mdb-handler/sdk`를 승격(promote)한
+  것으로, 이제 MDB Service의 **유일한 클라이언트 SDK**다. `mdb-handler/sdk`는 더 이상 존재하지
+  않으며 "두 SDK 중복" 문제는 해소됐다. (mdb-manager에만 있는 SERVICE_NAME 가드는 의도된 동작.)
 
 ## Environment Variables
 

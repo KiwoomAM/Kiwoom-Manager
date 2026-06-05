@@ -1,4 +1,4 @@
-# MDB Handler SDK
+# MDB Manager
 
 > Kiwoom MongoDB Handler SDK v2.0 — HTTP 클라이언트 기반 MongoDB 접근 라이브러리
 
@@ -14,7 +14,7 @@ MDB Handler Service(REST API)를 통해 MongoDB에 접근하는 Python SDK입니
 ## 설치
 
 ```bash
-pip install -e packages/mdb-handler/sdk
+pip install -e packages/mdb-manager
 ```
 
 ## 환경변수
