@@ -14,8 +14,7 @@ from typing import Any
 import pandas as pd
 
 from winus_manager._client import AsyncClient
-
-_HANDLER_BASE_URL: str = "http://192.7.9.45:8200"
+from winus_manager._config import HANDLER_BASE_URL
 
 __all__ = [
     "configure",
@@ -35,13 +34,13 @@ _instance: AsyncClient | None = None
 
 
 def _resolve_base_url() -> str:
-    return _HANDLER_BASE_URL
+    return HANDLER_BASE_URL
 
 
 def _get_client() -> AsyncClient:
     global _instance
     if _instance is None:
-        _instance = AsyncClient(base_url=_HANDLER_BASE_URL)
+        _instance = AsyncClient(base_url=_resolve_base_url())
     return _instance
 
 
@@ -60,7 +59,7 @@ def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
     timeout만 적용됩니다.
     """
     global _instance
-    _instance = AsyncClient(base_url=_HANDLER_BASE_URL, timeout=timeout)
+    _instance = AsyncClient(base_url=_resolve_base_url(), timeout=timeout)
 
 
 # ── SELECT ──────────────────────────────────────────
