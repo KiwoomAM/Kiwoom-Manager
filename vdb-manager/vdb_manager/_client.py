@@ -27,7 +27,7 @@ class SyncClient:
     ) -> httpx.Response:
         try:
             response = self._http.request(method, path, **kwargs)
-        except httpx.ConnectError as e:
+        except httpx.TransportError as e:
             raise VDBConnectionError(
                 f"VDB Handler Service 연결 실패: {e}"
             ) from e
