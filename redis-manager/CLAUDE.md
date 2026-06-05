@@ -37,7 +37,7 @@ cd packages/redis-manager && python3 -m pytest tests/ -v
 ## Gotchas
 
 - `RedisHandler()`는 Singleton — 테스트에서 `rh.reset()`으로 초기화
-- `import redis_manager` 시 `init_redis()` 자동 호출
+- `import redis_manager`는 연결을 시도하지 않는다 — 첫 `get_client()` 호출 시 lazy로 연결한다 (import 블로킹 방지)
 - 재시도 최악 지연 ~16초 (`socket_timeout=5s × 3 + backoff`). SLA 민감 경로는 `REDIS_RETRY_MAX_ATTEMPTS=1`
 - 메모리 폴백 데이터는 프로세스 종료 시 휘발 — 영속성 필요 시 Redis 가용성 모니터링
 - gunicorn 4 workers는 각자 독립 Singleton — 의도된 동작
