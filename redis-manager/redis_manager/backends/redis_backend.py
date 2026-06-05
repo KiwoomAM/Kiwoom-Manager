@@ -79,7 +79,7 @@ class RedisBackend:
 
         대신 RETRYABLE_EXCEPTIONS(ConnectionError/TimeoutError 등)는 도메인 예외
         ``RedisRetryExhausted``로 wrap하여 raise — 다른 명령과 동일한 예외
-        계층을 유지해 RedisHandler가 일관되게 폴백 분기 가능.
+        계층을 유지해 RedisManager가 일관되게 폴백 분기 가능.
 
         ``decode_responses=True``로 클라이언트가 초기화되므로 str로 yield.
 

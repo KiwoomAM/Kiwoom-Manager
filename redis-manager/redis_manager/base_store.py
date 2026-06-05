@@ -27,7 +27,7 @@ import json
 import logging
 from typing import Any, Iterator, Optional
 
-from .handler import RedisHandler
+from .handler import RedisManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +52,15 @@ class BaseJsonStore:
         self,
         prefix: str,
         default_ttl: Optional[int] = None,
-        handler: Optional[RedisHandler] = None,
+        handler: Optional[RedisManager] = None,
     ):
         """
         Args:
             prefix: Redis 키 프리픽스 (예: "chat:history", "preview:batch")
             default_ttl: 기본 TTL (초), None이면 영구 저장
-            handler: RedisHandler 인스턴스 (None이면 싱글톤 사용)
+            handler: RedisManager 인스턴스 (None이면 싱글톤 사용)
         """
-        self._handler = handler or RedisHandler()
+        self._handler = handler or RedisManager()
         self._prefix = prefix
         self._default_ttl = default_ttl
 

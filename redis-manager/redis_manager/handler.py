@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """redis_manager/handler.py
 
-RedisHandler — Redis 백엔드와 메모리 백엔드를 조율하는 orchestrator.
+RedisManager — Redis 백엔드와 메모리 백엔드를 조율하는 orchestrator.
 
 책임:
     - 백엔드 선택 (Redis 가용성에 따라)
@@ -30,7 +30,7 @@ from .retry import RetryPolicy
 logger = logging.getLogger(__name__)
 
 
-class RedisHandler:
+class RedisManager:
     """
     Redis 기본 CRUD 핸들러 (Singleton).
 
@@ -270,4 +270,4 @@ class RedisHandler:
         return self._memory.cleanup_expired()
 
 
-__all__ = ["RedisHandler"]
+__all__ = ["RedisManager"]

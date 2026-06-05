@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""RedisHandler.set() 입력 검증 테스트.
+"""RedisManager.set() 입력 검증 테스트.
 
 이 테스트는 Redis 미연결 상태에서도 ValueError가 즉시 발생해야 한다.
 """
 
 import pytest
 
-from redis_manager.handler import RedisHandler
+from redis_manager.handler import RedisManager
 
 
 @pytest.fixture
 def handler():
-    h = RedisHandler()
+    h = RedisManager()
     h.reset()  # 메모리 폴백 상태로 초기화
     return h
 

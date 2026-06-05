@@ -8,8 +8,8 @@ redis_manager
 
 사용법:
     # 범용 Redis CRUD
-    from redis_manager import RedisHandler
-    rh = RedisHandler()
+    from redis_manager import RedisManager
+    rh = RedisManager()
     rh.set("key", "value", ttl=3600)
     val = rh.get("key")
 
@@ -51,7 +51,7 @@ from .retry import RetryPolicy
 from .backends import KeyValueBackend, MemoryBackend, RedisBackend
 
 # ── Handler ───────────────────────────────────────────────
-from .handler import RedisHandler
+from .handler import RedisManager
 
 # ── BaseJsonStore ─────────────────────────────────────────
 from .base_store import BaseJsonStore
@@ -60,14 +60,14 @@ from .base_store import BaseJsonStore
 # ── 전역 인스턴스 ─────────────────────────────────────────
 # 연결은 첫 사용 시점에 get_client()가 lazy로 수행한다. import 시점에 ping하지 않는다
 # (import가 블로킹되거나 configure() 전에 연결이 고정되는 것을 방지).
-redis_manager = RedisHandler()
+redis_manager = RedisManager()
 
 
 __all__ = [
     # Config
     "RedisConfig",
     "RetryConfig",
-    # Connection (저수준 — 신규 코드는 RedisHandler 사용 권장)
+    # Connection (저수준 — 신규 코드는 RedisManager 사용 권장)
     "init_redis",
     "get_client",
     "is_available",
@@ -85,7 +85,7 @@ __all__ = [
     "MemoryBackend",
     "RedisBackend",
     # Handler
-    "RedisHandler",
+    "RedisManager",
     "redis_manager",
     # BaseJsonStore
     "BaseJsonStore",

@@ -27,7 +27,7 @@ cd packages/redis-manager && python3 -m pytest tests/ -v
 
 ## Conventions
 
-- **신규 코드는 RedisHandler API만 사용.** `get_client()` 직접 호출 금지 (encapsulation 위반)
+- **신규 코드는 RedisManager API만 사용.** `get_client()` 직접 호출 금지 (encapsulation 위반)
 - **분산 의미론 필요한 명령(NX/XX)은 `setnx()` 등 Handler 메서드 사용.** Redis 미연결 시 `RedisUnavailableError` 발생 — 메모리 폴백 없음
 - **일반 명령(get/set 등)은 폴백 자동.** 호출자가 try/except로 메모리 백업 구현 금지
 - **새 SET 옵션 추가 시** `KeyValueBackend` Protocol → `RedisBackend` → `MemoryBackend` 3곳 모두 갱신 (OCP 보장)
@@ -36,7 +36,7 @@ cd packages/redis-manager && python3 -m pytest tests/ -v
 
 ## Gotchas
 
-- `RedisHandler()`는 Singleton — 테스트에서 `rh.reset()`으로 초기화
+- `RedisManager()`는 Singleton — 테스트에서 `rh.reset()`으로 초기화
 - `import redis_manager`는 연결을 시도하지 않는다 — 첫 `get_client()` 호출 시 lazy로 연결한다 (import 블로킹 방지)
 - 재시도 최악 지연 ~16초 (`socket_timeout=5s × 3 + backoff`). SLA 민감 경로는 `REDIS_RETRY_MAX_ATTEMPTS=1`
 - 메모리 폴백 데이터는 프로세스 종료 시 휘발 — 영속성 필요 시 Redis 가용성 모니터링

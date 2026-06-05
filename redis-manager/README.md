@@ -12,7 +12,7 @@ Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라�
 - ✅ **도메인 예외** — `RedisHandlerError`, `RedisRetryExhausted`, `RedisUnavailableError`
 - ✅ **테스트 커버리지** — 백엔드/handler/base_store 단위 테스트
 
-기존 `RedisHandler().set(k, v, ttl=N)` 같은 호출은 100% 호환.
+기존 `RedisManager().set(k, v, ttl=N)` 같은 호출은 100% 호환.
 
 ## 요구사항
 
@@ -42,9 +42,9 @@ pip install -e packages/redis-manager
 ## Quick Start
 
 ```python
-from redis_manager import RedisHandler
+from redis_manager import RedisManager
 
-rh = RedisHandler()
+rh = RedisManager()
 
 # 일반 set/get (Redis 실패 시 메모리 폴백 자동)
 rh.set("key", "value", ttl=3600)
@@ -88,7 +88,7 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 
 ## API Reference
 
-### RedisHandler
+### RedisManager
 
 | 메서드 | 반환값 | 설명 |
 |---|---|---|
@@ -117,9 +117,9 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 ### 예외 처리
 
 ```python
-from redis_manager import RedisHandler, RedisUnavailableError, RedisRetryExhausted
+from redis_manager import RedisManager, RedisUnavailableError, RedisRetryExhausted
 
-rh = RedisHandler()
+rh = RedisManager()
 
 # 일반 명령은 폴백 자동 — 예외 노출 없음
 val = rh.get("k")  # Redis 실패 시 메모리에서 조회
@@ -176,7 +176,7 @@ class MyStore(BaseJsonStore):
 ```
 [Application Code]
    ↓
-RedisHandler (orchestrator)
+RedisManager (orchestrator)
    ├── 입력 검증 (ttl/ex/nx/xx/keepttl 충돌)
    ├── 백엔드 선택 (Redis 가용성)
    └── 폴백 정책 (NX/XX 차단, 일반 명령 자동)
@@ -188,7 +188,7 @@ KeyValueBackend Protocol
 
 ## 주의사항
 
-- **Singleton**: `RedisHandler()`는 항상 동일 인스턴스. 리셋 필요 시 `rh.reset()`
+- **Singleton**: `RedisManager()`는 항상 동일 인스턴스. 리셋 필요 시 `rh.reset()`
 - **메모리 폴백**: Redis 불가 시 인메모리 dict로 동작. 프로세스 종료 시 데이터 소실
 - **TTL**: 초 단위. `None`이면 영구 저장
 - **Thread-safe**: 메모리 백엔드는 `threading.Lock`으로 동시 접근 보호

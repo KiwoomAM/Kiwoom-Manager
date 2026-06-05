@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RedisHandler orchestrator 테스트."""
+"""RedisManager orchestrator 테스트."""
 
 from unittest.mock import MagicMock, patch
 
@@ -12,12 +12,12 @@ from redis_manager.exceptions import (
     RedisRetryExhausted,
     RedisUnavailableError,
 )
-from redis_manager.handler import RedisHandler
+from redis_manager.handler import RedisManager
 
 
 @pytest.fixture
 def handler():
-    h = RedisHandler()
+    h = RedisManager()
     h.reset()
     return h
 
@@ -30,8 +30,8 @@ def _install_mock_client(mock_client):
 
 class TestSingleton:
     def test_returns_same_instance(self):
-        a = RedisHandler()
-        b = RedisHandler()
+        a = RedisManager()
+        b = RedisManager()
         assert a is b
 
 
