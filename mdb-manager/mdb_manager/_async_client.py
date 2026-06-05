@@ -64,6 +64,11 @@ class AsyncClient:
         await self.aclose()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        caller = kwargs.pop("caller", None)
+        if caller:
+            headers = dict(kwargs.pop("headers", None) or {})
+            headers["X-Caller-Service"] = caller
+            kwargs["headers"] = headers
         try:
             response = await self._http.request(method, path, **kwargs)
         except httpx.TransportError as e:
@@ -90,3 +95,27 @@ class AsyncClient:
     async def delete(self, path: str, **kwargs: Any) -> Any:
         resp = await self._request("DELETE", path, **kwargs)
         return resp.json()
+
+
+class _AsyncCallerBoundClient:
+    """AsyncClient를 감싸 모든 요청에 caller(X-Caller-Service)를 주입하는 패스스루.
+
+    내부 httpx 클라이언트를 공유하며 lifecycle(aclose)은 소유하지 않는다.
+    정체성은 요청마다 caller 인자로만 흐르고 공유 상태에 저장되지 않는다.
+    """
+
+    def __init__(self, base: "AsyncClient", caller: str) -> None:
+        self._base = base
+        self._caller = caller
+
+    async def get(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return await self._base.get(path, **kwargs)
+
+    async def post(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return await self._base.post(path, **kwargs)
+
+    async def delete(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return await self._base.delete(path, **kwargs)
