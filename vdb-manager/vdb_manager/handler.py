@@ -62,12 +62,19 @@ class VDBHandler:
         if self._initialized:
             return
 
-        self._client = SyncClient(timeout=timeout)
-        self.dense = DenseClient(self._client)
-        self.sparse = SparseClient(self._client)
-        self.hybrid = HybridClient(self._client, dense=self.dense, sparse=self.sparse)
-        self.collection = CollectionClient(self._client)
-        self.reranker = RerankerClient(self._client)
+        try:
+            self._client = SyncClient(timeout=timeout)
+            self.dense = DenseClient(self._client)
+            self.sparse = SparseClient(self._client)
+            self.hybrid = HybridClient(
+                self._client, dense=self.dense, sparse=self.sparse
+            )
+            self.collection = CollectionClient(self._client)
+            self.reranker = RerankerClient(self._client)
+        except Exception:
+            # 생성 실패 시 Singleton 캐시를 비워 다음 생성이 정상 재초기화되도록 한다.
+            type(self)._instance = None
+            raise
 
         self._initialized = True
         logger.info("VDBHandler 초기화 완료")
