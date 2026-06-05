@@ -1,4 +1,4 @@
-# VDB Handler SDK
+# VDB Manager
 
 > Kiwoom VDB Handler SDK v3.0 — HTTP 클라이언트 기반 벡터 검색 라이브러리
 
@@ -14,7 +14,7 @@ VDB Handler Service(REST API)를 통해 벡터 임베딩, 하이브리드 검색
 ## 설치
 
 ```bash
-pip install -e packages/vdb-handler/sdk
+pip install -e packages/vdb-manager
 ```
 
 ## 환경변수
