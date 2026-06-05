@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-"""AsyncMongoDBHandler — 비동기 진입점.
+"""AsyncMongoDBManager — 비동기 진입점.
 
 Singleton을 의도적으로 피한다. async 환경(FastAPI lifespan, LangGraph)에서는
 명시적 인스턴스 + 명시적 aclose()가 자원 관리에 훨씬 안전하다.
 
 사용 예시:
-    async with AsyncMongoDBHandler(database="kw_rag", collection="kw_gp") as mdb:
+    async with AsyncMongoDBManager(database="kw_rag", collection="kw_gp") as mdb:
         docs = await mdb.find({"type": "table"}, limit=10)
 
     # FastAPI lifespan에서:
-    mdb = AsyncMongoDBHandler()
+    mdb = AsyncMongoDBManager()
     app.state.mdb = mdb
     try:
         yield
@@ -31,7 +31,7 @@ from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
 logger = logging.getLogger(__name__)
 
 
-class AsyncMongoDBHandler:
+class AsyncMongoDBManager:
     """MongoDB 통합 비동기 핸들러 (HTTP 클라이언트 래퍼)."""
 
     def __init__(
@@ -53,7 +53,7 @@ class AsyncMongoDBHandler:
         )
         self._closed = False
         logger.info(
-            "AsyncMongoDBHandler 초기화 (database=%s, collection=%s)",
+            "AsyncMongoDBManager 초기화 (database=%s, collection=%s)",
             self.database,
             self.collection_name,
         )
@@ -64,9 +64,9 @@ class AsyncMongoDBHandler:
             return
         await self._client.aclose()
         self._closed = True
-        logger.info("AsyncMongoDBHandler 연결 종료")
+        logger.info("AsyncMongoDBManager 연결 종료")
 
-    async def __aenter__(self) -> "AsyncMongoDBHandler":
+    async def __aenter__(self) -> "AsyncMongoDBManager":
         self._ensure_open()
         return self
 
@@ -76,7 +76,7 @@ class AsyncMongoDBHandler:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError(
-                "AsyncMongoDBHandler is closed. 새 인스턴스를 만들거나 aclose 호출 전에 사용하세요."
+                "AsyncMongoDBManager is closed. 새 인스턴스를 만들거나 aclose 호출 전에 사용하세요."
             )
 
     # Create
@@ -230,6 +230,6 @@ class AsyncMongoDBHandler:
     def __repr__(self) -> str:
         status = "closed" if self._closed else "open"
         return (
-            f"<AsyncMongoDBHandler database={self.database} "
+            f"<AsyncMongoDBManager database={self.database} "
             f"collection={self.collection_name} status={status}>"
         )

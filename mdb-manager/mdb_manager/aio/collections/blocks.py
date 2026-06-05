@@ -214,12 +214,12 @@ class AsyncBlocksCollection:
     ) -> str:
         """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입 (async).
 
-        Use ``AsyncMongoDBHandler.get_agent_data().insert(...)``
+        Use ``AsyncMongoDBManager.get_agent_data().insert(...)``
         (AsyncAgentEnvelopeCollection) instead.
         """
         warnings.warn(
             "AsyncBlocksCollection.insert_agent_data is deprecated. "
-            "Use AsyncMongoDBHandler.get_agent_data().insert(...) "
+            "Use AsyncMongoDBManager.get_agent_data().insert(...) "
             "(AsyncAgentEnvelopeCollection) instead.",
             DeprecationWarning,
             stacklevel=2,
@@ -242,11 +242,11 @@ class AsyncBlocksCollection:
     ) -> str:
         """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입 (async).
 
-        Use ``AsyncMongoDBHandler.get_agent_output().insert(...)`` instead.
+        Use ``AsyncMongoDBManager.get_agent_output().insert(...)`` instead.
         """
         warnings.warn(
             "AsyncBlocksCollection.insert_agent_output is deprecated. "
-            "Use AsyncMongoDBHandler.get_agent_output().insert(...) "
+            "Use AsyncMongoDBManager.get_agent_output().insert(...) "
             "(AsyncAgentEnvelopeCollection) instead.",
             DeprecationWarning,
             stacklevel=2,

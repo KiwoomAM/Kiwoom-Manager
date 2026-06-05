@@ -19,8 +19,8 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 [Agent 코드]  →  mdb_manager (httpx)  →  MDB Handler Service  →  MongoDB
 ```
 
-- **sync**: `MongoDBHandler` — Singleton (`__new__` 캐시, `reset()`으로 초기화)
-- **async**: `AsyncMongoDBHandler` — 비-Singleton, 명시적 `aclose()` lifecycle
+- **sync**: `MongoDBManager` — Singleton (`__new__` 캐시, `reset()`으로 초기화)
+- **async**: `AsyncMongoDBManager` — 비-Singleton, 명시적 `aclose()` lifecycle
 - 두 진입점 모두 내부 `_client.py`/`_async_client.py`(httpx 래퍼)에 위임. 경로 빌더는
   `_paths.py` 공용. envelope 전용 진입점은 `get_agent_data()`/`get_agent_output()`.
 
@@ -33,19 +33,19 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 
 ## Gotchas
 
-- **SERVICE_NAME hard-fail (생성 시점)**: `SERVICE_NAME` env가 없으면 `MongoDBHandler()` /
-  `AsyncMongoDBHandler()` (정확히는 내부 client 생성) 시점에 즉시 `MDBConfigError`를 던진다.
+- **SERVICE_NAME hard-fail (생성 시점)**: `SERVICE_NAME` env가 없으면 `MongoDBManager()` /
+  `AsyncMongoDBManager()` (정확히는 내부 client 생성) 시점에 즉시 `MDBConfigError`를 던진다.
   서버측 400을 첫 요청까지 기다리지 않는 fail-fast다. 구현: `_client.py`/`_async_client.py`의
   `_default_headers()`. read-only 소비자도 SERVICE_NAME이 필요하다 (없으면 아무 값이라도 지정).
 - **import 시점 부작용 없음, 생성 시점에 터짐**: 모듈 import 자체는 안전하지만, 핸들러를
   생성하는 순간 SERVICE_NAME 가드가 작동한다. 따라서 `load_dotenv()`는 **핸들러 생성보다
   먼저** 실행돼야 한다. 에이전트가 모듈 로드 시점에 핸들러를 만든다면(예: 모듈-레벨 싱글톤),
   그 import 전에 env가 떠 있어야 한다.
-- **Singleton(sync) poisoning 방지**: 생성 실패 시 `MongoDBHandler.__init__`이 `_instance`를
+- **Singleton(sync) poisoning 방지**: 생성 실패 시 `MongoDBManager.__init__`이 `_instance`를
   비운다. 그래서 SERVICE_NAME 누락으로 실패한 뒤 env를 채우고 다시 생성하면 정상 동작.
 - **HANDLER URL은 고정 기본값**: `MDB_HANDLER_URL` 미설정 시 `http://192.7.9.45:8300`.
   사용자는 보통 설정하지 않는다. env override는 테스트/특수 환경용 escape hatch.
-- **AsyncMongoDBHandler는 Singleton 아님**: 명시적 `aclose()` 필요 (`async with` 또는 FastAPI
+- **AsyncMongoDBManager는 Singleton 아님**: 명시적 `aclose()` 필요 (`async with` 또는 FastAPI
   lifespan). `aclose()` 후 호출 시 `RuntimeError`.
 - **단일 SDK (과거 mdb-handler/sdk 승격)**: 이 패키지는 과거 `mdb-handler/sdk`를 승격(promote)한
   것으로, 이제 MDB Service의 **유일한 클라이언트 SDK**다. `mdb-handler/sdk`는 더 이상 존재하지

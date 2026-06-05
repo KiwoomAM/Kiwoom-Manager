@@ -212,13 +212,13 @@ class BlocksCollection:
     ) -> str:
         """[DEPRECATED] envelope 형태로 agent_data 컬렉션에 삽입.
 
-        Use ``MongoDBHandler.get_agent_data().insert(...)`` (AgentEnvelopeCollection)
+        Use ``MongoDBManager.get_agent_data().insert(...)`` (AgentEnvelopeCollection)
         instead. envelope CRUD 전체(find/update/delete 포함)는 AgentEnvelopeCollection
         에서만 제공된다.
         """
         warnings.warn(
             "BlocksCollection.insert_agent_data is deprecated. "
-            "Use MongoDBHandler.get_agent_data().insert(...) "
+            "Use MongoDBManager.get_agent_data().insert(...) "
             "(AgentEnvelopeCollection) instead.",
             DeprecationWarning,
             stacklevel=2,
@@ -241,12 +241,12 @@ class BlocksCollection:
     ) -> str:
         """[DEPRECATED] envelope 형태로 agent_output 컬렉션에 삽입.
 
-        Use ``MongoDBHandler.get_agent_output().insert(...)`` (AgentEnvelopeCollection)
+        Use ``MongoDBManager.get_agent_output().insert(...)`` (AgentEnvelopeCollection)
         instead.
         """
         warnings.warn(
             "BlocksCollection.insert_agent_output is deprecated. "
-            "Use MongoDBHandler.get_agent_output().insert(...) "
+            "Use MongoDBManager.get_agent_output().insert(...) "
             "(AgentEnvelopeCollection) instead.",
             DeprecationWarning,
             stacklevel=2,

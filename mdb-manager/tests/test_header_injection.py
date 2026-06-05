@@ -72,33 +72,33 @@ def test_async_client_raises_when_service_name_unset(monkeypatch, reload_clients
 
 def test_sync_handler_raises_when_service_name_unset(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
-    from mdb_manager.handler import MongoDBHandler
+    from mdb_manager.handler import MongoDBManager
 
-    MongoDBHandler.reset()
+    MongoDBManager.reset()
     with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        MongoDBHandler()
+        MongoDBManager()
 
 
 def test_async_handler_raises_when_service_name_unset(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
-    from mdb_manager.aio import AsyncMongoDBHandler
+    from mdb_manager.aio import AsyncMongoDBManager
 
     with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        AsyncMongoDBHandler()
+        AsyncMongoDBManager()
 
 
 def test_sync_handler_not_poisoned_after_failed_construction(
     monkeypatch, reload_clients
 ):
     """미설정으로 실패한 직후에도 SERVICE_NAME을 채우면 정상 생성돼야 한다."""
-    from mdb_manager.handler import MongoDBHandler
+    from mdb_manager.handler import MongoDBManager
 
-    MongoDBHandler.reset()
+    MongoDBManager.reset()
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     with pytest.raises(MDBConfigError):
-        MongoDBHandler()
+        MongoDBManager()
 
     monkeypatch.setenv("SERVICE_NAME", "test-agent")
-    handler = MongoDBHandler()
+    handler = MongoDBManager()
     assert handler._client._http.headers.get("X-Caller-Service") == "test-agent"
-    MongoDBHandler.reset()
+    MongoDBManager.reset()

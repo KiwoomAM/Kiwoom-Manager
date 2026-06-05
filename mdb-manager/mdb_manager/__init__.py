@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-MongoDB Handler - MongoDB 통합 관리 모듈
+MongoDB Manager - MongoDB 통합 관리 모듈
 
 사용법 (동기):
-    from mdb_manager import MongoDBHandler
+    from mdb_manager import MongoDBManager
 
-    mdb = MongoDBHandler()
+    mdb = MongoDBManager()
     mdb.get_all()
     mdb.insert_one({"block_id": "p1_b1", ...})
     mdb.close()
 
 사용법 (비동기):
-    from mdb_manager.aio import AsyncMongoDBHandler
+    from mdb_manager.aio import AsyncMongoDBManager
 
-    async with AsyncMongoDBHandler() as mdb:
+    async with AsyncMongoDBManager() as mdb:
         docs = await mdb.find({"type": "table"}, limit=10)
 """
 
@@ -26,10 +26,10 @@ from mdb_manager.exceptions import (
     MDBError,
     MDBHandlerError,
 )
-from mdb_manager.handler import MongoDBHandler
+from mdb_manager.handler import MongoDBManager
 
 __all__ = [
-    "MongoDBHandler",
+    "MongoDBManager",
     "BlocksCollection",
     "AgentEnvelopeCollection",
     "MDBError",

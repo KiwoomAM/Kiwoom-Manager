@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-MongoDBHandler - HTTP 클라이언트 래퍼 (Singleton)
+MongoDBManager - HTTP 클라이언트 래퍼 (Singleton)
 
-기존 pymongo 기반 MongoDBHandler와 동일한 인터페이스를 제공합니다.
+기존 pymongo 기반 MongoDBManager와 동일한 인터페이스를 제공합니다.
 내부적으로 MDB Handler Service에 HTTP 요청을 보냅니다.
 
 사용 예시:
-    from mdb_manager import MongoDBHandler
+    from mdb_manager import MongoDBManager
 
-    mdb = MongoDBHandler()
+    mdb = MongoDBManager()
 
     mdb.get_all()
     mdb.insert_one({"block_id": "p1_b1", ...})
@@ -37,7 +37,7 @@ from mdb_manager.collections.blocks import BlocksCollection
 logger = logging.getLogger(__name__)
 
 
-class MongoDBHandler:
+class MongoDBManager:
     """
     MongoDB 통합 핸들러 (Singleton) -- HTTP 클라이언트 래퍼.
 
@@ -45,7 +45,7 @@ class MongoDBHandler:
     database와 collection을 자유롭게 선택할 수 있습니다.
     """
 
-    _instance: Optional["MongoDBHandler"] = None
+    _instance: Optional["MongoDBManager"] = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -84,7 +84,7 @@ class MongoDBHandler:
 
         self._initialized = True
         logger.info(
-            "MongoDBHandler 초기화 완료 (database=%s, collection=%s)",
+            "MongoDBManager 초기화 완료 (database=%s, collection=%s)",
             self.database,
             self.collection_name,
         )
@@ -192,16 +192,16 @@ class MongoDBHandler:
         if self._client is not None:
             try:
                 self._client.close()
-                logger.info("MongoDBHandler 연결 종료")
+                logger.info("MongoDBManager 연결 종료")
             except Exception as e:
-                logger.warning("MongoDBHandler 연결 종료 중 오류: %s", e)
+                logger.warning("MongoDBManager 연결 종료 중 오류: %s", e)
 
     @classmethod
     def reset(cls) -> None:
         if cls._instance is not None:
             cls._instance.close()
             cls._instance = None
-            logger.info("MongoDBHandler Singleton 리셋 완료")
+            logger.info("MongoDBManager Singleton 리셋 완료")
 
     # =====================================================================
     # Database / Collection 접근
@@ -249,6 +249,6 @@ class MongoDBHandler:
     def __repr__(self) -> str:
         status = "initialized" if self._initialized else "not initialized"
         return (
-            f"<MongoDBHandler database={self.database} "
+            f"<MongoDBManager database={self.database} "
             f"collection={self.collection_name} status={status}>"
         )
