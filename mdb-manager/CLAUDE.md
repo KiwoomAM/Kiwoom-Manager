@@ -50,6 +50,11 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 - **단일 SDK (과거 mdb-handler/sdk 승격)**: 이 패키지는 과거 `mdb-handler/sdk`를 승격(promote)한
   것으로, 이제 MDB Service의 **유일한 클라이언트 SDK**다. `mdb-handler/sdk`는 더 이상 존재하지
   않으며 "두 SDK 중복" 문제는 해소됐다. (mdb-manager에만 있는 SERVICE_NAME 가드는 의도된 동작.)
+- **caller override (`with_caller`)**: 기본 caller는 env `SERVICE_NAME`. `mdb.with_caller(c)`는
+  싱글톤을 변경하지 않는 불변 bound view를 반환하고, caller를 **per-request 헤더**로만 적용한다
+  (`_CallerBoundClient`). 그래서 bound 호출이 기본 호출로 새지 않는다. 임베디드 라이브러리가
+  호스트와 다른 정체성으로 owned 컬렉션에 접근할 때 사용. 별도 `service_name` 메서드 인자는
+  없다 — inline `with_caller(c).method()`가 per-call 역할을 한다.
 
 ## Environment Variables
 

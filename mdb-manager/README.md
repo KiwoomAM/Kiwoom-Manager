@@ -173,6 +173,29 @@ except MDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e.message}")
 ```
 
+## Caller 정체성 override (`with_caller`)
+
+기본 caller는 env `SERVICE_NAME`이다. 임베디드 라이브러리가 호스트와 다른 정체성으로
+자기 컬렉션에 접근해야 할 때 `with_caller`로 caller를 덮어쓴다.
+
+```python
+mdb = MongoDBManager()                       # 호스트 정체성 (env SERVICE_NAME)
+
+# 보관 후 재사용 (라이브러리 권장)
+llm_mdb = mdb.with_caller("llm-manager")
+llm_mdb.insert_one(doc)                       # X-Caller-Service: llm-manager
+llm_mdb.get_agent_output().find({...})        # 〃
+
+# inline = per-call override
+mdb.with_caller("llm-manager").insert_one(doc)
+
+mdb.insert_one(doc)                           # 호스트 기본 (env) — 영향 없음
+```
+
+- `with_caller`는 **싱글톤을 변경하지 않는** 새 view를 반환한다. 정체성은 요청 단위로만
+  적용되어, bound 호출이 이후 기본 호출로 새지 않는다.
+- 우선순위: `with_caller` bound caller > env `SERVICE_NAME`.
+
 ## 사용 패턴
 
 ### 여러 컬렉션 접근
