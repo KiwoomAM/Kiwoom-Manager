@@ -49,6 +49,11 @@ class SyncClient:
         self._http.close()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        caller = kwargs.pop("caller", None)
+        if caller:
+            headers = dict(kwargs.pop("headers", None) or {})
+            headers["X-Caller-Service"] = caller
+            kwargs["headers"] = headers
         try:
             response = self._http.request(method, path, **kwargs)
         except httpx.TransportError as e:
@@ -75,3 +80,27 @@ class SyncClient:
     def delete(self, path: str, **kwargs: Any) -> Any:
         resp = self._request("DELETE", path, **kwargs)
         return resp.json()
+
+
+class _CallerBoundClient:
+    """SyncClient를 감싸 모든 요청에 caller(X-Caller-Service)를 주입하는 패스스루.
+
+    내부 httpx 클라이언트/커넥션 풀을 공유하며 lifecycle(close)은 소유하지 않는다.
+    정체성은 요청마다 caller 인자로만 흐르고 공유 상태에 저장되지 않는다.
+    """
+
+    def __init__(self, base: "SyncClient", caller: str) -> None:
+        self._base = base
+        self._caller = caller
+
+    def get(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return self._base.get(path, **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return self._base.post(path, **kwargs)
+
+    def delete(self, path: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("caller", self._caller)
+        return self._base.delete(path, **kwargs)
