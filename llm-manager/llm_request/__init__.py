@@ -32,39 +32,24 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, TypedDict
 
-import llm_handler as llm_handler  # noqa: PLC0414  (방법 2: 모듈 접근 — llm_handler.aio.call 등)
+# llm_handler 직접 호출은 이 모듈 경로 하나로 일원화한다 (sync: llm_handler.call,
+# async: llm_handler.aio.call). 함수 flat re-export 는 제거 (3중 경로 정리).
+import llm_handler as llm_handler  # noqa: PLC0414
 import llm_handler.aio  # noqa: F401  (llm_handler.aio 속성 보장)
+
+# 타입/예외만 flat 유지 — llm_request 공개 API 의 반환·시그니처 타입이라 직접 import 편의 유지.
 from llm_handler import (
     CacheRef,
-    ContentsType,
-    EmbeddingStatistics,
-    EmbeddingValue,
-    EmbedResponse,
     FileRef,
     FunctionCall,
     HandlerConnectionError,
     HandlerError,
     LLMResponse,
     Part,
-    Session,
     StreamChunk,
     TokenUsage,
-    call,
-    configure,
-    create_cache,
-    delete_file,
-    embed,
-    get_cache,
-    get_file,
-    list_caches,
-    list_files,
-    session,
-    stream,
-    update_cache,
-    upload_file,
 )
 
-from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
 from llm_request._internal import runner
 from llm_request._internal._config import ensure_configured
 from llm_request._internal.context_cache_lifecycle import expire_caches
@@ -77,7 +62,7 @@ from llm_request.exceptions import (
     FileResolveError,
     FileTooLargeError,
     FileUploadError,
-    LLMRequestServiceError,
+    LLMRequestError,
     UnsupportedFileTypeError,
     ValidationError,
 )
@@ -112,7 +97,7 @@ __all__ = [
     "ExpireResult",
     "ExpireFailure",
     # 공개 예외
-    "LLMRequestServiceError",
+    "LLMRequestError",
     "CacheError",
     "FileUploadError",
     "ValidationError",
@@ -120,36 +105,16 @@ __all__ = [
     "FileTooLargeError",
     "CacheKeyNotFoundError",
     "FileResolveError",
-    # llm_handler 모듈 (방법 2 — llm_handler.configure, llm_handler.SDKError 등)
+    # llm_handler 직접 호출 경로 (sync: llm_handler.call, async: llm_handler.aio.call)
     "llm_handler",
-    # llm_request.aio 서브모듈 (llm_handler.aio re-export)
-    "aio",
-    # llm_handler flat re-export (방법 1 — sync)
-    "call",
-    "stream",
-    "embed",
-    "session",
-    "Session",
-    "configure",
-    "upload_file",
-    "delete_file",
-    "get_file",
-    "list_files",
-    "create_cache",
-    "get_cache",
-    "list_caches",
-    "update_cache",
-    "CacheRef",
-    "ContentsType",
-    "EmbeddingStatistics",
-    "EmbeddingValue",
-    "EmbedResponse",
-    "FileRef",
-    "FunctionCall",
+    # llm_handler 타입/예외 — llm_request 공개 API 의 반환·시그니처 타입
     "LLMResponse",
     "Part",
     "StreamChunk",
+    "FunctionCall",
     "TokenUsage",
+    "FileRef",
+    "CacheRef",
     "HandlerConnectionError",
     "HandlerError",
 ]
@@ -224,7 +189,7 @@ async def llm_request_async(
         timings: 시간 관련 설정 묶음 (일부 키만 지정 가능).
         debug: True면 meta.route_reason 에 처리 경로 포함.
     """
-    ensure_configured()
+    await asyncio.to_thread(ensure_configured)
     t = _resolve_timings(timings)
     response, meta = await runner.llm_request_async(
         llm_input,
@@ -278,7 +243,7 @@ async def llm_request_stream_async(
     {"type": "chunk", "text": ..., "finish_reason": ..., "usage"?: ...}.
     mid-stream 에러는 async for 가 그대로 raise (HandlerError 등).
     """
-    ensure_configured()
+    await asyncio.to_thread(ensure_configured)
     t = _resolve_timings(timings)
     chunk_stream, meta = await runner.llm_request_stream_async(
         llm_input,
@@ -347,7 +312,7 @@ async def done_check(
     files: FileKeyingMeta 리스트 (hashing 3필드만). bytes 불필요.
     database: MongoDB database 선택 (kw_ai | kw_ai_dev 등).
     """
-    ensure_configured()
+    await asyncio.to_thread(ensure_configured)
     if files:
         # FileKeyingMeta → checksum 리스트로 변환 후 cache_key 계산용으로 주입
         # (실제 LLM 호출엔 들어가지 않고 keying.canonicalize 에서만 사용)
@@ -370,7 +335,7 @@ async def fetch_by_cache_key(
     database: str | None = None,
 ) -> tuple[LLMResponse, RequestMeta]:
     """캐시 키로 결과 직접 조회. 없으면 CacheKeyNotFoundError."""
-    ensure_configured()
+    await asyncio.to_thread(ensure_configured)
     try:
         response, meta = _fetch_by_cache_key(cache_key, database=database)
     except KeyError as e:
@@ -421,7 +386,7 @@ async def delete_cache_async(
             f"grace_seconds 는 1~3600초 사이여야 합니다 (받은 값: {grace_seconds})."
         )
 
-    ensure_configured()
+    await asyncio.to_thread(ensure_configured)
     return await expire_caches(ids, grace_seconds)
 
 
