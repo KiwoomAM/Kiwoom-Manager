@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-VDBHandler - 통합 진입점 (Singleton)
+VDBManager - 통합 진입점 (Singleton)
 
 사용 예시:
-    from vdb_manager import VDBHandler
+    from vdb_manager import VDBManager
 
-    handler = VDBHandler()
+    handler = VDBManager()
 
     # Dense
     vector = handler.dense.embed("키움증권 리포트")
@@ -47,10 +47,10 @@ from vdb_manager.reranker import RerankerClient
 logger = logging.getLogger(__name__)
 
 
-class VDBHandler:
+class VDBManager:
     """VDB Handler 통합 인터페이스 (Singleton)"""
 
-    _instance: Optional["VDBHandler"] = None
+    _instance: Optional["VDBManager"] = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -77,7 +77,7 @@ class VDBHandler:
             raise
 
         self._initialized = True
-        logger.info("VDBHandler 초기화 완료")
+        logger.info("VDBManager 초기화 완료")
 
     # ------------------------------------------------------------------
     # Dense 임베딩 (바로가기)
@@ -298,9 +298,9 @@ class VDBHandler:
         if self._client is not None:
             try:
                 self._client.close()
-                logger.info("VDBHandler 연결 종료")
+                logger.info("VDBManager 연결 종료")
             except Exception as e:
-                logger.warning("VDBHandler 연결 종료 중 오류: %s", e)
+                logger.warning("VDBManager 연결 종료 중 오류: %s", e)
 
     @classmethod
     def reset(cls) -> None:
@@ -308,8 +308,8 @@ class VDBHandler:
         if cls._instance is not None:
             cls._instance.close()
             cls._instance = None
-            logger.info("VDBHandler Singleton 리셋 완료")
+            logger.info("VDBManager Singleton 리셋 완료")
 
     def __repr__(self) -> str:
         status = "initialized" if self._initialized else "not initialized"
-        return f"<VDBHandler status={status}>"
+        return f"<VDBManager status={status}>"

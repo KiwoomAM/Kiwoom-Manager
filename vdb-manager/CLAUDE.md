@@ -19,7 +19,7 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
 [Agent 코드]  →  vdb_manager (httpx, sync)  →  VDB Handler Service  →  Qdrant / SPLADE / ColBERT
 ```
 
-- `VDBHandler` — Singleton 통합 진입점. 하위 클라이언트를 속성으로 노출:
+- `VDBManager` — Singleton 통합 진입점. 하위 클라이언트를 속성으로 노출:
   - `.dense` (DenseClient) — Gemini Dense 임베딩/검색
   - `.sparse` (SparseClient) — SPLADE sparse 임베딩/검색
   - `.hybrid` (HybridClient) — Dense+Sparse RRF 하이브리드 검색
@@ -45,7 +45,7 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   **아무것도 설정하지 않아도 된다.**
 - **서버 기동이 느리다**: VDB Handler Service는 SPLADE/ColBERT 모델 로드로 기동이 ~120s
   걸린다. 클라이언트 타임아웃/헬스체크 시 고려.
-- **Singleton**: `VDBHandler()`는 항상 같은 인스턴스. 재초기화는 `reset()`(있으면) 또는 프로세스 재시작.
+- **Singleton**: `VDBManager()`는 항상 같은 인스턴스. 재초기화는 `reset()`(있으면) 또는 프로세스 재시작.
 
 ## Environment Variables
 
@@ -56,5 +56,5 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
 ## Commands
 
 - 이 패키지에는 아직 **테스트 스위트가 없다** (`tests/` 부재). 동작 확인은 실제 VDB Handler
-  Service를 띄운 상태에서 `VDBHandler().health_check()`로 한다.
+  Service를 띄운 상태에서 `VDBManager().health_check()`로 한다.
 - 클라이언트 동작을 바꾸면 회귀 방지를 위해 최소 단위 테스트 추가를 우선 고려한다.

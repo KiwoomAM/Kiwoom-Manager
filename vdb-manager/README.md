@@ -29,7 +29,7 @@ pip install -e packages/vdb-manager
 vdb_manager/
 ├── __init__.py        # 공개 API
 ├── _client.py         # httpx 기반 SyncClient (내부용)
-├── handler.py         # VDBHandler (Singleton 진입점)
+├── handler.py         # VDBManager (Singleton 진입점)
 ├── dense.py           # DenseClient (Dense 임베딩 + 검색)
 ├── sparse.py          # SparseClient (Sparse 임베딩 + 검색)
 ├── hybrid.py          # HybridClient (Hybrid 임베딩 + 검색)
@@ -41,9 +41,9 @@ vdb_manager/
 ## Quick Start
 
 ```python
-from vdb_manager import VDBHandler
+from vdb_manager import VDBManager
 
-handler = VDBHandler()
+handler = VDBManager()
 
 # Dense 임베딩 + 검색
 vector = handler.dense.embed("키움증권 리포트")
@@ -74,7 +74,7 @@ handler.close()
 
 ### 서브 클라이언트
 
-VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다:
+VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다:
 
 | 클라이언트 | 접근 | 역할 |
 |-----------|------|------|
@@ -134,7 +134,7 @@ VDBHandler는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 
 #### 바로가기 메서드
 
-VDBHandler에서 직접 호출할 수 있는 단축 메서드:
+VDBManager에서 직접 호출할 수 있는 단축 메서드:
 
 ```python
 # 이 두 호출은 동일합니다
@@ -175,7 +175,7 @@ except VDBHandlerError as e:
 ### 문서 임베딩 → 컬렉션 저장 (Hybrid)
 
 ```python
-handler = VDBHandler()
+handler = VDBManager()
 
 texts = ["텍스트1", "텍스트2"]
 metadatas = [
@@ -202,7 +202,7 @@ handler.collection.upsert(
 ### 문서 임베딩 → 컬렉션 저장 (Dense-only)
 
 ```python
-handler = VDBHandler()
+handler = VDBManager()
 
 texts = ["텍스트1", "텍스트2"]
 metadatas = [
@@ -255,7 +255,7 @@ for r in results:
 
 ## 주의사항
 
-- **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `VDBHandler.reset()` 후 재생성
+- **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `VDBManager.reset()` 후 재생성
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
 - **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors` 전달 시 동일 길이 필수

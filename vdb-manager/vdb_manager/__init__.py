@@ -3,9 +3,9 @@
 vdb_manager - VDB Handler SDK
 
 사용법:
-    from vdb_manager import VDBHandler
+    from vdb_manager import VDBManager
 
-    handler = VDBHandler()
+    handler = VDBManager()
 
     # Dense
     vector = handler.dense.embed("키움증권 리포트")
@@ -34,7 +34,7 @@ vdb_manager - VDB Handler SDK
     VDB_HANDLER_URL: VDB Handler Service URL (기본: http://192.7.9.45:8500)
 """
 
-from .handler import VDBHandler
+from .handler import VDBManager
 from .dense import DenseClient, DenseEmbedClient
 from .sparse import SparseClient, SparseEmbedClient
 from .hybrid import HybridClient
@@ -43,7 +43,7 @@ from .reranker import RerankerClient
 from .exceptions import VDBError, VDBConnectionError, VDBHandlerError
 
 __all__ = [
-    "VDBHandler",
+    "VDBManager",
     "DenseClient",
     "DenseEmbedClient",
     "SparseClient",

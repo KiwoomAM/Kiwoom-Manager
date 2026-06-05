@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""A failed VDBHandler construction must not poison the Singleton."""
+"""A failed VDBManager construction must not poison the Singleton."""
 
 import pytest
 
 import vdb_manager.handler as handler_mod
-from vdb_manager.handler import VDBHandler
+from vdb_manager.handler import VDBManager
 
 
 def test_failed_construction_clears_singleton(monkeypatch):
@@ -14,7 +14,7 @@ def test_failed_construction_clears_singleton(monkeypatch):
 
     monkeypatch.setattr(handler_mod, "SyncClient", boom)
     with pytest.raises(RuntimeError):
-        VDBHandler()
+        VDBManager()
 
     # Singleton must be cleared so a later (healthy) construction works.
-    assert VDBHandler._instance is None
+    assert VDBManager._instance is None
