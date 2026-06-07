@@ -25,7 +25,7 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 | 버전 | `0.3.0` |
 | Python | **`>=3.11`** |
 | 구성 | **순수 SDK manager** (별도 서버 없음). agent 프로세스 안에서 직접 실행 |
-| 의존성 | `kiwoom-llm-handler`, `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `pydantic`, `filetype`, `PyMuPDF` |
+| 의존성 | `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `httpx`, `pydantic`, `pydantic-settings`, `filetype`, `PyMuPDF` (llm-handler 클라이언트 SDK는 흡수 — 외부 의존 아님) |
 | 동작 방식 | SDK가 handler(mdb·redis·llm·file) 서버들을 **직접 조합 호출**. (구 0.2.0의 FastAPI Service(8101) 레이어는 제거됨 — 근거: [docs/23](docs/23.manager-sdk-refactoring-plan.md)) |
 
 # 3. 디렉터리 구조
@@ -236,7 +236,7 @@ except FileResolveError:
 
 ## llm_input 구조
 
-`llm_request_async`의 첫 번째 인자. **`llm_handler.call()`의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 Service 가 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
+`llm_request_async`의 첫 번째 인자. **handler 생성 호출(`call()`)의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 내부에서 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
 
 ```python
 response, meta = await llm_request_async(
@@ -259,7 +259,7 @@ response, meta = await llm_request_async(
 )
 ```
 
-### llm_handler.call() 전체 파라미터
+### handler `call()` 전체 파라미터
 
 `llm_input` dict의 키로 사용할 수 있는 전체 목록.
 
@@ -284,7 +284,7 @@ def call(
 ) -> LLMResponse
 ```
 
-스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_handler.aio.stream()`.
+스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_request.aio.stream()`.
 
 ## cache_mode / save_mode
 
@@ -534,7 +534,7 @@ llm_input + files
      MISS ↓
 ③ 파일 처리 (file_processing)
   ↓
-④ LLM 호출 (llm_handler.aio.call)
+④ LLM 호출 (handler_client.aio.call)
   ↓
 ⑤ 결과 저장 (store → MongoDB)
   ↓
@@ -794,7 +794,7 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 | `CacheKeyNotFoundError` | `not_found` | 404 | `fetch_by_cache_key` 대상 캐시 문서 없음 |
 | `LLMRequestError` | `handler` | 500 | 베이스 / 그 외 fallback |
 
-LLM 호출 실패는 llm-handler 의 `HandlerError` / `HandlerConnectionError` 가 그대로 전파된다 (re-export 됨).
+LLM 호출 실패는 `HandlerError` / `HandlerConnectionError` 가 그대로 전파된다 (흡수한 handler_client 가 re-export).
 
 ```python
 from llm_request import (
