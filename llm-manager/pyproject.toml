@@ -1,28 +1,55 @@
 [project]
-name = "LLM-Request"
-version = "0.2.0"
-description = "LLM Request - uv workspace root"
+name = "kiwoom-llm-manager"
+version = "0.3.0"
+description = "LLM Manager SDK - LLM 응답 캐싱 manager (순수 SDK)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "kiwoom-llm-request[dev]",
-    "kiwoom-llm-request-service[dev]",
+    # llm-handler SDK 를 흡수 — handler 는 서버(부하 관리·로깅·네트워크)만 담당하고,
+    # 클라이언트 SDK(llm_handler) 는 manager 인 llm-manager 가 직접 보유한다.
+    "kiwoom-mdb-handler>=2.0.0",
+    "kiwoom-redis-handler>=2.0.0",
+    "kiwoom-file-manager>=0.1.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.13.1",
+    "filetype>=1.2.0",
+    "PyMuPDF>=1.24.0",
 ]
 
-[tool.uv.workspace]
-members = ["sdk", "service"]
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
+]
 
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+# handler 클라이언트는 llm_manager._internal.handler_client 로 내부화 — llm_manager* 에 포함됨.
+include = ["llm_manager*"]
+
+# 핸들러 로컬 editable 경로. llm-handler SDK 는 흡수되어 더 이상 외부 의존 아님.
 [tool.uv.sources]
-kiwoom-llm-request = { workspace = true }
-kiwoom-llm-request-service = { workspace = true }
-kiwoom-llm-handler = { path = "../llm-handler/sdk", editable = true }
 kiwoom-mdb-handler = { path = "../mdb-handler/sdk", editable = true }
 kiwoom-redis-handler = { path = "../redis-handler", editable = true }
 kiwoom-file-manager = { path = "../file-manager/sdk", editable = true }
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.ruff]
+target-version = "py311"
+line-length = 120
 
-[tool.hatch.build.targets.wheel]
-packages = []
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

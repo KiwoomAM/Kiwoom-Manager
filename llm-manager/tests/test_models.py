@@ -1,0 +1,101 @@
+"""SDK ResponseMeta / StoredFile 모델 테스트."""
+from __future__ import annotations
+
+import pytest
+
+from llm_manager.models import ResponseMeta
+
+
+class TestResponseMetaFileMeta:
+    """ResponseMeta 가 file_meta 필드를 받고 노출하는지 (Phase 1)."""
+
+    def test_file_meta_default_none(self):
+        m = ResponseMeta(source="live", cache_hit=False)
+        assert m.file_meta is None
+
+    def test_file_meta_accepts_list_of_dicts(self):
+        m = ResponseMeta(
+            source="live", cache_hit=False,
+            file_meta=[{"file_path": "abc.pdf", "file_name": "x.pdf"}],
+        )
+        assert m.file_meta == [{"file_path": "abc.pdf", "file_name": "x.pdf"}]
+
+    def test_extra_keys_silently_ignored(self):
+        """v2 기본 extra='ignore' 라 모르는 키는 조용히 폐기 (옛 SDK + 새 서버 호환)."""
+        m = ResponseMeta(
+            source="cache", cache_hit=True,
+            file_meta=[{"file_path": "x"}],
+            unknown_future_key="future",  # 무시되어야 함
+        )
+        assert m.cache_hit is True
+        assert not hasattr(m, "unknown_future_key")
+
+
+class TestResponseMetaContextCacheId:
+    """ResponseMeta 가 context_cache_id 필드를 받고 노출하는지."""
+
+    def test_context_cache_id_default_none(self):
+        m = ResponseMeta(source="live", cache_hit=False)
+        assert m.context_cache_id is None
+
+    def test_context_cache_id_accepts_string(self):
+        m = ResponseMeta(
+            source="live", cache_hit=False,
+            context_cache_id="a" * 64,  # SHA-256 hex 형태
+        )
+        assert m.context_cache_id == "a" * 64
+
+
+class TestStoredFileSDK:
+    """SDK StoredFile — Service 측 정의와 동일 (동기 정책, Phase 2). 6 필드."""
+
+    def test_accepts_6_required_fields(self):
+        from llm_manager.models import StoredFile
+
+        sf = StoredFile(
+            file_path="abc.pdf",
+            file_name="x.pdf",
+            file_size=1,
+            file_mtime=0,
+            mime_type="application/pdf",
+            extension=".pdf",
+        )
+        assert sf.file_path == "abc.pdf"
+
+    def test_extra_keys_forbid_raises(self):
+        """server-fill 필드 (resolved_via 등) 를 caller 가 실수로 넘기면 raise (의도)."""
+        from pydantic import ValidationError
+
+        from llm_manager.models import StoredFile
+
+        with pytest.raises(ValidationError):
+            StoredFile(
+                file_path="abc.pdf",
+                file_name="x.pdf",
+                file_size=1,
+                file_mtime=0,
+                mime_type="application/pdf",
+                extension=".pdf",
+                resolved_via="primary",  # server-fill → forbid
+            )
+
+
+class TestExpireResult:
+    """ExpireResult / ExpireFailure shape."""
+
+    def test_basic_shape(self):
+        from llm_manager.models import ExpireFailure, ExpireResult
+
+        r = ExpireResult(
+            expired=["h1"],
+            failed=[ExpireFailure(cache_id="h2", error="boom")],
+        )
+        assert r.expired == ["h1"]
+        assert r.failed[0].cache_id == "h2"
+        assert r.failed[0].error == "boom"
+
+    def test_from_dict(self):
+        from llm_manager.models import ExpireResult
+
+        r = ExpireResult(**{"expired": ["h1"], "failed": []})
+        assert r.failed == []
