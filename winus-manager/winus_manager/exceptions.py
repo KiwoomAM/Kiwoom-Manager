@@ -1,8 +1,4 @@
-"""SDK 예외 클래스.
-
-기존 winus_handler 예외 인터페이스를 유지하면서,
-HTTP 통신 전용 예외도 추가한다.
-"""
+"""WINUS Oracle 핸들러 호환 예외 인터페이스와 HTTP SDK 전용 예외를 정의한다."""
 
 
 class DatabaseException(Exception):

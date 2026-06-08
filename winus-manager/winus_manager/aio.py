@@ -1,17 +1,20 @@
-"""winus_handler.aio — 비동기 인터페이스.
+"""winus_manager.aio — 비동기 인터페이스.
 
 사용법:
-    from winus_handler.aio import query_to_dataframe
+    from winus_manager.aio import query_to_dataframe
 
     df = await query_to_dataframe("SELECT * FROM table WHERE code = :code", {"code": "A001"})
+
+Handler 접속 URL은 운영 서버(http://192.7.9.45:8200)로 고정되어 있으며,
+환경변수나 configure(base_url=...)로 변경할 수 없습니다.
 """
 
-import os
 from typing import Any
 
 import pandas as pd
 
-from winus_handler._client import AsyncClient
+from winus_manager._client import AsyncClient
+from winus_manager._config import HANDLER_BASE_URL
 
 __all__ = [
     "configure",
@@ -31,7 +34,7 @@ _instance: AsyncClient | None = None
 
 
 def _resolve_base_url() -> str:
-    return os.getenv("WINUS_HANDLER_URL", "http://localhost:8200")
+    return HANDLER_BASE_URL
 
 
 def _get_client() -> AsyncClient:
@@ -50,10 +53,13 @@ async def close() -> None:
 
 
 def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
-    """SDK 클라이언트를 수동 설정."""
+    """SDK 클라이언트를 수동 설정.
+
+    base_url 인자는 운영 정책상 무시되며 핸들러 URL은 항상 192.7.9.45:8200으로 고정됩니다.
+    timeout만 적용됩니다.
+    """
     global _instance
-    url = base_url or _resolve_base_url()
-    _instance = AsyncClient(base_url=url, timeout=timeout)
+    _instance = AsyncClient(base_url=_resolve_base_url(), timeout=timeout)
 
 
 # ── SELECT ──────────────────────────────────────────
