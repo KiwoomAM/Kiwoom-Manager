@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""SERVICE_NAME 가드 + X-Caller-Service 헤더 자동 부착 검증.
+"""SERVICE_NAME → X-Caller-Service 헤더 부착 + caller_identity 검증.
 
-mdb-manager는 caller 식별이 필요한 표준 에이전트 래퍼이므로, SERVICE_NAME이
-설정되지 않으면 클라이언트/핸들러 생성 시점에 즉시 MDBConfigError로 실패한다
-(서버측 400을 첫 요청까지 기다리지 않고 fail-fast).
+mdb-manager는 SERVICE_NAME이 있으면 X-Caller-Service 헤더를 자동 부착한다.
+SERVICE_NAME이 없어도 클라이언트/핸들러 생성은 항상 성공한다 (생성 시점 hard-fail 없음).
+caller가 실제로 필요한 envelope 진입점에서만 fail-fast 하며, 그 검증은
+test_envelope_guard.py가 담당한다.
 """
 
 import importlib
 
 import pytest
-
-from mdb_manager.exceptions import MDBConfigError
 
 
 @pytest.fixture
@@ -27,7 +26,7 @@ def reload_clients():
 
 
 # ---------------------------------------------------------------------------
-# SERVICE_NAME 설정 시 — 헤더 부착
+# SERVICE_NAME 설정 시 — 헤더 부착 + caller_identity 노출
 # ---------------------------------------------------------------------------
 
 
@@ -37,6 +36,7 @@ def test_sync_client_attaches_header_when_service_name_set(monkeypatch, reload_c
 
     client = SyncClient()
     assert client._http.headers.get("X-Caller-Service") == "test-agent"
+    assert client.caller_identity == "test-agent"
 
 
 def test_async_client_attaches_header_when_service_name_set(
@@ -47,58 +47,66 @@ def test_async_client_attaches_header_when_service_name_set(
 
     client = AsyncClient()
     assert client._http.headers.get("X-Caller-Service") == "test-agent"
+    assert client.caller_identity == "test-agent"
 
 
 # ---------------------------------------------------------------------------
-# SERVICE_NAME 미설정 시 — 생성 시점 hard-fail
+# SERVICE_NAME 미설정 시 — 생성 성공, 헤더 없음, caller_identity None
 # ---------------------------------------------------------------------------
 
 
-def test_sync_client_raises_when_service_name_unset(monkeypatch, reload_clients):
+def test_sync_client_succeeds_without_service_name(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     from mdb_manager._client import SyncClient
 
-    with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        SyncClient()
+    client = SyncClient()
+    assert client._http.headers.get("X-Caller-Service") is None
+    assert client.caller_identity is None
 
 
-def test_async_client_raises_when_service_name_unset(monkeypatch, reload_clients):
+def test_async_client_succeeds_without_service_name(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     from mdb_manager._async_client import AsyncClient
 
-    with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        AsyncClient()
+    client = AsyncClient()
+    assert client._http.headers.get("X-Caller-Service") is None
+    assert client.caller_identity is None
 
 
-def test_sync_handler_raises_when_service_name_unset(monkeypatch, reload_clients):
+def test_sync_handler_succeeds_without_service_name(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     from mdb_manager.handler import MongoDBManager
 
     MongoDBManager.reset()
-    with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        MongoDBManager()
+    manager = MongoDBManager()
+    assert manager._client.caller_identity is None
+    MongoDBManager.reset()
 
 
-def test_async_handler_raises_when_service_name_unset(monkeypatch, reload_clients):
+def test_async_handler_succeeds_without_service_name(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     from mdb_manager.aio import AsyncMongoDBManager
 
-    with pytest.raises(MDBConfigError, match="SERVICE_NAME"):
-        AsyncMongoDBManager()
+    manager = AsyncMongoDBManager()
+    assert manager._client.caller_identity is None
 
 
-def test_sync_handler_not_poisoned_after_failed_construction(
-    monkeypatch, reload_clients
-):
-    """미설정으로 실패한 직후에도 SERVICE_NAME을 채우면 정상 생성돼야 한다."""
-    from mdb_manager.handler import MongoDBManager
+# ---------------------------------------------------------------------------
+# bound client — caller_identity는 bound caller를 반환
+# ---------------------------------------------------------------------------
 
-    MongoDBManager.reset()
+
+def test_sync_bound_client_caller_identity(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
-    with pytest.raises(MDBConfigError):
-        MongoDBManager()
+    from mdb_manager._client import SyncClient, _CallerBoundClient
 
-    monkeypatch.setenv("SERVICE_NAME", "test-agent")
-    handler = MongoDBManager()
-    assert handler._client._http.headers.get("X-Caller-Service") == "test-agent"
-    MongoDBManager.reset()
+    bound = _CallerBoundClient(SyncClient(), "llm-manager")
+    assert bound.caller_identity == "llm-manager"
+
+
+def test_async_bound_client_caller_identity(monkeypatch, reload_clients):
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    from mdb_manager._async_client import AsyncClient, _AsyncCallerBoundClient
+
+    bound = _AsyncCallerBoundClient(AsyncClient(), "llm-manager")
+    assert bound.caller_identity == "llm-manager"

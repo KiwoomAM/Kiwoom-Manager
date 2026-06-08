@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 
 from mdb_manager.exceptions import (
-    MDBConfigError,
     MDBConnectionError,
     MDBHandlerError,
 )
@@ -19,21 +18,16 @@ DEFAULT_TIMEOUT = 30.0
 
 
 def _default_headers() -> dict[str, str]:
-    """SERVICE_NAME을 X-Caller-Service 헤더로 부착한다.
+    """SERVICE_NAME이 설정돼 있으면 X-Caller-Service 헤더로 부착한다.
 
-    mdb-manager는 caller 식별이 필요한 작업(write / envelope read·write)을
-    위해 SERVICE_NAME을 요구한다. 미설정 시 클라이언트 생성 시점에 즉시
-    MDBConfigError를 던져 fail-fast 한다 (서버측 400을 첫 요청까지 기다리지 않음).
+    SERVICE_NAME 미설정 시 헤더 없이 통과한다 (클라이언트 생성은 항상 성공).
+    caller가 실제로 필요한 envelope 진입점(get_agent_data/get_agent_output)에서만
+    fail-fast 하므로, blocks read 등 caller 불필요 작업은 SERVICE_NAME 없이 동작한다.
     """
     service_name = os.environ.get("SERVICE_NAME")
-    if not service_name:
-        raise MDBConfigError(
-            "SERVICE_NAME 환경변수가 설정되지 않았습니다. "
-            "mdb-manager는 caller 식별을 위해 SERVICE_NAME이 필요합니다. "
-            "호출 서비스에 SERVICE_NAME=<your-service>를 설정하세요 "
-            "(예: .env에 SERVICE_NAME=kiwoom-js 추가 후 load_dotenv())."
-        )
-    return {"X-Caller-Service": service_name}
+    if service_name:
+        return {"X-Caller-Service": service_name}
+    return {}
 
 
 class AsyncClient:
@@ -56,6 +50,11 @@ class AsyncClient:
             return
         await self._http.aclose()
         self._closed = True
+
+    @property
+    def caller_identity(self) -> str | None:
+        """현재 클라이언트의 기본 caller(X-Caller-Service). 미설정 시 None."""
+        return self._http.headers.get("X-Caller-Service")
 
     async def __aenter__(self) -> "AsyncClient":
         return self
@@ -107,6 +106,10 @@ class _AsyncCallerBoundClient:
     def __init__(self, base: "AsyncClient", caller: str) -> None:
         self._base = base
         self._caller = caller
+
+    @property
+    def caller_identity(self) -> str | None:
+        return self._caller
 
     async def get(self, path: str, **kwargs: Any) -> Any:
         kwargs.setdefault("caller", self._caller)
