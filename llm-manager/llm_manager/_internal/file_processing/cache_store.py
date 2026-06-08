@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from redis_handler import BaseJsonStore
+from redis_manager import BaseJsonStore
 
 from llm_manager._internal.handler_client.models import FileRef
 from llm_manager._internal.keying import canonicalize_llm_input, make_cache_key

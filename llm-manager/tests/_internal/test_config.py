@@ -16,16 +16,16 @@ from llm_manager._internal import _config as providers
 class TestEnsureRedisConnected:
     def test_raises_when_init_redis_returns_false(self, monkeypatch):
         """init_redis() False → RuntimeError."""
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "init_redis", lambda: False)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "init_redis", lambda: False)
 
         with pytest.raises(RuntimeError, match="Redis 연결 실패"):
             providers._ensure_redis_connected()
 
     def test_passes_when_init_redis_returns_true(self, monkeypatch):
         """init_redis() True → 정상 통과."""
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "init_redis", lambda: True)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "init_redis", lambda: True)
 
         # 예외 없이 통과
         providers._ensure_redis_connected()
@@ -78,8 +78,8 @@ class TestFlushStaleStandbys:
             "file_cache:context_cache_standby:xyz",
             "file_cache:files_api:keep",  # 본 캐시 — 보존
         )
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "get_client", lambda: client)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
 
         providers._flush_stale_standbys()
 
@@ -92,8 +92,8 @@ class TestFlushStaleStandbys:
             "agent_llm_standby:ck1",
             "agent_llm_standby:ck2",
         )
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "get_client", lambda: client)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
 
         providers._flush_stale_standbys()
 
@@ -102,8 +102,8 @@ class TestFlushStaleStandbys:
     def test_no_standbys_is_noop(self, monkeypatch):
         client = FakeRedisClient()
         client.seed("file_cache:files_api:xyz")  # 본 캐시만 존재
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "get_client", lambda: client)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
 
         providers._flush_stale_standbys()  # 아무 것도 삭제 안 함
 
@@ -111,8 +111,8 @@ class TestFlushStaleStandbys:
 
     def test_redis_unavailable_does_not_raise(self, monkeypatch):
         """get_client()가 None이어도 예외 없이 통과 (방어)."""
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "get_client", lambda: None)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "get_client", lambda: None)
 
         providers._flush_stale_standbys()  # no raise
 
@@ -124,8 +124,8 @@ class TestFlushStaleStandbys:
             "agent_llm_standby:c",
             "file_cache:files_api:keep",  # 본 캐시 보존
         )
-        import redis_handler
-        monkeypatch.setattr(redis_handler, "get_client", lambda: client)
+        import redis_manager
+        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
 
         providers._flush_stale_standbys()
 

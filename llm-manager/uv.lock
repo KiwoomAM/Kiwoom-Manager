@@ -118,7 +118,7 @@ wheels = [
 [[package]]
 name = "kiwoom-file-manager"
 version = "1.0.0"
-source = { editable = "../file-manager/sdk" }
+source = { editable = "../file-manager" }
 dependencies = [
     { name = "httpx" },
 ]
@@ -131,15 +131,15 @@ requires-dist = [
 provides-extras = ["scripts"]
 
 [[package]]
-name = "kiwoom-llm-request"
+name = "kiwoom-llm-manager"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "filetype" },
     { name = "httpx" },
     { name = "kiwoom-file-manager" },
-    { name = "kiwoom-mdb-handler" },
-    { name = "kiwoom-redis-handler" },
+    { name = "kiwoom-mdb-manager" },
+    { name = "kiwoom-redis-manager" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pymupdf" },
@@ -157,9 +157,9 @@ dev = [
 requires-dist = [
     { name = "filetype", specifier = ">=1.2.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "kiwoom-file-manager", editable = "../file-manager/sdk" },
-    { name = "kiwoom-mdb-handler", editable = "../mdb-handler/sdk" },
-    { name = "kiwoom-redis-handler", editable = "../redis-handler" },
+    { name = "kiwoom-file-manager", editable = "../file-manager" },
+    { name = "kiwoom-mdb-manager", editable = "../mdb-manager" },
+    { name = "kiwoom-redis-manager", editable = "../redis-manager" },
     { name = "pydantic", specifier = ">=2.5.0" },
     { name = "pydantic-settings", specifier = ">=2.13.1" },
     { name = "pymupdf", specifier = ">=1.24.0" },
@@ -171,9 +171,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "kiwoom-mdb-handler"
+name = "kiwoom-mdb-manager"
 version = "2.0.0"
-source = { editable = "../mdb-handler/sdk" }
+source = { editable = "../mdb-manager" }
 dependencies = [
     { name = "httpx" },
 ]
@@ -182,9 +182,9 @@ dependencies = [
 requires-dist = [{ name = "httpx", specifier = ">=0.27.0" }]
 
 [[package]]
-name = "kiwoom-redis-handler"
+name = "kiwoom-redis-manager"
 version = "2.0.0"
-source = { editable = "../redis-handler" }
+source = { editable = "../redis-manager" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "redis" },

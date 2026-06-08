@@ -7,7 +7,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from mdb_handler import MongoDBHandler
+from mdb_manager import MongoDBManager
 
 from llm_manager._internal.handler_client.models import LLMResponse
 
@@ -17,7 +17,7 @@ DEFAULT_HISTORY_DB = "kw_ai"
 
 def _get_collection(collection: str, database: str | None = None):
     db_name = database or os.getenv("MONGODB_DATABASE", DEFAULT_HISTORY_DB)
-    mdb = MongoDBHandler()
+    mdb = MongoDBManager()
     return mdb.get_database(db_name, collection)
 
 

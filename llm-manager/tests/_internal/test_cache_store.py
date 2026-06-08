@@ -111,7 +111,7 @@ class TestContextCache:
             return True
 
         monkeypatch.setattr(
-            "redis_handler.BaseJsonStore._expire", fake_expire,
+            "redis_manager.BaseJsonStore._expire", fake_expire,
         )
 
         cache_store.shrink_context_cache_ttl("hashkey_shrink", 60)

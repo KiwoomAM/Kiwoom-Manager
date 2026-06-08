@@ -5,7 +5,7 @@
 - context_cache: file_cache:context_cache_standby:{hash_key}
 - agent_llm:     agent_llm_standby:{cache_key}
 
-redis-handler v2.0.0 의 RedisHandler API 사용 (setnx / delete) — NX 폴백 차단으로
+redis-handler v2.0.0 의 RedisManager API 사용 (setnx / delete) — NX 폴백 차단으로
 분산 의미론 보호. 단 wait_for_standby_release 의 get 만 raw `get_client()` 를
 의도적으로 유지 — handler.get 의 메모리 폴백 (단절 시 silent dedup bypass) 회피.
 상세 설계: docs/cache-stampede-dedup.md, docs/15.redis-handler-v2-migration.md (§3.4)
@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from redis_handler import RedisHandler, RedisUnavailableError, get_client
+from redis_manager import RedisManager, RedisUnavailableError, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,13 @@ async def try_acquire_standby(
         False — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
 
     Raises:
-        RuntimeError: Redis 미연결 (RedisHandler 가 RedisUnavailableError raise).
+        RuntimeError: Redis 미연결 (RedisManager 가 RedisUnavailableError raise).
     """
     standby_key = _make_standby_key(prefix, key)
     value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
     try:
         return await asyncio.to_thread(
-            RedisHandler().setnx, standby_key, value, ttl=ttl_seconds,
+            RedisManager().setnx, standby_key, value, ttl=ttl_seconds,
         )
     except RedisUnavailableError as e:
         raise RuntimeError("Redis 미연결 — standby 불가") from e
@@ -87,7 +87,7 @@ async def wait_for_standby_release(
 
     엄격 의미론 채택 (docs/15.redis-handler-v2-migration.md §3.4):
     raw `get_client()` 사용. Redis 단절 시 ConnectionError 전파로 silent dedup
-    bypass 차단. RedisHandler.get 의 메모리 폴백 의도적 우회.
+    bypass 차단. RedisManager.get 의 메모리 폴백 의도적 우회.
     redis-handler 가 strict 옵션 제공 시 이 raw 사용도 마이그레이션 가능.
 
     대기 중 find_cache_fn() 주기적 호출 (sync/async 모두 허용):
@@ -150,7 +150,7 @@ async def release_standby(prefix: str, key: str) -> None:
     """
     try:
         standby_key = _make_standby_key(prefix, key)
-        await asyncio.to_thread(RedisHandler().delete, standby_key)
+        await asyncio.to_thread(RedisManager().delete, standby_key)
     except Exception:
         logger.exception(
             "standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s",

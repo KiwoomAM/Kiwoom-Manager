@@ -36,7 +36,7 @@ def _ensure_redis_connected() -> None:
     init_redis()는 실패해도 False 반환(메모리 폴백)하므로 명시적 체크 필요 —
     standby dedup은 Redis 필수, 폴백 불가.
     """
-    from redis_handler import init_redis
+    from redis_manager import init_redis
     if not init_redis():
         raise RuntimeError(
             "Redis 연결 실패 — llm-manager 를 초기화할 수 없습니다. "
@@ -46,7 +46,7 @@ def _ensure_redis_connected() -> None:
 
 def _flush_stale_standbys() -> None:
     """기동 시 이전 세션의 stale standby 키 일괄 정리 (SIGKILL 등 고아 키 제거)."""
-    from redis_handler import get_client
+    from redis_manager import get_client
     client = get_client()
     if client is None:
         return
@@ -72,8 +72,8 @@ def ensure_configured() -> None:
             return
 
         # mdb-handler — agent_llm 컬렉션은 mdb-handler ACL 상 write_caller="llm-manager".
-        # mdb_handler 는 SyncClient 생성 시점에 SERVICE_NAME env 를 읽어 X-Caller-Service
-        # 헤더에 굽으므로, MongoDBHandler 생성 **전에** "llm-manager" 로 설정해야 캐시 쓰기가
+        # mdb_manager 는 SyncClient 생성 시점에 SERVICE_NAME env 를 읽어 X-Caller-Service
+        # 헤더에 굽으므로, MongoDBManager 생성 **전에** "llm-manager" 로 설정해야 캐시 쓰기가
         # 인가된다. (서버 시절 docker-compose 의 SERVICE_NAME=llm-manager 와 동일 역할 —
         # SDK 모드에선 llm-manager 가 이 프로세스의 mdb 프록시이므로 프로세스 caller 가 된다.)
         _existing_sn = os.environ.get("SERVICE_NAME")
@@ -85,8 +85,8 @@ def ensure_configured() -> None:
             )
         os.environ["SERVICE_NAME"] = "llm-manager"
         os.environ.setdefault("MDB_HANDLER_URL", MDB_HANDLER_URL)
-        from mdb_handler import MongoDBHandler
-        MongoDBHandler.reset()
+        from mdb_manager import MongoDBManager
+        MongoDBManager.reset()
 
         # redis-handler — 연결 실패 시 초기화 중단
         os.environ.setdefault("REDIS_URL", REDIS_URL)
