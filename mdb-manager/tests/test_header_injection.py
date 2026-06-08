@@ -83,12 +83,13 @@ def test_sync_handler_succeeds_without_service_name(monkeypatch, reload_clients)
     MongoDBManager.reset()
 
 
-def test_async_handler_succeeds_without_service_name(monkeypatch, reload_clients):
+async def test_async_handler_succeeds_without_service_name(monkeypatch, reload_clients):
     monkeypatch.delenv("SERVICE_NAME", raising=False)
     from mdb_manager.aio import AsyncMongoDBManager
 
     manager = AsyncMongoDBManager()
     assert manager._client.caller_identity is None
+    await manager.aclose()
 
 
 # ---------------------------------------------------------------------------
