@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock, patch
 import fitz
 import pytest
 
-from llm_request._internal.file_processing.uploader import (
+from llm_manager._internal.file_processing.uploader import (
     create_context_cache,
     upload_pdf_parts,
 )
-from llm_request._internal.handler_client.models import CacheRef, FileRef
+from llm_manager._internal.handler_client.models import CacheRef, FileRef
 
 # ── 헬퍼 ─────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ class TestUploadPdfParts:
         _create_pdf(pdf_path, num_pages=5)
 
         with patch(
-            "llm_request._internal.file_processing.uploader.upload_file",
+            "llm_manager._internal.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -75,10 +75,10 @@ class TestUploadPdfParts:
             return _fake_file_ref(uri=f"https://example.com/files/part{call_count}")
 
         with patch(
-            "llm_request._internal.file_processing.uploader.upload_file",
+            "llm_manager._internal.file_processing.uploader.upload_file",
             side_effect=_mock_upload,
         ), patch(
-            "llm_request._internal.file_processing.splitter._MERGE_LIMIT_MB", 0,
+            "llm_manager._internal.file_processing.splitter._MERGE_LIMIT_MB", 0,
         ):
             refs = await upload_pdf_parts(pdf_path, target_mb=target_mb)
             assert len(refs) >= 2
@@ -94,7 +94,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "llm_request._internal.file_processing.uploader.upload_file",
+            "llm_manager._internal.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
@@ -115,7 +115,7 @@ class TestUploadPdfParts:
         target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
         with patch(
-            "llm_request._internal.file_processing.uploader.upload_file",
+            "llm_manager._internal.file_processing.uploader.upload_file",
             new_callable=AsyncMock,
             side_effect=RuntimeError("업로드 실패"),
         ):
@@ -135,7 +135,7 @@ class TestCreateContextCache:
     @pytest.mark.asyncio
     async def test_success(self):
         with patch(
-            "llm_request._internal.file_processing.uploader._aio_create_cache",
+            "llm_manager._internal.file_processing.uploader._aio_create_cache",
             new_callable=AsyncMock,
             return_value=_fake_cache_ref(),
         ) as mock:
@@ -162,7 +162,7 @@ class TestCreateContextCache:
             return _fake_cache_ref()
 
         with patch(
-            "llm_request._internal.file_processing.uploader._aio_create_cache",
+            "llm_manager._internal.file_processing.uploader._aio_create_cache",
             side_effect=_flaky,
         ):
             ref = await create_context_cache(
@@ -175,7 +175,7 @@ class TestCreateContextCache:
     async def test_no_retry_on_non_retryable(self):
         """retryable이 아닌 에러는 즉시 raise."""
         with patch(
-            "llm_request._internal.file_processing.uploader._aio_create_cache",
+            "llm_manager._internal.file_processing.uploader._aio_create_cache",
             new_callable=AsyncMock,
             side_effect=ValueError("잘못된 입력"),
         ):
@@ -186,7 +186,7 @@ class TestCreateContextCache:
 
     @pytest.mark.asyncio
     async def test_tools_and_tool_config_passed_to_aio_create_cache(self):
-        """Critical 회귀 방지: tools/tool_config 가 llm_request._internal.handler_client 까지 전달되는지.
+        """Critical 회귀 방지: tools/tool_config 가 llm_manager._internal.handler_client 까지 전달되는지.
 
         이전 버그: uploader 가 tools/tool_config 를 받지도 않아 request 의 tools 가
         cache 에 반영되지 않은 채 runner 가 'cache 에 있다' 가정으로 pop → silent drop.
@@ -198,7 +198,7 @@ class TestCreateContextCache:
             return _fake_cache_ref()
 
         with patch(
-            "llm_request._internal.file_processing.uploader._aio_create_cache",
+            "llm_manager._internal.file_processing.uploader._aio_create_cache",
             side_effect=_capture,
         ):
             await create_context_cache(
@@ -212,7 +212,7 @@ class TestCreateContextCache:
 
         assert captured["tools"] == [{"name": "calculator"}]
         assert captured["tool_config"] == "auto"
-        # llm_request._internal.handler_client.aio.create_cache 는 system_instruction 이 아닌 system 키 사용
+        # llm_manager._internal.handler_client.aio.create_cache 는 system_instruction 이 아닌 system 키 사용
         assert captured["system"] == "sys"
         assert captured["ttl"] == 600
 
@@ -226,7 +226,7 @@ class TestCreateContextCache:
             return _fake_cache_ref()
 
         with patch(
-            "llm_request._internal.file_processing.uploader._aio_create_cache",
+            "llm_manager._internal.file_processing.uploader._aio_create_cache",
             side_effect=_capture,
         ):
             await create_context_cache(

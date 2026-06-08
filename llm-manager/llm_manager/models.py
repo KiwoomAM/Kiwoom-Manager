@@ -1,4 +1,4 @@
-"""llm-request 공개/내부 공용 모델.
+"""llm-manager 공개/내부 공용 모델.
 
 서버 시절 sdk/llm_request/models.py + service/app/models/requests.py 로 나뉘어
 중복 유지하던 정의를 단일 모듈로 통합. 공개 표면은 `__init__.py` 의 re-export +
@@ -16,8 +16,8 @@ __all__ = [
     "FileInput",
     "FileKeyingMeta",
     "StoredFile",
-    "RequestMeta",
-    "RequestResult",
+    "ResponseMeta",
+    "ResponseResult",
     "DoneCheckResult",
     "ExpireResult",
     "ExpireFailure",
@@ -81,7 +81,7 @@ class StoredFile(BaseModel):
     extension: str
 
 
-class RequestMeta(BaseModel):
+class ResponseMeta(BaseModel):
     """llm_request_async 반환 meta 객체."""
 
     source: str
@@ -94,7 +94,7 @@ class RequestMeta(BaseModel):
     context_cache_id: str | None = None
 
 
-class RequestResult(TypedDict):
+class ResponseResult(TypedDict):
     """raw (result, meta) dict 쌍."""
 
     result: dict[str, Any]

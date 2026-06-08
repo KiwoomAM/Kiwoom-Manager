@@ -6,8 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from llm_request._internal.keying import canonicalize_input, make_cache_key
-from llm_request._internal.store import cache_get
+from llm_manager._internal.keying import canonicalize_input, make_cache_key
+from llm_manager._internal.store import cache_get
 
 logger = logging.getLogger(__name__)
 

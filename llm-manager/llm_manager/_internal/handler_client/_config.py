@@ -36,7 +36,7 @@ def get_settings() -> SDKSettings:
     """SDK 설정을 **첫 사용 시점**에 1회 로드한다 (import 시점 동결 방지).
 
     모듈 import 시점에 인스턴스화하면 `handler_url` 이 그 순간의 env 로 굳는다.
-    소비자(llm-request 등)는 import 이후 `LLM_HANDLER_URL` 을 세팅하는 경우가 있어,
+    소비자(llm-manager 등)는 import 이후 `LLM_HANDLER_URL` 을 세팅하는 경우가 있어,
     client 를 처음 만드는 시점에 읽어야 그 값을 반영한다. `_get_client()` 의
     `_instance is None` 싱글턴과 동일한 lazy 패턴.
     """

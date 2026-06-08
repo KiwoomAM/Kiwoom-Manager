@@ -1,12 +1,12 @@
 [project]
-name = "kiwoom-llm-request"
+name = "kiwoom-llm-manager"
 version = "0.3.0"
-description = "LLM Request SDK - LLM 응답 캐싱 manager (순수 SDK)"
+description = "LLM Manager SDK - LLM 응답 캐싱 manager (순수 SDK)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     # llm-handler SDK 를 흡수 — handler 는 서버(부하 관리·로깅·네트워크)만 담당하고,
-    # 클라이언트 SDK(llm_handler) 는 manager 인 llm-request 가 직접 보유한다.
+    # 클라이언트 SDK(llm_handler) 는 manager 인 llm-manager 가 직접 보유한다.
     "kiwoom-mdb-handler>=2.0.0",
     "kiwoom-redis-handler>=2.0.0",
     "kiwoom-file-manager>=0.1.0",
@@ -30,8 +30,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-# handler 클라이언트는 llm_request._internal.handler_client 로 내부화 — llm_request* 에 포함됨.
-include = ["llm_request*"]
+# handler 클라이언트는 llm_manager._internal.handler_client 로 내부화 — llm_manager* 에 포함됨.
+include = ["llm_manager*"]
 
 # 핸들러 로컬 editable 경로. llm-handler SDK 는 흡수되어 더 이상 외부 의존 아님.
 [tool.uv.sources]

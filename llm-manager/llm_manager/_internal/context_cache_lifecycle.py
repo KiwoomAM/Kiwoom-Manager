@@ -12,10 +12,10 @@ import asyncio
 import logging
 from typing import Literal, TypedDict
 
-from llm_request._internal.file_processing import cache_store
-from llm_request._internal.gemini_errors import is_gemini_404
-from llm_request._internal.handler_client import aio as llm_aio
-from llm_request.models import ExpireFailure, ExpireResult
+from llm_manager._internal.file_processing import cache_store
+from llm_manager._internal.gemini_errors import is_gemini_404
+from llm_manager._internal.handler_client import aio as llm_aio
+from llm_manager.models import ExpireFailure, ExpireResult
 
 logger = logging.getLogger(__name__)
 

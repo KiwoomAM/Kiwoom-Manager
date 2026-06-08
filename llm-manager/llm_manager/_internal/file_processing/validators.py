@@ -8,8 +8,8 @@ runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast�
 
 from __future__ import annotations
 
-from llm_request.exceptions import FileTooLargeError, UnsupportedFileTypeError
-from llm_request.models import FileInput
+from llm_manager.exceptions import FileTooLargeError, UnsupportedFileTypeError
+from llm_manager.models import FileInput
 
 # ── mime 화이트리스트 ────────────────────────────────────────
 

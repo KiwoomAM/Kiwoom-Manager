@@ -1,14 +1,14 @@
 """_config.get_settings() lazy 로딩 검증.
 
 handler_url 은 모듈 import 시점이 아니라 **첫 사용 시점**에 env 를 읽어야 한다.
-소비자(llm-request 등)가 import 이후 LLM_HANDLER_URL 을 세팅하는 경우를 위해서다.
+소비자(llm-manager 등)가 import 이후 LLM_HANDLER_URL 을 세팅하는 경우를 위해서다.
 """
 
 from __future__ import annotations
 
 import pytest
 
-import llm_request._internal.handler_client._config as cfg
+import llm_manager._internal.handler_client._config as cfg
 
 
 @pytest.fixture(autouse=True)

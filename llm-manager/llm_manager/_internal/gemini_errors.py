@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_request._internal.handler_client.exceptions import HandlerError
+from llm_manager._internal.handler_client.exceptions import HandlerError
 
 
 def is_gemini_404(exc: Exception) -> bool:

@@ -1,8 +1,8 @@
 # LLM Handler Usage
 
 > ⚠️ **클라이언트 SDK 이관됨 (ISSUE #656):** 이 문서의 `llm_handler` / `llm_handler.aio` 클라이언트는
-> manager(llm-request)로 흡수되어 `llm_request._internal.handler_client` 가 됐다. 실제 사용은
-> `from llm_request import call, stream, embed, session` / `from llm_request.aio import ...` 로 한다.
+> manager(llm-manager)로 흡수되어 `llm_manager._internal.handler_client` 가 됐다. 실제 사용은
+> `from llm_manager import call, stream, embed, session` / `from llm_manager.aio import ...` 로 한다.
 > 아래 예시의 호출 시그니처·와이어 동작은 그대로 유효(이 서버가 구현하는 계약)하지만 import 경로만 다르다.
 > llm-handler 패키지는 이제 **Service(서버)만** 제공한다.
 
@@ -10,7 +10,7 @@
 
 ## 설치 및 설정
 
-클라이언트 SDK 는 llm-request 에 포함된다 (`kiwoom-llm-handler` SDK 패키지는 없어졌고 `llm_request._internal.handler_client` 로 이관됨).
+클라이언트 SDK 는 llm-manager 에 포함된다 (`kiwoom-llm-handler` SDK 패키지는 없어졌고 `llm_manager._internal.handler_client` 로 이관됨).
 
 **Docker 환경 (권장):**
 
@@ -18,7 +18,7 @@
 RUN GITHUB_TOKEN=$(cat /tmp/github_token) && \
     REPO="git+https://x-access-token:${GITHUB_TOKEN}@github.com/KIWOOMxSNU/Kiwoom-Rag.git@main" && \
     pip install --no-cache-dir \
-        "kiwoom-llm-request @ ${REPO}#subdirectory=packages/llm-request" && \
+        "kiwoom-llm-manager @ ${REPO}#subdirectory=packages/llm-manager" && \
     rm -f /tmp/github_token
 ```
 
@@ -26,11 +26,11 @@ RUN GITHUB_TOKEN=$(cat /tmp/github_token) && \
 
 ```bash
 # Kiwoom-Rag 레포 클론 후
-pip install -e packages/llm-request
+pip install -e packages/llm-manager
 ```
 
 ```python
-from llm_request import call, stream, embed, session
+from llm_manager import call, stream, embed, session
 
 # Handler URL — 환경변수로 지정 (기본 localhost:8100). 사내 서버면:
 # export LLM_HANDLER_URL=http://192.7.9.45:8100

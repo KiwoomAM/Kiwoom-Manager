@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from llm_request._internal.file_processing.validators import (
+from llm_manager._internal.file_processing.validators import (
     MAX_FILE_SIZE,
     SUPPORTED_MIME_TYPES,
     validate_file_sizes,
     validate_mime_types,
 )
-from llm_request.exceptions import FileTooLargeError, UnsupportedFileTypeError
-from llm_request.models import FileInput
+from llm_manager.exceptions import FileTooLargeError, UnsupportedFileTypeError
+from llm_manager.models import FileInput
 
 
 def _file(

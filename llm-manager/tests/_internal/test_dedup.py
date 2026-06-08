@@ -13,8 +13,8 @@ import asyncio
 
 import pytest
 
-from llm_request._internal.file_processing import dedup
-from llm_request._internal.file_processing.dedup import (
+from llm_manager._internal.file_processing import dedup
+from llm_manager._internal.file_processing.dedup import (
     _make_standby_key,
     release_standby,
     try_acquire_standby,

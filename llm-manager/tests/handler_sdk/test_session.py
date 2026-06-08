@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
-import llm_request._internal.handler_client
+import llm_manager._internal.handler_client
 
 
 def _mock_response(status_code: int = 200, json_data: dict | None = None) -> httpx.Response:
@@ -27,11 +27,11 @@ def test_session_multiturn():
             {"text": "두 번째 응답", "model": "gemini-3-flash-preview", "finish_reason": "STOP", "request_id": "s2"},
         ),
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session(system="한국어")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session(system="한국어")
         r1 = s.call("안녕")
         assert r1.text == "첫 번째 응답"
         r2 = s.call("이어서 대화")
@@ -58,11 +58,11 @@ def test_session_invalid_response_excluded_from_curated():
             {"text": "정상 응답", "model": "gemini-3-flash-preview", "finish_reason": "STOP", "request_id": "s-valid"},
         ),
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("첫 번째")
         s.call("두 번째")
     second_call_body = instance.request.call_args_list[1].kwargs["json"]
@@ -75,7 +75,7 @@ def test_session_invalid_response_excluded_from_curated():
 
 def test_session_safety_finish_reason_is_invalid():
     """finish_reason=SAFETY -> curated에서 제외."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(
             200,
@@ -86,8 +86,8 @@ def test_session_safety_finish_reason_is_invalid():
                 "request_id": "s-safety",
             },
         )
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("test")
     assert len(s.get_history()) == 0  # curated에 없음 (SAFETY)
     assert len(s.get_full_history()) == 2  # comprehensive에 있음
@@ -95,7 +95,7 @@ def test_session_safety_finish_reason_is_invalid():
 
 def test_session_whitespace_response_is_invalid():
     """공백만 있는 응답도 무효 처리."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(
             200,
@@ -106,8 +106,8 @@ def test_session_whitespace_response_is_invalid():
                 "request_id": "s-ws",
             },
         )
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("test")
     assert len(s.get_history()) == 0
     assert len(s.get_full_history()) == 2
@@ -115,7 +115,7 @@ def test_session_whitespace_response_is_invalid():
 
 def test_session_system_instruction():
     """session -- system이 매 요청에 전달."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(
             200,
@@ -126,8 +126,8 @@ def test_session_system_instruction():
                 "request_id": "s3",
             },
         )
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session(system="금융 분석가", model="gemini-3-pro-preview")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session(system="금융 분석가", model="gemini-3-pro-preview")
         s.call("분석해줘")
     body = instance.request.call_args.kwargs["json"]
     assert body["system_instruction"] == "금융 분석가"
@@ -136,7 +136,7 @@ def test_session_system_instruction():
 
 def test_session_get_history():
     """session.get_history() -- curated 이력 조회."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(
             200,
@@ -147,8 +147,8 @@ def test_session_get_history():
                 "request_id": "s4",
             },
         )
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         assert s.get_history() == []
         s.call("안녕")
         history = s.get_history()
@@ -159,7 +159,7 @@ def test_session_get_history():
 
 def test_session_clear():
     """session.clear() -- 양쪽 이력 모두 초기화."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(
             200,
@@ -170,8 +170,8 @@ def test_session_clear():
                 "request_id": "s5",
             },
         )
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("안녕")
         assert len(s.get_history()) == 2
         assert len(s.get_full_history()) == 2
@@ -196,11 +196,11 @@ def test_session_recovery_after_invalid():
             {"text": "정상3", "model": "gemini-3-flash-preview", "finish_reason": "STOP", "request_id": "r3"},
         ),
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("첫 번째")
         s.call("두 번째")
         s.call("세 번째")
@@ -246,11 +246,11 @@ def test_session_round_trip_appends_assistant_message():
             {"text": "87,500원", "model": "gemini-3-flash-preview", "finish_reason": "STOP", "request_id": "s2"},
         ),
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("삼성전자 주가 알려줘")
         s.call("계속")
     second_body = instance.request.call_args_list[1].kwargs["json"]
@@ -303,11 +303,11 @@ def test_session_send_tool_results():
             },
         }
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         r1 = s.call("주가 알려줘", tools=tools)
         assert r1.function_calls is not None
         # Turn 2 — tools 같은 정의 다시 전달 (안전망 통과)
@@ -365,11 +365,11 @@ def test_session_send_tool_results_without_tools_raises():
             "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
         }
     ]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = responses
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("주가 알려줘", tools=tools)
         with pytest.raises(ValueError, match="`tools=` 가 필요합니다"):
             s.send_tool_results([("fc_abc", "get_stock_price", {"price_krw": 87500})])  # tools 누락
@@ -437,11 +437,11 @@ def test_session_stream_records_assistant_message_with_ts():
         "",
     ]
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _MockStreamResponse(sse_lines)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         list(s.stream("주가 알려줘"))
 
         history = s.get_history()
@@ -502,12 +502,12 @@ def test_session_stream_then_send_tool_results_wires_ts():
         }
     ]
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _MockStreamResponse(stream_sse)
         instance.request.return_value = turn2_response
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         list(s.stream("서울 날씨", tools=tools))
         r2 = s.send_tool_results([("fc_w", "get_weather", {"weather": "sunny"})], tools=tools)
         assert r2.text == "맑음"
@@ -535,11 +535,11 @@ def test_session_stream_backwards_compat_no_assistant_message_in_done():
         "",
     ]
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _MockStreamResponse(sse_lines)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         list(s.stream("hi"))
 
         history = s.get_history()
@@ -600,18 +600,18 @@ def test_session_send_tool_results_rollback_on_handler_error():
     """
     import pytest
 
-    from llm_request._internal.handler_client.exceptions import HandlerError
+    from llm_manager._internal.handler_client.exceptions import HandlerError
 
     tools = _tools_def()
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         # Turn 1 정상, Turn 2 (send_tool_results) 에서 502 provider error
         instance.request.side_effect = [
             _turn1_response_with_fc(),
             _mock_response(502, {"error": "Gemini 빈 응답", "error_type": "provider"}),
         ]
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("주가 알려줘", tools=tools)  # Turn 1 — history 에 user + model_msg(fc) 누적
 
         history_before = s.get_history()
@@ -629,7 +629,7 @@ def test_session_send_tool_results_rollback_on_handler_error():
 def test_session_send_tool_results_retry_after_rollback_succeeds():
     """1차 호출이 실패 → rollback → 같은 results 로 재시도 시 깨끗한 history 로 정상 완료."""
     tools = _tools_def()
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = [
             _turn1_response_with_fc(),
@@ -641,8 +641,8 @@ def test_session_send_tool_results_retry_after_rollback_succeeds():
                 {"text": "87,500원", "model": "gemini-3-flash-preview", "finish_reason": "STOP", "request_id": "s2"},
             ),
         ]
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("주가 알려줘", tools=tools)
 
         # 1차 — 실패
@@ -666,12 +666,12 @@ def test_session_send_tool_results_rollback_on_keyboard_interrupt():
     import pytest
 
     tools = _tools_def()
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         # side_effect 리스트에 예외 인스턴스를 두면 해당 호출 시점에 raise — 함수 객체를 두면 안 됨
         instance.request.side_effect = [_turn1_response_with_fc(), KeyboardInterrupt()]
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.session()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.session()
         s.call("주가 알려줘", tools=tools)
 
         history_before = s.get_history()

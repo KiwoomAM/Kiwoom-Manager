@@ -1,4 +1,4 @@
-"""llm_request/models.py — 입력 모델 검증 (StoredFile / FileInput)."""
+"""llm_manager/models.py — 입력 모델 검증 (StoredFile / FileInput)."""
 from __future__ import annotations
 
 import pytest
@@ -9,7 +9,7 @@ class TestStoredFile:
     """StoredFile — file-manager 에 등록된 파일 참조 모델 (6 필드)."""
 
     def test_accepts_6_required_fields(self):
-        from llm_request.models import StoredFile
+        from llm_manager.models import StoredFile
 
         sf = StoredFile(
             file_path="abc.pdf",
@@ -24,7 +24,7 @@ class TestStoredFile:
 
     def test_extra_keys_forbid_raises(self):
         """P2-4: extra='forbid' 라 server-fill 필드 (resolved_via 등) 는 ValidationError."""
-        from llm_request.models import StoredFile
+        from llm_manager.models import StoredFile
 
         with pytest.raises(ValidationError):
             StoredFile(
@@ -42,7 +42,7 @@ class TestFileInputResolvedVia:
     """FileInput.resolved_via — fetch 경로 추적 필드 (내부 타입)."""
 
     def test_default_none(self):
-        from llm_request.models import FileInput
+        from llm_manager.models import FileInput
 
         fi = FileInput(
             file_name="x.pdf", file_size=1, file_mtime=0,
@@ -53,7 +53,7 @@ class TestFileInputResolvedVia:
 
     def test_accepts_primary_fallback(self):
         """resolved_via 가 'primary' / 'fallback' 받음."""
-        from llm_request.models import FileInput
+        from llm_manager.models import FileInput
 
         for value in ("primary", "fallback"):
             fi = FileInput(
@@ -68,7 +68,7 @@ class TestFileInputDataDefault:
     """FileInput.data default b'' (lazy fetch 전제)."""
 
     def test_data_default_is_empty_bytes(self):
-        from llm_request.models import FileInput
+        from llm_manager.models import FileInput
 
         fi = FileInput(
             file_name="x.pdf", file_size=1, file_mtime=0,

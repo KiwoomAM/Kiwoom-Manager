@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-import llm_request._internal.handler_client
-import llm_request._internal.handler_client.aio
-from llm_request._internal.handler_client.exceptions import HandlerError
+import llm_manager._internal.handler_client
+import llm_manager._internal.handler_client.aio
+from llm_manager._internal.handler_client.exceptions import HandlerError
 
 
 def _mock_response(status_code: int = 200, json_data: dict | None = None) -> httpx.Response:
@@ -44,11 +44,11 @@ _BATCH_EMBED_RESPONSE = {
 
 def test_embed_single_text():
     """단일 텍스트 임베딩."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(200, _EMBED_RESPONSE)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.embed("hello world")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.embed("hello world")
 
     assert len(result.embeddings) == 1
     assert result.embeddings[0].values == [0.1, 0.2, 0.3]
@@ -62,11 +62,11 @@ def test_embed_single_text():
 
 def test_embed_batch():
     """배치 텍스트 임베딩."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(200, _BATCH_EMBED_RESPONSE)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.embed(["text1", "text2"])
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.embed(["text1", "text2"])
 
     assert len(result.embeddings) == 2
     body = instance.request.call_args.kwargs["json"]
@@ -75,11 +75,11 @@ def test_embed_batch():
 
 def test_embed_with_options():
     """모든 옵션 전달."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(200, _EMBED_RESPONSE)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.embed(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.embed(
             "query text",
             model="gemini-embedding-001",
             task_type="RETRIEVAL_QUERY",
@@ -94,11 +94,11 @@ def test_embed_with_options():
 
 def test_embed_with_title():
     """title 파라미터 전달."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(200, _EMBED_RESPONSE)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.embed(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.embed(
             "document content",
             task_type="RETRIEVAL_DOCUMENT",
             title="My Document",
@@ -111,11 +111,11 @@ def test_embed_with_title():
 
 def test_embed_none_options_excluded():
     """None인 옵션은 body에서 제외."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(200, _EMBED_RESPONSE)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.embed("text")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.embed("text")
 
     body = instance.request.call_args.kwargs["json"]
     assert "model" not in body
@@ -126,12 +126,12 @@ def test_embed_none_options_excluded():
 
 def test_embed_handler_error():
     """Handler 에러 전파."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_cls:
         instance = mock_cls.return_value
         instance.request.return_value = _mock_response(429, {"error": "rate limit"})
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
         with pytest.raises(HandlerError) as exc_info:
-            llm_request._internal.handler_client.embed("test")
+            llm_manager._internal.handler_client.embed("test")
     assert exc_info.value.status_code == 429
 
 
@@ -141,11 +141,11 @@ def test_embed_handler_error():
 @pytest.mark.asyncio
 async def test_async_embed_single_text():
     """비동기 단일 텍스트 임베딩."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_cls:
         instance = mock_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _EMBED_RESPONSE))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.embed("hello world")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.embed("hello world")
 
     assert len(result.embeddings) == 1
     assert result.embeddings[0].values == [0.1, 0.2, 0.3]
@@ -154,10 +154,10 @@ async def test_async_embed_single_text():
 @pytest.mark.asyncio
 async def test_async_embed_batch():
     """비동기 배치 텍스트 임베딩."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_cls:
         instance = mock_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _BATCH_EMBED_RESPONSE))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.embed(["text1", "text2"])
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.embed(["text1", "text2"])
 
     assert len(result.embeddings) == 2

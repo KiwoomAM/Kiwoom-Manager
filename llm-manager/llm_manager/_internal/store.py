@@ -9,7 +9,7 @@ from typing import Any
 
 from mdb_handler import MongoDBHandler
 
-from llm_request._internal.handler_client.models import LLMResponse
+from llm_manager._internal.handler_client.models import LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def fetch_by_cache_key(
         KeyError: cache_key에 해당하는 문서가 없을 때.
         ValueError: result 역직렬화 실패 시.
     """
-    from llm_request._internal.done_check import DEFAULT_COLLECTION
+    from llm_manager._internal.done_check import DEFAULT_COLLECTION
 
     doc = cache_get(cache_key, DEFAULT_COLLECTION, database=database)
 

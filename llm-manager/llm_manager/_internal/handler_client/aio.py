@@ -1,9 +1,9 @@
-"""handler_client.aio — handler 서버 비동기 클라이언트 (llm_request 내부).
+"""handler_client.aio — handler 서버 비동기 클라이언트 (llm_manager 내부).
 
-공개 표면은 `llm_request.aio` 가 큐레이션한다 (생성 primitive 만 노출).
+공개 표면은 `llm_manager.aio` 가 큐레이션한다 (생성 primitive 만 노출).
 
 사용법(공개 경로):
-    from llm_request.aio import call, stream, Part
+    from llm_manager.aio import call, stream, Part
 
     response = await call("안녕하세요")
     print(response.text)

@@ -8,23 +8,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from llm_request._internal.done_check import DoneCheckResult, done_check
-from llm_request._internal.file_processing import (
+from llm_manager._internal.done_check import DoneCheckResult, done_check
+from llm_manager._internal.file_processing import (
     ResolvedFiles,
     dedup,
     resolve_files,
     resolve_files_after_404,
 )
-from llm_request._internal.gemini_errors import is_gemini_404
-from llm_request._internal.handler_client.aio import call as aio_call
-from llm_request._internal.handler_client.aio import last_assistant_message
-from llm_request._internal.handler_client.aio import stream as aio_stream
-from llm_request._internal.handler_client.models import Content, LLMResponse, StreamChunk
-from llm_request._internal.keying import make_file_checksum
-from llm_request._internal.meta import build_meta
-from llm_request._internal.store import cache_get, save_result
-from llm_request._internal.stored_file_resolver import resolve_stored_files
-from llm_request.models import FileInput, StoredFile
+from llm_manager._internal.gemini_errors import is_gemini_404
+from llm_manager._internal.handler_client.aio import call as aio_call
+from llm_manager._internal.handler_client.aio import last_assistant_message
+from llm_manager._internal.handler_client.aio import stream as aio_stream
+from llm_manager._internal.handler_client.models import Content, LLMResponse, StreamChunk
+from llm_manager._internal.keying import make_file_checksum
+from llm_manager._internal.meta import build_meta
+from llm_manager._internal.store import cache_get, save_result
+from llm_manager._internal.stored_file_resolver import resolve_stored_files
+from llm_manager.models import FileInput, StoredFile
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ def _finalize_stream(
     """Stream 완료 후 handler done event 의 assistant_message 로 MDB 저장.
 
     handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로,
-    llm-request 는 chunk 별 누적 없이 그대로 받아 저장한다 (PR #593 review §2).
+    llm-manager 는 chunk 별 누적 없이 그대로 받아 저장한다 (PR #593 review §2).
     """
     if not prep.save_mode or prep.dc is None:
         return

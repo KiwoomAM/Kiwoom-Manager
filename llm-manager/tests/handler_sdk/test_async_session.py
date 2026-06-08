@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-import llm_request._internal.handler_client.aio
+import llm_manager._internal.handler_client.aio
 
 
 def _mock_response(status_code: int = 200, json_data: dict | None = None) -> httpx.Response:
@@ -40,11 +40,11 @@ async def test_async_session_multiturn():
             },
         ),
     ]
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(side_effect=responses)
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session(system="한국어")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session(system="한국어")
         r1 = await s.call("안녕")
         assert r1.text == "비동기 첫 번째"
         r2 = await s.call("이어서")
@@ -76,11 +76,11 @@ async def test_async_session_invalid_excluded():
             },
         ),
     ]
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(side_effect=responses)
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         await s.call("첫 번째")
         await s.call("두 번째")
     second_body = instance.request.call_args_list[1].kwargs["json"]
@@ -92,7 +92,7 @@ async def test_async_session_invalid_excluded():
 @pytest.mark.asyncio
 async def test_async_session_safety_finish_reason_excluded():
     """finish_reason=SAFETY -> curated에서 제외."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(
             return_value=_mock_response(
@@ -105,8 +105,8 @@ async def test_async_session_safety_finish_reason_excluded():
                 },
             )
         )
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         await s.call("test")
     assert len(s.get_history()) == 0
     assert len(s.get_full_history()) == 2
@@ -115,7 +115,7 @@ async def test_async_session_safety_finish_reason_excluded():
 @pytest.mark.asyncio
 async def test_async_session_clear():
     """session.clear() -- 양쪽 이력 모두 초기화."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(
             return_value=_mock_response(
@@ -128,8 +128,8 @@ async def test_async_session_clear():
                 },
             )
         )
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         await s.call("안녕")
         assert len(s.get_history()) == 2
         s.clear()
@@ -194,11 +194,11 @@ async def test_async_session_stream_records_assistant_message_with_ts():
         f"data: {_json.dumps(done, ensure_ascii=False)}",
         "",
     ]
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream = _make_async_stream_mock(sse_lines)
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         async for _ in s.stream("ping"):
             pass
 
@@ -222,11 +222,11 @@ async def test_async_session_stream_backwards_compat_no_assistant_message_in_don
         f"data: {_json.dumps(done)}",
         "",
     ]
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream = _make_async_stream_mock(sse_lines)
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         async for _ in s.stream("hi"):
             pass
 
@@ -281,10 +281,10 @@ def _async_tools_def() -> list[dict]:
 @pytest.mark.asyncio
 async def test_async_session_send_tool_results_rollback_on_handler_error():
     """async client.call 실패 시 tool_msg history rollback (sync 와 동일 invariant)."""
-    from llm_request._internal.handler_client.exceptions import HandlerError
+    from llm_manager._internal.handler_client.exceptions import HandlerError
 
     tools = _async_tools_def()
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(
             side_effect=[
@@ -292,8 +292,8 @@ async def test_async_session_send_tool_results_rollback_on_handler_error():
                 _mock_response(502, {"error": "Gemini 빈 응답", "error_type": "provider"}),
             ]
         )
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         await s.call("주가 알려줘", tools=tools)
 
         history_before = s.get_history()
@@ -313,7 +313,7 @@ async def test_async_session_send_tool_results_rollback_on_cancellation():
     import asyncio
 
     tools = _async_tools_def()
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
 
         async def _raise_cancel(*args, **kwargs):
@@ -325,8 +325,8 @@ async def test_async_session_send_tool_results_rollback_on_cancellation():
         # 위는 first call 만 정상 응답; 두 번째 request 에서 CancelledError 발생하도록 별도 mock
         instance.request.side_effect = [_async_turn1_response_with_fc(), asyncio.CancelledError()]
 
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        s = llm_request._internal.handler_client.aio.session()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        s = llm_manager._internal.handler_client.aio.session()
         await s.call("주가 알려줘", tools=tools)
 
         history_before = s.get_history()

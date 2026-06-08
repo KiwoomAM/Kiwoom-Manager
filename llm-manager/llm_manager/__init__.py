@@ -1,4 +1,4 @@
-"""llm-request SDK — LLM 응답 캐싱 manager (순수 SDK, 서버 없음).
+"""llm-manager SDK — LLM 응답 캐싱 manager (순수 SDK, 서버 없음).
 
 handler(mdb·redis·llm·file)들을 조합해 LLM 응답을 캐싱하는 manager. 과거에는
 별도 FastAPI 서버(service/)를 httpx 로 호출했으나, 이제 로직을 `_internal/` 로
@@ -7,7 +7,7 @@ handler(mdb·redis·llm·file)들을 조합해 LLM 응답을 캐싱하는 manage
 사용법:
     from pathlib import Path
     from file_manager import FileManagerHandler
-    from llm_request import llm_request_async, StoredFile
+    from llm_manager import llm_request_async, StoredFile
 
     fm = FileManagerHandler()
     p = Path("report.pdf")
@@ -32,18 +32,18 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, TypedDict
 
-from llm_request import aio as aio  # noqa: PLC0414  (llm_request.aio 서브모듈 노출)
-from llm_request._internal import runner
-from llm_request._internal._config import ensure_configured
-from llm_request._internal.context_cache_lifecycle import expire_caches
-from llm_request._internal.done_check import done_check as _done_check
+from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
+from llm_manager._internal import runner
+from llm_manager._internal._config import ensure_configured
+from llm_manager._internal.context_cache_lifecycle import expire_caches
+from llm_manager._internal.done_check import done_check as _done_check
 
-# handler_client(흡수한 HTTP 클라이언트)는 llm_request 내부. 공개 표면은 매니저가 큐레이션한다:
+# handler_client(흡수한 HTTP 클라이언트)는 llm_manager 내부. 공개 표면은 매니저가 큐레이션한다:
 #   - 생성 primitive (매니저가 캐싱 의견 없음): call/stream/embed/session
 #   - 모델·타입·예외 (항상 공개)
 # 캐시/파일 생명주기 ops (create_cache/upload_file/configure 등)는 매니저의 결정 역할이라
 # 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 됨.
-from llm_request._internal.handler_client import (
+from llm_manager._internal.handler_client import (
     CacheRef,
     ContentsType,
     EmbeddingStatistics,
@@ -63,30 +63,30 @@ from llm_request._internal.handler_client import (
     session,
     stream,
 )
-from llm_request._internal.keying import make_file_checksum
-from llm_request._internal.store import fetch_by_cache_key as _fetch_by_cache_key
-from llm_request.exceptions import (
+from llm_manager._internal.keying import make_file_checksum
+from llm_manager._internal.store import fetch_by_cache_key as _fetch_by_cache_key
+from llm_manager.exceptions import (
     CacheError,
     CacheKeyNotFoundError,
     FileResolveError,
     FileTooLargeError,
     FileUploadError,
-    LLMRequestError,
+    LLMManagerError,
     UnsupportedFileTypeError,
     ValidationError,
 )
-from llm_request.models import (
+from llm_manager.models import (
     DoneCheckResult,
     ExpireFailure,
     ExpireResult,
     FileKeyingMeta,
-    RequestMeta,
-    RequestResult,
+    ResponseMeta,
+    ResponseResult,
     StoredFile,
 )
 
 __all__ = [
-    # llm_request 자체 API
+    # llm_manager 자체 API
     "llm_request_async",
     "llm_request",
     "llm_request_stream_async",
@@ -100,13 +100,13 @@ __all__ = [
     # 공개 타입
     "FileKeyingMeta",
     "StoredFile",
-    "RequestMeta",
-    "RequestResult",
+    "ResponseMeta",
+    "ResponseResult",
     "DoneCheckResult",
     "ExpireResult",
     "ExpireFailure",
     # 공개 예외
-    "LLMRequestError",
+    "LLMManagerError",
     "CacheError",
     "FileUploadError",
     "ValidationError",
@@ -114,7 +114,7 @@ __all__ = [
     "FileTooLargeError",
     "CacheKeyNotFoundError",
     "FileResolveError",
-    # 비동기 표면 (llm_request.aio)
+    # 비동기 표면 (llm_manager.aio)
     "aio",
     # handler 생성 primitive 재노출 (매니저가 캐싱 의견 없는 stateless 호출)
     "call",
@@ -144,7 +144,7 @@ async def close() -> None:
     """하위호환 no-op. (httpx 클라이언트 제거됨 — 정리할 SDK 소유 커넥션 없음.)
 
     과거엔 SDK가 소유한 httpx AsyncClient 풀을 닫았다. 이제 핸들러 호출은 각
-    handler SDK가 자체 풀을 관리하므로 llm-request 가 닫을 자원이 없다. agent
+    handler SDK가 자체 풀을 관리하므로 llm-manager 가 닫을 자원이 없다. agent
     종료 전 호출해도 안전(무동작).
     """
     return None
@@ -200,7 +200,7 @@ async def llm_request_async(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[LLMResponse, RequestMeta]:
+) -> tuple[LLMResponse, ResponseMeta]:
     """단일 LLM 요청 실행 (async).
 
     Args:
@@ -222,7 +222,7 @@ async def llm_request_async(
         standby_ttl_seconds=t["standby_ttl"],
         debug=debug,
     )
-    return response, RequestMeta(**meta)
+    return response, ResponseMeta(**meta)
 
 
 def llm_request(
@@ -234,7 +234,7 @@ def llm_request(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[LLMResponse, RequestMeta]:
+) -> tuple[LLMResponse, ResponseMeta]:
     """단일 LLM 요청 실행 (sync). llm_request_async 의 동기 래퍼."""
     return asyncio.run(llm_request_async(
         llm_input,
@@ -353,14 +353,14 @@ async def fetch_by_cache_key(
     cache_key: str,
     *,
     database: str | None = None,
-) -> tuple[LLMResponse, RequestMeta]:
+) -> tuple[LLMResponse, ResponseMeta]:
     """캐시 키로 결과 직접 조회. 없으면 CacheKeyNotFoundError."""
     await asyncio.to_thread(ensure_configured)
     try:
         response, meta = _fetch_by_cache_key(cache_key, database=database)
     except KeyError as e:
         raise CacheKeyNotFoundError(str(e)) from e
-    return response, RequestMeta(**meta)
+    return response, ResponseMeta(**meta)
 
 
 async def delete_cache_async(

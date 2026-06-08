@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-import llm_request._internal.handler_client.aio
-from llm_request._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
+import llm_manager._internal.handler_client.aio
+from llm_manager._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
 
 
 def _mock_response(status_code: int = 200, json_data: dict | list | None = None) -> httpx.Response:
@@ -29,12 +29,12 @@ async def test_async_call_success():
         "request_id": "abc",
     }
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, mock_data))
 
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.call("test")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.call("test")
 
     assert result.text == "비동기 응답"
     assert result.usage is not None
@@ -46,14 +46,14 @@ async def test_async_call_handler_error():
     """Handler 에러 → HandlerError."""
     error_data = {"error": "server error", "request_id": "xyz"}
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(500, error_data))
 
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
 
         with pytest.raises(HandlerError) as exc_info:
-            await llm_request._internal.handler_client.aio.call("test")
+            await llm_manager._internal.handler_client.aio.call("test")
 
     assert exc_info.value.status_code == 500
 
@@ -68,14 +68,14 @@ async def test_async_call_captures_wire_detail():
         "request_id": "xyz",
     }
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(500, error_data))
 
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
 
         with pytest.raises(HandlerError) as exc_info:
-            await llm_request._internal.handler_client.aio.call("test")
+            await llm_manager._internal.handler_client.aio.call("test")
 
     assert exc_info.value.error_type == "handler_internal"
     assert exc_info.value.detail == "pool_timeout"
@@ -84,14 +84,14 @@ async def test_async_call_captures_wire_detail():
 @pytest.mark.asyncio
 async def test_async_call_connection_error():
     """Handler 연결 실패 → HandlerConnectionError."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
 
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
 
         with pytest.raises(HandlerConnectionError):
-            await llm_request._internal.handler_client.aio.call("test")
+            await llm_manager._internal.handler_client.aio.call("test")
 
 
 # ── 통합 call(input=...) 테스트 ──
@@ -105,11 +105,11 @@ async def test_async_call_unified_simple():
         "model": "gemini-3-flash-preview",
         "request_id": "async-unified-1",
     }
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, mock_data))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.call("안녕하세요")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.call("안녕하세요")
     assert result.text == "비동기 통합 응답"
     body = instance.request.call_args.kwargs["json"]
     assert body["messages"] == [{"role": "user", "content": "안녕하세요"}]
@@ -123,11 +123,11 @@ async def test_async_call_unified_with_output_and_history():
         "model": "gemini-3-flash-preview",
         "request_id": "async-unified-2",
     }
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, mock_data))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.call(
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.call(
             "결론은?",
             output="json",
             history=[{"role": "user", "content": "이전 질문"}],
@@ -156,11 +156,11 @@ def _file_json(**overrides: object) -> dict:
 
 @pytest.mark.asyncio
 async def test_async_delete_file():
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, {"status": "deleted"}))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        await llm_request._internal.handler_client.aio.delete_file("files/abc123")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        await llm_manager._internal.handler_client.aio.delete_file("files/abc123")
     instance.request.assert_called_once()
 
 
@@ -168,20 +168,20 @@ async def test_async_delete_file():
 async def test_async_delete_file_404_idempotent():
     """404 → 예외 없이 정상 반환."""
     error_data = {"error": "not found", "error_type": "provider"}
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(404, error_data))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        await llm_request._internal.handler_client.aio.delete_file("files/gone")  # 예외 발생 안 함
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        await llm_manager._internal.handler_client.aio.delete_file("files/gone")  # 예외 발생 안 함
 
 
 @pytest.mark.asyncio
 async def test_async_get_file():
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _file_json()))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.get_file("files/abc123")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.get_file("files/abc123")
     assert result is not None
     assert result.name == "files/abc123"
     assert result.display_name == "test.pdf"
@@ -191,23 +191,23 @@ async def test_async_get_file():
 async def test_async_get_file_not_found_returns_none():
     """404 → None 반환."""
     error_data = {"error": "not found", "error_type": "provider"}
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(404, error_data))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.get_file("files/nonexistent")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.get_file("files/nonexistent")
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_async_list_files():
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(
             return_value=_mock_response(200, [_file_json(name="files/a"), _file_json(name="files/b")])
         )
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.list_files()
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.list_files()
     assert len(result) == 2
     assert result[0].name == "files/a"
 
@@ -231,22 +231,22 @@ def _cache_json(**overrides: object) -> dict:
 
 @pytest.mark.asyncio
 async def test_async_get_cache():
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _cache_json()))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.get_cache("cachedContents/abc123")
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.get_cache("cachedContents/abc123")
     assert result.name == "cachedContents/abc123"
     assert result.total_token_count == 5000
 
 
 @pytest.mark.asyncio
 async def test_async_update_cache():
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _cache_json()))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        result = await llm_request._internal.handler_client.aio.update_cache("cachedContents/abc123", ttl=7200)
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        result = await llm_manager._internal.handler_client.aio.update_cache("cachedContents/abc123", ttl=7200)
     assert result.name == "cachedContents/abc123"
     call_args = instance.request.call_args
     assert call_args.kwargs["json"] == {"ttl": 7200}
@@ -255,11 +255,11 @@ async def test_async_update_cache():
 @pytest.mark.asyncio
 async def test_async_create_cache_explicit_params():
     """async create_cache — 명시적 파라미터."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _cache_json()))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        await llm_request._internal.handler_client.aio.create_cache(
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        await llm_manager._internal.handler_client.aio.create_cache(
             "대량 텍스트",
             model="gemini-2.5-flash",
             system="분석가",
@@ -274,11 +274,11 @@ async def test_async_create_cache_explicit_params():
 @pytest.mark.asyncio
 async def test_async_create_cache_with_tools():
     """async create_cache — tools 패스스루."""
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, _cache_json()))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        await llm_request._internal.handler_client.aio.create_cache(
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        await llm_manager._internal.handler_client.aio.create_cache(
             "텍스트",
             model="gemini-2.5-flash",
             tools=[{"google_search": {}}],
@@ -294,7 +294,7 @@ async def test_async_create_cache_with_tools():
 
 async def test_aio_call_messages_path():
     """aio.call(messages=[Content, ...]) → body['messages'] 그대로 직렬화."""
-    from llm_request._internal.handler_client.models import Content, ContentPart, FunctionResponse
+    from llm_manager._internal.handler_client.models import Content, ContentPart, FunctionResponse
 
     mock_data = {
         "text": "최종 답변",
@@ -302,11 +302,11 @@ async def test_aio_call_messages_path():
         "finish_reason": "STOP",
         "request_id": "msg1",
     }
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request = AsyncMock(return_value=_mock_response(200, mock_data))
-        llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
-        await llm_request._internal.handler_client.aio.call(
+        llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
+        await llm_manager._internal.handler_client.aio.call(
             messages=[
                 Content(role="user", content="주가 알려줘"),
                 Content(
@@ -329,11 +329,11 @@ async def test_aio_call_messages_path():
 
 async def test_aio_call_mutually_exclusive_both():
     """aio.call(contents='x', messages=[...]) → ValueError."""
-    from llm_request._internal.handler_client.models import Content
+    from llm_manager._internal.handler_client.models import Content
 
-    llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="exactly one of: contents, messages"):
-        await llm_request._internal.handler_client.aio.call(
+        await llm_manager._internal.handler_client.aio.call(
             contents="hi",
             messages=[Content(role="user", content="hi")],
         )
@@ -341,18 +341,18 @@ async def test_aio_call_mutually_exclusive_both():
 
 async def test_aio_call_mutually_exclusive_neither():
     """aio.call() (둘 다 미지정) → ValueError."""
-    llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="exactly one of: contents, messages"):
-        await llm_request._internal.handler_client.aio.call()
+        await llm_manager._internal.handler_client.aio.call()
 
 
 async def test_aio_call_messages_with_history_raises():
     """aio.call(messages=[...], history=[...]) → ValueError."""
-    from llm_request._internal.handler_client.models import Content
+    from llm_manager._internal.handler_client.models import Content
 
-    llm_request._internal.handler_client.aio.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.aio.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="messages and history are mutually exclusive"):
-        await llm_request._internal.handler_client.aio.call(
+        await llm_manager._internal.handler_client.aio.call(
             messages=[Content(role="user", content="hi")],
             history=[{"role": "user", "content": "prev"}],
         )
@@ -401,7 +401,7 @@ async def test_async_stream_done_payload_isolated_across_concurrent_calls():
     import asyncio
     import json as _json
 
-    from llm_request._internal.handler_client._client import AsyncClient
+    from llm_manager._internal.handler_client._client import AsyncClient
 
     done_payloads = [
         {
@@ -448,7 +448,7 @@ async def test_async_stream_done_payload_isolated_across_concurrent_calls():
         await done_events[1 - idx].wait()
         return client._last_done_payload  # property 경유 — ContextVar 의 자기 task 값
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.side_effect = _stream_side_effect
 
@@ -469,7 +469,7 @@ async def test_async_client_last_done_payload_property_compat():
     """`client._last_done_payload` 직접 attribute 접근이 ContextVar 마이그레이션 후에도 동작 (호환 layer)."""
     import json as _json
 
-    from llm_request._internal.handler_client._client import AsyncClient
+    from llm_manager._internal.handler_client._client import AsyncClient
 
     done_data = {
         "event": "done",
@@ -486,7 +486,7 @@ async def test_async_client_last_done_payload_property_compat():
         "",
     ]
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _make_mock_async_stream_cm(sse_lines)
 
@@ -508,7 +508,7 @@ async def test_last_assistant_message_returns_validated_content_after_stream():
     """raw `aio.stream()` 종료 후 `last_assistant_message()` 가 Content 로 복원되어야 한다."""
     import json as _json
 
-    from llm_request._internal.handler_client import aio
+    from llm_manager._internal.handler_client import aio
 
     done_data = {
         "event": "done",
@@ -525,7 +525,7 @@ async def test_last_assistant_message_returns_validated_content_after_stream():
         "",
     ]
 
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _make_mock_async_stream_cm(sse_lines)
 
@@ -548,8 +548,8 @@ async def test_last_assistant_message_returns_validated_content_after_stream():
 async def test_last_assistant_message_resets_between_streams():
     """새 `stream()` 진입 시 이전 turn 의 assistant_message 가 reset 되어야 (cross-turn leak 방지)."""
 
-    from llm_request._internal.handler_client import aio
-    from llm_request._internal.handler_client._common import _done_payload_var
+    from llm_manager._internal.handler_client import aio
+    from llm_manager._internal.handler_client._common import _done_payload_var
 
     done_data = {
         "event": "done",
@@ -563,7 +563,7 @@ async def test_last_assistant_message_resets_between_streams():
     # 새 stream 진입 시 _client.stream() 내부에서 _done_payload_var.set(None) 호출됨
     # done event 가 없는 SSE 로 진입 → reset 후 새 set 없음 → None 이어야 함
     sse_lines = ['data: {"text": "x"}', ""]  # done event 없음
-    with patch("llm_request._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._client.httpx.AsyncClient") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _make_mock_async_stream_cm(sse_lines)
 
@@ -578,8 +578,8 @@ async def test_last_assistant_message_resets_between_streams():
 
 def test_last_assistant_message_returns_none_when_payload_missing():
     """ContextVar 에 payload 가 없거나 assistant_message 키가 없으면 None."""
-    from llm_request._internal.handler_client import aio
-    from llm_request._internal.handler_client._common import _done_payload_var
+    from llm_manager._internal.handler_client import aio
+    from llm_manager._internal.handler_client._common import _done_payload_var
 
     _done_payload_var.set(None)
     assert aio.last_assistant_message() is None

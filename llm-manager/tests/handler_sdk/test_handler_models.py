@@ -2,7 +2,7 @@
 
 import pytest
 
-from llm_request._internal.handler_client.models import (
+from llm_manager._internal.handler_client.models import (
     CacheRef,
     FileRef,
     LLMResponse,
@@ -163,7 +163,7 @@ def test_part_serialization():
 
 def test_part_tool_call_serialization():
     """tool_call Part — model_dump 시 type + tool_call 필드만 노출."""
-    from llm_request._internal.handler_client.models import Part, ToolCallPart
+    from llm_manager._internal.handler_client.models import Part, ToolCallPart
 
     part = Part(
         type="tool_call",
@@ -182,7 +182,7 @@ def test_part_tool_call_serialization():
 
 
 def test_part_executable_code_serialization():
-    from llm_request._internal.handler_client.models import ExecutableCodePart, Part
+    from llm_manager._internal.handler_client.models import ExecutableCodePart, Part
 
     part = Part(
         type="executable_code",
@@ -195,7 +195,7 @@ def test_part_executable_code_serialization():
 
 def test_llm_response_parses_grounding_and_assistant_message():
     """handler 응답 JSON 을 LLMResponse 로 파싱 — 신규 필드 모두 보존."""
-    from llm_request._internal.handler_client.models import LLMResponse
+    from llm_manager._internal.handler_client.models import LLMResponse
 
     payload = {
         "model": "gemini-3-flash-preview",
@@ -233,7 +233,7 @@ def test_llm_response_parses_grounding_and_assistant_message():
 
 def test_ts_wire_roundtrip():
     """ts_to_wire/ts_from_wire — bytes ↔ base64 무손실."""
-    from llm_request._internal.handler_client.models import ts_from_wire, ts_to_wire
+    from llm_manager._internal.handler_client.models import ts_from_wire, ts_to_wire
 
     raw = b"\x00\x01\x02hello\xff"
     wire = ts_to_wire(raw)

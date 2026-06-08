@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from llm_request._internal.file_processing import resolver
-from llm_request._internal.file_processing.resolver import (
+from llm_manager._internal.file_processing import resolver
+from llm_manager._internal.file_processing.resolver import (
     ResolvedFiles,
     _estimate_non_file_bytes,
     _process_inline,
@@ -22,9 +22,9 @@ from llm_request._internal.file_processing.resolver import (
     classify_files,
     resolve_files,
 )
-from llm_request._internal.handler_client.models import CacheRef, FileRef
-from llm_request.exceptions import FileUploadError
-from llm_request.models import FileInput
+from llm_manager._internal.handler_client.models import CacheRef, FileRef
+from llm_manager.exceptions import FileUploadError
+from llm_manager.models import FileInput
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ class TestResolveFiles:
                 mime_type=mime_type, state="ACTIVE",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         with pytest.raises(ValueError) as exc:
@@ -210,13 +210,13 @@ class TestResolveFiles:
                 mime_type=mime_type, state="ACTIVE",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         async def fake_create_cache(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
             return CacheRef(name="cachedContents/x", model=model)
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache",
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
             fake_create_cache,
         )
 
@@ -258,7 +258,7 @@ class TestFilesApiBytesRelease:
                 mime_type=mime_type, state="ACTIVE",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         uri_parts: list = []
@@ -298,7 +298,7 @@ class TestProcessInlineLazyFetch:
         # FileManagerHandler() 도 mock
         fm_instance = MagicMock()
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.FileManagerHandler",
+            "llm_manager._internal.file_processing.resolver.FileManagerHandler",
             lambda: fm_instance,
         )
 
@@ -313,7 +313,7 @@ class TestProcessInlineLazyFetch:
             return b"\x00\x01\x02"
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.fetch_with_fallback",
+            "llm_manager._internal.file_processing.resolver.fetch_with_fallback",
             fake_fetch,
         )
 
@@ -337,7 +337,7 @@ class TestProcessInlineLazyFetch:
             return b"shouldnt be called"
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.fetch_with_fallback",
+            "llm_manager._internal.file_processing.resolver.fetch_with_fallback",
             fake_fetch,
         )
 
@@ -360,7 +360,7 @@ class TestUploadAndCacheFileLazyFetch:
         # FileManagerHandler() mock
         fm_instance = MagicMock()
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.FileManagerHandler",
+            "llm_manager._internal.file_processing.resolver.FileManagerHandler",
             lambda: fm_instance,
         )
 
@@ -373,7 +373,7 @@ class TestUploadAndCacheFileLazyFetch:
             return b"fetched-bytes"
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.fetch_with_fallback",
+            "llm_manager._internal.file_processing.resolver.fetch_with_fallback",
             fake_fetch,
         )
 
@@ -385,7 +385,7 @@ class TestUploadAndCacheFileLazyFetch:
             )
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         uri_parts: list = []
@@ -408,7 +408,7 @@ class TestResolvedViaPropagation:
 
         fm_instance = MagicMock()
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.FileManagerHandler",
+            "llm_manager._internal.file_processing.resolver.FileManagerHandler",
             lambda: fm_instance,
         )
 
@@ -416,7 +416,7 @@ class TestResolvedViaPropagation:
             return b"\x00\x01"
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.fetch_with_fallback",
+            "llm_manager._internal.file_processing.resolver.fetch_with_fallback",
             fake_fetch,
         )
 
@@ -431,7 +431,7 @@ class TestResolvedViaPropagation:
 
         fm_instance = MagicMock()
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.FileManagerHandler",
+            "llm_manager._internal.file_processing.resolver.FileManagerHandler",
             lambda: fm_instance,
         )
 
@@ -440,7 +440,7 @@ class TestResolvedViaPropagation:
             return b"\x00\x01"
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.fetch_with_fallback",
+            "llm_manager._internal.file_processing.resolver.fetch_with_fallback",
             fake_fetch,
         )
 
@@ -485,13 +485,13 @@ class TestUploadErrorPassthrough:
     진짜 로컬 실패만 FileUploadError 로 wrap."""
 
     async def test_handler_error_passes_through(self, monkeypatch):
-        from llm_request._internal.handler_client.exceptions import HandlerError
+        from llm_manager._internal.handler_client.exceptions import HandlerError
 
         async def fake_upload(path, mime_type):
             raise HandlerError("Gemini 차단", status_code=422, error_type="content_blocked")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         fi = _file()
@@ -501,13 +501,13 @@ class TestUploadErrorPassthrough:
         assert exc_info.value.status_code == 422
 
     async def test_handler_connection_error_passes_through(self, monkeypatch):
-        from llm_request._internal.handler_client.exceptions import HandlerConnectionError
+        from llm_manager._internal.handler_client.exceptions import HandlerConnectionError
 
         async def fake_upload(path, mime_type):
             raise HandlerConnectionError()
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         fi = _file()
@@ -519,7 +519,7 @@ class TestUploadErrorPassthrough:
             raise OSError("disk full")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         fi = _file()
@@ -536,7 +536,7 @@ class TestContextCacheTooSmallFailSoft:
                        mime_type="application/pdf", state="ACTIVE")
 
     async def test_too_small_returns_none_and_skips_redis_save(self, monkeypatch):
-        from llm_request._internal.handler_client.exceptions import HandlerError
+        from llm_manager._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
@@ -546,7 +546,7 @@ class TestContextCacheTooSmallFailSoft:
                 status_code=400, error_type="provider",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache", fake_create,
+            "llm_manager._internal.file_processing.resolver.create_context_cache", fake_create,
         )
 
         save_called = False
@@ -554,7 +554,7 @@ class TestContextCacheTooSmallFailSoft:
             nonlocal save_called
             save_called = True
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.cache_store.save_context_cache",
+            "llm_manager._internal.file_processing.resolver.cache_store.save_context_cache",
             fake_save,
         )
 
@@ -566,14 +566,14 @@ class TestContextCacheTooSmallFailSoft:
         assert save_called is False
 
     async def test_other_400_still_raises(self, monkeypatch):
-        from llm_request._internal.handler_client.exceptions import HandlerError
+        from llm_manager._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
             raise HandlerError("400 INVALID_ARGUMENT: unsupported mime",
                                status_code=400, error_type="provider")
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache", fake_create,
+            "llm_manager._internal.file_processing.resolver.create_context_cache", fake_create,
         )
 
         with pytest.raises(HandlerError):
@@ -583,14 +583,14 @@ class TestContextCacheTooSmallFailSoft:
             )
 
     async def test_503_still_raises(self, monkeypatch):
-        from llm_request._internal.handler_client.exceptions import HandlerError
+        from llm_manager._internal.handler_client.exceptions import HandlerError
 
         async def fake_create(file_refs, *, model, system_instruction, ttl,
                               tools=None, tool_config=None):
             raise HandlerError("503 service unavailable",
                                status_code=503, error_type="provider")
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache", fake_create,
+            "llm_manager._internal.file_processing.resolver.create_context_cache", fake_create,
         )
 
         with pytest.raises(HandlerError):
@@ -614,13 +614,13 @@ class TestContextCacheIdGating:
             return FileRef(name="files/y", uri="https://example.com/y",
                            mime_type=mime_type, state="ACTIVE")
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
     async def test_too_small_skip_nulls_context_cache_id(
         self, fake_redis, fast_backoff, monkeypatch,
     ):
-        from llm_request._internal.handler_client.exceptions import HandlerError
+        from llm_manager._internal.handler_client.exceptions import HandlerError
 
         self._ok_upload(monkeypatch)
 
@@ -632,7 +632,7 @@ class TestContextCacheIdGating:
                 status_code=400, error_type="provider",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache", fake_create,
+            "llm_manager._internal.file_processing.resolver.create_context_cache", fake_create,
         )
 
         result = await resolve_files(

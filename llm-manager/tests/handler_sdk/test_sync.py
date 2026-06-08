@@ -7,8 +7,8 @@ import httpx
 import pytest
 from pydantic import BaseModel as PydanticBaseModel
 
-import llm_request._internal.handler_client
-from llm_request._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
+import llm_manager._internal.handler_client
+from llm_manager._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
 
 
 def _mock_response(status_code: int = 200, json_data: dict | list | None = None) -> httpx.Response:
@@ -31,12 +31,12 @@ def test_call_success():
         "request_id": "abc",
     }
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
 
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.call("test", model="gemini-2.5-flash-preview-05-20")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.call("test", model="gemini-2.5-flash-preview-05-20")
 
     assert result.text == "응답"
     assert result.usage is not None
@@ -47,34 +47,34 @@ def test_call_handler_error():
     """Handler 에러 응답 → HandlerError."""
     error_data = {"error": "rate limit exceeded", "request_id": "xyz"}
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(429, error_data)
 
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
 
         with pytest.raises(HandlerError) as exc_info:
-            llm_request._internal.handler_client.call("test")
+            llm_manager._internal.handler_client.call("test")
 
     assert exc_info.value.status_code == 429
 
 
 def test_call_connection_error():
     """Handler 연결 실패 → HandlerConnectionError."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.side_effect = httpx.ConnectError("Connection refused")
 
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
 
         with pytest.raises(HandlerConnectionError):
-            llm_request._internal.handler_client.call("test")
+            llm_manager._internal.handler_client.call("test")
 
 
 def test_configure_changes_client():
     """configure() 호출 시 클라이언트 재생성."""
-    llm_request._internal.handler_client.configure(base_url="http://custom:9999", timeout=30.0)
-    client = llm_request._internal.handler_client._get_client()
+    llm_manager._internal.handler_client.configure(base_url="http://custom:9999", timeout=30.0)
+    client = llm_manager._internal.handler_client._get_client()
     assert client._http.base_url == httpx.URL("http://custom:9999")
 
 
@@ -90,11 +90,11 @@ def test_call_unified_simple():
         "finish_reason": "STOP",
         "request_id": "unified-1",
     }
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.call("안녕하세요")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.call("안녕하세요")
     assert result.text == "통합 응답"
     call_args = instance.request.call_args
     body = call_args.kwargs["json"]
@@ -104,11 +104,11 @@ def test_call_unified_simple():
 def test_call_unified_with_system():
     """통합 call — system 지시사항."""
     mock_data = {"text": "시스템 응답", "model": "gemini-3-flash-preview", "request_id": "unified-2"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call("test", system="한국어로 답변")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call("test", system="한국어로 답변")
     body = instance.request.call_args.kwargs["json"]
     assert body["system_instruction"] == "한국어로 답변"
 
@@ -116,11 +116,11 @@ def test_call_unified_with_system():
 def test_call_unified_with_output_json():
     """통합 call — output='json' + to_dict()."""
     mock_data = {"text": '{"result": "ok"}', "model": "gemini-3-flash-preview", "request_id": "unified-3"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.call("JSON 결과", output="json")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.call("JSON 결과", output="json")
     body = instance.request.call_args.kwargs["json"]
     assert body["output"] == "json"
     assert result.to_dict() == {"result": "ok"}
@@ -134,11 +134,11 @@ def test_call_unified_with_schema():
         score: float
 
     mock_data = {"text": '{"grade": "A", "score": 0.95}', "model": "gemini-3-flash-preview", "request_id": "unified-4"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.call("등급 평가", schema=Grade)
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.call("등급 평가", schema=Grade)
     body = instance.request.call_args.kwargs["json"]
     assert body["output"] == "json"
     assert "response_schema" in body
@@ -155,11 +155,11 @@ def test_call_unified_with_enum_schema():
         NEUTRAL = "Neutral"
 
     mock_data = {"text": "Positive", "model": "gemini-3-flash-preview", "request_id": "unified-5"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call("감성 분류", schema=Sentiment)
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call("감성 분류", schema=Sentiment)
     body = instance.request.call_args.kwargs["json"]
     assert body["output"] == "enum"
     assert body["response_schema"] == {"type": "STRING", "enum": ["Positive", "Negative", "Neutral"]}
@@ -168,25 +168,25 @@ def test_call_unified_with_enum_schema():
 def test_call_unified_with_thinking():
     """통합 call — thinking 모드."""
     mock_data = {"text": "깊은 사고 결과", "model": "gemini-3-flash-preview", "request_id": "unified-6"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call("분석", thinking="high")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call("분석", thinking="high")
     body = instance.request.call_args.kwargs["json"]
     assert body["thinking"] == "high"
 
 
 def test_call_unified_with_part_from_uri():
     """통합 call — Part.from_uri()로 파일 참조."""
-    from llm_request._internal.handler_client.models import Part
+    from llm_manager._internal.handler_client.models import Part
 
     mock_data = {"text": "파일 분석 결과", "model": "gemini-3-flash-preview", "request_id": "unified-7"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call(["분석해줘", Part.from_uri("files/xxx-yyy", "application/pdf")])
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call(["분석해줘", Part.from_uri("files/xxx-yyy", "application/pdf")])
     body = instance.request.call_args.kwargs["json"]
     msg = body["messages"][0]
     assert msg["role"] == "user"
@@ -198,11 +198,11 @@ def test_call_unified_with_part_from_uri():
 def test_call_unified_with_history():
     """통합 call — history 대화 이력."""
     mock_data = {"text": "이력 기반 응답", "model": "gemini-3-flash-preview", "request_id": "unified-8"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call(
             "결론이 뭐야?",
             history=[
                 {"role": "user", "content": "요약해줘"},
@@ -219,11 +219,11 @@ def test_call_unified_with_tools():
     """통합 call — tools."""
     mock_data = {"text": "tool 결과", "model": "gemini-3-flash-preview", "request_id": "unified-9"}
     tools = [{"function_declarations": [{"name": "fn", "description": "d"}]}]
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call("날씨", tools=tools)
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call("날씨", tools=tools)
     body = instance.request.call_args.kwargs["json"]
     assert body["tools"] == tools
 
@@ -245,30 +245,30 @@ def _file_json(**overrides: object) -> dict:
 
 
 def test_delete_file():
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, {"status": "deleted"})
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.delete_file("files/abc123")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.delete_file("files/abc123")
     instance.request.assert_called_once()
 
 
 def test_delete_file_404_idempotent():
     """404 → 예외 없이 정상 반환."""
     error_data = {"error": "not found", "error_type": "provider"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(404, error_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.delete_file("files/gone")  # 예외 발생 안 함
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.delete_file("files/gone")  # 예외 발생 안 함
 
 
 def test_get_file():
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _file_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.get_file("files/abc123")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.get_file("files/abc123")
     assert result is not None
     assert result.name == "files/abc123"
     assert result.display_name == "test.pdf"
@@ -278,20 +278,20 @@ def test_get_file():
 def test_get_file_not_found_returns_none():
     """404 → None 반환."""
     error_data = {"error": "not found", "error_type": "provider"}
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(404, error_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.get_file("files/nonexistent")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.get_file("files/nonexistent")
     assert result is None
 
 
 def test_list_files():
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, [_file_json(name="files/a"), _file_json(name="files/b")])
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.list_files()
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.list_files()
     assert len(result) == 2
     assert result[0].name == "files/a"
     assert result[1].name == "files/b"
@@ -315,22 +315,22 @@ def _cache_json(**overrides: object) -> dict:
 
 
 def test_get_cache():
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _cache_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.get_cache("cachedContents/abc123")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.get_cache("cachedContents/abc123")
     assert result.name == "cachedContents/abc123"
     assert result.total_token_count == 5000
     assert result.update_time == "2026-01-01T12:00:00Z"
 
 
 def test_update_cache():
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _cache_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        result = llm_request._internal.handler_client.update_cache("cachedContents/abc123", ttl=7200)
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        result = llm_manager._internal.handler_client.update_cache("cachedContents/abc123", ttl=7200)
     assert result.name == "cachedContents/abc123"
     call_args = instance.request.call_args
     assert call_args.kwargs["json"] == {"ttl": 7200}
@@ -338,11 +338,11 @@ def test_update_cache():
 
 def test_create_cache_explicit_params():
     """create_cache — 명시적 파라미터가 올바른 body로 변환."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _cache_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.create_cache(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.create_cache(
             "대량 텍스트",
             model="gemini-2.5-flash",
             system="분석가",
@@ -359,14 +359,14 @@ def test_create_cache_explicit_params():
 
 def test_create_cache_with_fileref():
     """create_cache — FileRef + 텍스트 → 정규화 + role 래핑."""
-    from llm_request._internal.handler_client.models import FileRef
+    from llm_manager._internal.handler_client.models import FileRef
 
     ref = FileRef(name="files/abc", uri="https://example.com/abc", mime_type="application/pdf", state="ACTIVE")
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _cache_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.create_cache([ref, "분석해줘"], model="gemini-2.5-flash")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.create_cache([ref, "분석해줘"], model="gemini-2.5-flash")
     body = instance.request.call_args.kwargs["json"]
     contents = body["contents"]
     assert len(contents) == 1
@@ -377,11 +377,11 @@ def test_create_cache_with_fileref():
 
 def test_create_cache_with_tools():
     """create_cache — tools/tool_config 패스스루."""
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, _cache_json())
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.create_cache(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.create_cache(
             "텍스트",
             model="gemini-2.5-flash",
             tools=[{"name": "fn", "description": "d", "parameters": {}}],
@@ -399,7 +399,7 @@ def test_create_cache_with_tools():
 
 def test_call_messages_path():
     """call(messages=[Content, ...]) → body['messages'] 가 그대로 직렬화됨."""
-    from llm_request._internal.handler_client.models import Content, ContentPart, FunctionResponse
+    from llm_manager._internal.handler_client.models import Content, ContentPart, FunctionResponse
 
     mock_data = {
         "text": "최종 답변",
@@ -407,11 +407,11 @@ def test_call_messages_path():
         "finish_reason": "STOP",
         "request_id": "msg1",
     }
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.request.return_value = _mock_response(200, mock_data)
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
-        llm_request._internal.handler_client.call(
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.call(
             messages=[
                 Content(role="user", content="주가 알려줘"),
                 Content(
@@ -443,11 +443,11 @@ def test_call_messages_path():
 
 def test_call_mutually_exclusive_both():
     """call(contents='x', messages=[...]) → ValueError (둘 다 지정)."""
-    from llm_request._internal.handler_client.models import Content
+    from llm_manager._internal.handler_client.models import Content
 
-    llm_request._internal.handler_client.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="exactly one of: contents, messages"):
-        llm_request._internal.handler_client.call(
+        llm_manager._internal.handler_client.call(
             contents="hi",
             messages=[Content(role="user", content="hi")],
         )
@@ -455,18 +455,18 @@ def test_call_mutually_exclusive_both():
 
 def test_call_mutually_exclusive_neither():
     """call() (둘 다 미지정) → ValueError."""
-    llm_request._internal.handler_client.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="exactly one of: contents, messages"):
-        llm_request._internal.handler_client.call()
+        llm_manager._internal.handler_client.call()
 
 
 def test_call_messages_with_history_raises():
     """call(messages=[...], history=[...]) → ValueError (의미 중복)."""
-    from llm_request._internal.handler_client.models import Content
+    from llm_manager._internal.handler_client.models import Content
 
-    llm_request._internal.handler_client.configure(base_url="http://test:8100")
+    llm_manager._internal.handler_client.configure(base_url="http://test:8100")
     with pytest.raises(ValueError, match="messages and history are mutually exclusive"):
-        llm_request._internal.handler_client.call(
+        llm_manager._internal.handler_client.call(
             messages=[Content(role="user", content="hi")],
             history=[{"role": "user", "content": "prev"}],
         )
@@ -476,7 +476,7 @@ def test_parse_sse_line_done_event_carries_payload():
     """parse_sse_line 의 done event 가 StopIteration.value 에 full payload 동봉."""
     import pytest
 
-    from llm_request._internal.handler_client._common import parse_sse_line
+    from llm_manager._internal.handler_client._common import parse_sse_line
 
     line = 'data: {"event": "done", "request_id": "abc", "assistant_message": {"role": "model", "content": []}}'
     with pytest.raises(StopIteration) as exc:
@@ -489,7 +489,7 @@ def test_parse_sse_line_done_event_backwards_compat_no_payload():
     """assistant_message 없는 기존 handler 의 done event 도 정상 처리 (value=dict, .get None)."""
     import pytest
 
-    from llm_request._internal.handler_client._common import parse_sse_line
+    from llm_manager._internal.handler_client._common import parse_sse_line
 
     line = 'data: {"event": "done", "request_id": "xyz"}'
     with pytest.raises(StopIteration) as exc:
@@ -501,7 +501,7 @@ def test_sync_client_captures_done_payload_after_stream():
     """SyncClient.stream() 종료 후 _last_done_payload 에 done event data 저장."""
     import json as _json
 
-    from llm_request._internal.handler_client._sync_client import SyncClient
+    from llm_manager._internal.handler_client._sync_client import SyncClient
 
     done_data = {
         "event": "done",
@@ -533,7 +533,7 @@ def test_sync_client_captures_done_payload_after_stream():
         def __exit__(self, *args):
             return None
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _MockStreamResponse()
         client = SyncClient(base_url="http://test:8100")
@@ -545,7 +545,7 @@ def test_sync_client_captures_done_payload_after_stream():
 
 def test_stream_messages_path():
     """stream(messages=[Content, ...]) → body['messages'] 정상 직렬화."""
-    from llm_request._internal.handler_client.models import Content
+    from llm_manager._internal.handler_client.models import Content
 
     sse_lines = [
         'data: {"text": "hi"}',
@@ -569,12 +569,12 @@ def test_stream_messages_path():
         def __exit__(self, *args):
             return None
 
-    with patch("llm_request._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
+    with patch("llm_manager._internal.handler_client._sync_client.httpx.Client") as mock_client_cls:
         instance = mock_client_cls.return_value
         instance.stream.return_value = _MockStreamResponse()
-        llm_request._internal.handler_client.configure(base_url="http://test:8100")
+        llm_manager._internal.handler_client.configure(base_url="http://test:8100")
         chunks = list(
-            llm_request._internal.handler_client.stream(
+            llm_manager._internal.handler_client.stream(
                 messages=[Content(role="user", content="hi")],
                 model="gemini-3-flash-preview",
             )
@@ -590,12 +590,12 @@ def test_last_assistant_message_returns_none_when_payload_missing():
     Round-trip (stream → 헬퍼 read) 검증은 동일 `_done_payload_var` 메커니즘을 쓰는
     `test_async.py::test_last_assistant_message_returns_validated_content_after_stream` 에서 보장.
     """
-    from llm_request._internal.handler_client._common import _done_payload_var
+    from llm_manager._internal.handler_client._common import _done_payload_var
 
     _done_payload_var.set(None)
-    assert llm_request._internal.handler_client.last_assistant_message() is None
+    assert llm_manager._internal.handler_client.last_assistant_message() is None
 
     _done_payload_var.set({"event": "done", "request_id": "r"})  # assistant_message 키 누락
-    assert llm_request._internal.handler_client.last_assistant_message() is None
+    assert llm_manager._internal.handler_client.last_assistant_message() is None
 
     _done_payload_var.set(None)

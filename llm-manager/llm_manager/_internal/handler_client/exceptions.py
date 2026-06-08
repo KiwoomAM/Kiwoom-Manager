@@ -201,7 +201,7 @@ def from_error_type(
     구버전 handler 응답 또는 dispatch table 누락 케이스 대응.
 
     detail 은 handler_internal 의 sub-cause slug (wire `detail` 필드) —
-    downstream relay (예: llm-request) 가 운영 alert 라우팅에 사용.
+    downstream relay (예: llm-manager) 가 운영 alert 라우팅에 사용.
     """
     cls = ERROR_TYPE_DISPATCH.get(error_type or "", HandlerError)
     return cls(message, status_code=status_code, error_type=error_type, detail=detail)

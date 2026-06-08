@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from llm_request._internal.done_check import DoneCheckResult, done_check
+from llm_manager._internal.done_check import DoneCheckResult, done_check
 
 SAMPLE_INPUT = {"contents": "hello", "model": "flash"}
 
 
 class TestDoneCheck:
 
-    @patch("llm_request._internal.done_check.cache_get", return_value=None)
+    @patch("llm_manager._internal.done_check.cache_get", return_value=None)
     def test_cache_miss(self, mock_get):
         result = done_check(SAMPLE_INPUT, lookup_cache=True)
 
@@ -22,7 +22,7 @@ class TestDoneCheck:
         assert result.collection == "agent_llm"
         mock_get.assert_called_once()
 
-    @patch("llm_request._internal.done_check.cache_get")
+    @patch("llm_manager._internal.done_check.cache_get")
     def test_cache_hit(self, mock_get):
         cached_doc = {"_id": "abc", "result": {"text": "cached"}, "status": "success"}
         mock_get.return_value = cached_doc
@@ -41,7 +41,7 @@ class TestDoneCheck:
         assert result.cache_error is False
         assert len(result.cache_key) == 64
 
-    @patch("llm_request._internal.done_check.cache_get", side_effect=ConnectionError("db down"))
+    @patch("llm_manager._internal.done_check.cache_get", side_effect=ConnectionError("db down"))
     def test_cache_error_fallback(self, mock_get):
         result = done_check(SAMPLE_INPUT, lookup_cache=True)
 

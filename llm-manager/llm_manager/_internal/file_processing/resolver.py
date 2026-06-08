@@ -25,16 +25,16 @@ from dataclasses import dataclass
 
 from file_manager import FileManagerHandler
 
-from llm_request._internal.file_processing import cache_store, dedup
-from llm_request._internal.file_processing.uploader import create_context_cache, upload_pdf_parts
-from llm_request._internal.gemini_errors import is_cache_too_small
-from llm_request._internal.handler_client.aio import upload_file
-from llm_request._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
-from llm_request._internal.handler_client.models import FileRef, Part
-from llm_request._internal.keying import make_file_checksum
-from llm_request._internal.stored_file_resolver import fetch_with_fallback
-from llm_request.exceptions import CacheError, FileUploadError
-from llm_request.models import FileInput
+from llm_manager._internal.file_processing import cache_store, dedup
+from llm_manager._internal.file_processing.uploader import create_context_cache, upload_pdf_parts
+from llm_manager._internal.gemini_errors import is_cache_too_small
+from llm_manager._internal.handler_client.aio import upload_file
+from llm_manager._internal.handler_client.exceptions import HandlerConnectionError, HandlerError
+from llm_manager._internal.handler_client.models import FileRef, Part
+from llm_manager._internal.keying import make_file_checksum
+from llm_manager._internal.stored_file_resolver import fetch_with_fallback
+from llm_manager.exceptions import CacheError, FileUploadError
+from llm_manager.models import FileInput
 
 logger = logging.getLogger(__name__)
 

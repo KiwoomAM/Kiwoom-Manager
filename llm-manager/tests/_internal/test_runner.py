@@ -9,10 +9,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from llm_request._internal.file_processing.resolver import ResolvedFiles
-from llm_request._internal.handler_client.models import Part
-from llm_request._internal.runner import _apply_resolved, _build_server_call_input, _Prepared
-from llm_request.models import FileInput
+from llm_manager._internal.file_processing.resolver import ResolvedFiles
+from llm_manager._internal.handler_client.models import Part
+from llm_manager._internal.runner import _apply_resolved, _build_server_call_input, _Prepared
+from llm_manager.models import FileInput
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -316,7 +316,7 @@ class TestBuildServerCallInput:
         async def _fake_resolve_files(*args, **kwargs):
             return fake_resolved
 
-        monkeypatch.setattr("llm_request._internal.runner.resolve_files", _fake_resolve_files)
+        monkeypatch.setattr("llm_manager._internal.runner.resolve_files", _fake_resolve_files)
 
         prep = _Prepared(
             llm_input={
@@ -406,8 +406,8 @@ class TestBuildLiveMetaFileMeta:
     """_build_live_meta 가 file_meta 키를 조건부로 노출하는지."""
 
     def _make_prep(self, *, files):
-        from llm_request._internal.done_check import DoneCheckResult
-        from llm_request._internal.runner import _Prepared
+        from llm_manager._internal.done_check import DoneCheckResult
+        from llm_manager._internal.runner import _Prepared
 
         return _Prepared(
             llm_input={"contents": "test", "model": "gemini-2.5-flash"},
@@ -430,7 +430,7 @@ class TestBuildLiveMetaFileMeta:
         )
 
     def test_files_none_omits_file_meta_key(self):
-        from llm_request._internal.runner import _build_live_meta
+        from llm_manager._internal.runner import _build_live_meta
 
         prep = self._make_prep(files=None)
         meta = _build_live_meta(prep)
@@ -438,8 +438,8 @@ class TestBuildLiveMetaFileMeta:
         assert "file_meta" not in meta
 
     def test_files_present_exposes_file_path(self):
-        from llm_request._internal.runner import _build_live_meta
-        from llm_request.models import FileInput
+        from llm_manager._internal.runner import _build_live_meta
+        from llm_manager.models import FileInput
 
         fi = FileInput(
             file_name="report.pdf",
@@ -466,8 +466,8 @@ class TestBuildLiveMetaContextCacheId:
     """_build_live_meta 가 context_cache_id 키를 조건부로 노출하는지."""
 
     def _make_prep(self, *, context_cache_id):
-        from llm_request._internal.done_check import DoneCheckResult
-        from llm_request._internal.runner import _Prepared
+        from llm_manager._internal.done_check import DoneCheckResult
+        from llm_manager._internal.runner import _Prepared
 
         return _Prepared(
             llm_input={"contents": "test", "model": "gemini-2.5-flash"},
@@ -492,7 +492,7 @@ class TestBuildLiveMetaContextCacheId:
 
     def test_none_omits_context_cache_id_key(self):
         """ResolvedFiles 가 context_cache_id 를 set 하지 않으면 응답 키 부재."""
-        from llm_request._internal.runner import _build_live_meta
+        from llm_manager._internal.runner import _build_live_meta
 
         prep = self._make_prep(context_cache_id=None)
         meta = _build_live_meta(prep)
@@ -501,7 +501,7 @@ class TestBuildLiveMetaContextCacheId:
 
     def test_present_exposes_context_cache_id(self):
         """Context Cache 생성/HIT 시 hash_key 가 meta 에 노출."""
-        from llm_request._internal.runner import _build_live_meta
+        from llm_manager._internal.runner import _build_live_meta
 
         hash_key = "a" * 64
         prep = self._make_prep(context_cache_id=hash_key)
@@ -517,8 +517,8 @@ class TestPrepareCachedMetaFileMeta:
     """prepare()의 cache hit 분기가 doc 의 file_meta 를 cached_meta 에 노출하는지."""
 
     def test_cached_doc_with_file_meta_exposed(self, monkeypatch):
-        from llm_request._internal import runner
-        from llm_request._internal.done_check import DoneCheckResult
+        from llm_manager._internal import runner
+        from llm_manager._internal.done_check import DoneCheckResult
 
         cached_doc = {
             "result": {
@@ -559,8 +559,8 @@ class TestPrepareCachedMetaFileMeta:
 
     def test_legacy_cached_doc_without_file_meta_omits_key(self, monkeypatch):
         """Phase 1 적용 전 저장된 옛 doc — file_meta 키 자체 없음 → 응답에도 키 없음."""
-        from llm_request._internal import runner
-        from llm_request._internal.done_check import DoneCheckResult
+        from llm_manager._internal import runner
+        from llm_manager._internal.done_check import DoneCheckResult
 
         cached_doc = {
             "result": {
@@ -601,8 +601,8 @@ class TestPrepareFiles:
 
     async def test_stored_files_only(self, monkeypatch):
         """stored_files=[..] → resolve_stored_files 호출 → placeholder list 반환."""
-        from llm_request._internal import runner
-        from llm_request.models import FileInput, StoredFile
+        from llm_manager._internal import runner
+        from llm_manager.models import FileInput, StoredFile
 
         async def fake_resolve(refs):
             return [FileInput(
@@ -629,7 +629,7 @@ class TestPrepareFiles:
 
     async def test_none_returns_none(self):
         """stored_files=None → combined=None (파일 없는 호출)."""
-        from llm_request._internal import runner
+        from llm_manager._internal import runner
 
         combined = await runner._prepare_files(None)
         assert combined is None

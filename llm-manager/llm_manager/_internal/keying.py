@@ -13,7 +13,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from llm_request._internal.handler_client.models import FileRef, Part
+from llm_manager._internal.handler_client.models import FileRef, Part
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ def make_file_checksum(meta: Any) -> str:
     FileInput(/v1/request), FileKeyingMeta(/v1/done-check) 모두 수용 —
     3필드 속성을 duck-typing으로 접근한다.
 
-    llm-request가 `keying.py`의 canonicalize + sha256 로직을 재사용하여 자체 계산.
+    llm-manager가 `keying.py`의 canonicalize + sha256 로직을 재사용하여 자체 계산.
 
     이 checksum은:
       - Redis `files_api:{checksum}` 키

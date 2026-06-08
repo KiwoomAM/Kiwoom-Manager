@@ -8,7 +8,7 @@ backward compat: 구버전 error_type ("handler", None) → HandlerError base fa
 
 import pytest
 
-from llm_request._internal.handler_client.exceptions import (
+from llm_manager._internal.handler_client.exceptions import (
     ContentBlockedError,
     HandlerError,
     HandlerInternalError,

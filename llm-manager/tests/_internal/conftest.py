@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_request._internal.file_processing import dedup
+from llm_manager._internal.file_processing import dedup
 from tests.conftest import (  # noqa: F401 — re-export for `from conftest import ...`
     SAMPLE_LLM_INPUT,
     SAMPLE_RESPONSE,

@@ -17,12 +17,12 @@ import logging
 from file_manager import FileManagerHandler
 from file_manager.exceptions import FMServiceError
 
-from llm_request._internal.file_processing.validators import (
+from llm_manager._internal.file_processing.validators import (
     validate_file_sizes,
     validate_mime_types,
 )
-from llm_request.exceptions import FileResolveError
-from llm_request.models import FileInput, StoredFile
+from llm_manager.exceptions import FileResolveError
+from llm_manager.models import FileInput, StoredFile
 
 logger = logging.getLogger(__name__)
 

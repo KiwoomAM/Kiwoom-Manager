@@ -21,7 +21,7 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 
 | 항목 | 설명 |
 | --- | --- |
-| 패키지명 | `kiwoom-llm-request` |
+| 패키지명 | `kiwoom-llm-manager` |
 | 버전 | `0.3.0` |
 | Python | **`>=3.11`** |
 | 구성 | **순수 SDK manager** (별도 서버 없음). agent 프로세스 안에서 직접 실행 |
@@ -31,12 +31,12 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 # 3. 디렉터리 구조
 
 ```
-packages/llm-request/
-├── llm_request/                  # 단일 SDK manager 패키지
+packages/llm-manager/
+├── llm_manager/                  # 단일 SDK manager 패키지
 │   ├── __init__.py               # 공개 API (llm_request_async + 큐레이션한 handler primitive)
 │   ├── aio.py                    # 비동기 공개 표면 (call/stream/embed/session — handler_client.aio 큐레이션)
-│   ├── models.py                 # StoredFile, RequestMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
-│   ├── exceptions.py             # 공개 예외 (LLMRequestError 계층)
+│   ├── models.py                 # StoredFile, ResponseMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
+│   ├── exceptions.py             # 공개 예외 (LLMManagerError 계층)
 │   └── _internal/                # manager 로직 (외부 사용 X)
 │       ├── handler_client/       # 흡수한 handler HTTP 클라이언트 (구 llm-handler/sdk)
 │       │                         #   call/stream/embed/session, _client, models, exceptions, aio
@@ -69,7 +69,7 @@ packages/llm-request/
 ## 설치
 
 ```bash
-pip install -e ./packages/llm-request
+pip install -e ./packages/llm-manager
 ```
 
 별도 서버를 띄울 필요가 없다. 첫 호출 시 SDK가 handler 들을 하드코딩된 사내 URL로 자동 초기화한다 (`LLM_REQUEST_URL` 같은 설정 불필요).
@@ -103,7 +103,7 @@ handler URL 기본값이 사내 주소이므로 보통 그대로 두면 된다. 
 ## 텍스트만
 
 ```python
-from llm_request import llm_request_async
+from llm_manager import llm_request_async
 
 response, meta = await llm_request_async(
     {"contents": "대한민국의 수도는?", "model": "gemini-2.5-flash"},
@@ -114,7 +114,7 @@ print(meta.source)   # 'live' 또는 'cache'
 
 ## 파일 첨부 — `register_or_get` + `stored_files`
 
-agent 가 file-manager SDK 의 `register_or_get` 으로 파일을 등록한 후, 받은 6 필드 dict 를 `StoredFile` 로 변환해 `stored_files=` 인자로 전달한다. llm-request 는 `file_path` 만 받아 file-manager 에서 직접 fetch 한다.
+agent 가 file-manager SDK 의 `register_or_get` 으로 파일을 등록한 후, 받은 6 필드 dict 를 `StoredFile` 로 변환해 `stored_files=` 인자로 전달한다. llm-manager 는 `file_path` 만 받아 file-manager 에서 직접 fetch 한다.
 
 ### `StoredFile` 6 필드
 
@@ -133,7 +133,7 @@ agent 가 file-manager SDK 의 `register_or_get` 으로 파일을 등록한 후,
 ```python
 from pathlib import Path
 from file_manager import FileManagerHandler
-from llm_request import llm_request_async, StoredFile
+from llm_manager import llm_request_async, StoredFile
 
 fm = FileManagerHandler()
 
@@ -148,7 +148,7 @@ metadata = fm.build_metadata(
 sf_dict = await fm.register_or_get(bytes_data, metadata)
 del bytes_data  # bytes release — agent 메모리 회수
 
-# 2. llm-request 호출 (file_path + 5 메타만 전송)
+# 2. llm-manager 호출 (file_path + 5 메타만 전송)
 response, meta_resp = await llm_request_async(
     {"contents": "이 파일을 분석해줘", "model": "gemini-2.5-flash"},
     stored_files=[StoredFile(**sf_dict)],
@@ -203,7 +203,7 @@ response, _ = await llm_request_async(
 `get_file(file_path)` 1차 404 + `check_cache(hashing 3)` miss → `FileResolveError` raise (error_type='file_resolve'). caller 는 이를 catch 후 `register_or_get` 으로 재등록하여 재호출.
 
 ```python
-from llm_request import llm_request_async, StoredFile, FileResolveError
+from llm_manager import llm_request_async, StoredFile, FileResolveError
 
 try:
     response, _ = await llm_request_async(llm_input, stored_files=refs)
@@ -224,12 +224,12 @@ except FileResolveError:
 
 | 함수 | 반환 타입 | 설명 |
 | --- | --- | --- |
-| `llm_request_async` | `tuple[LLMResponse, RequestMeta]` | 비동기 단건 LLM 호출 |
-| `llm_request` | `tuple[LLMResponse, RequestMeta]` | 동기 단건 (`asyncio.run` 래퍼) |
+| `llm_request_async` | `tuple[LLMResponse, ResponseMeta]` | 비동기 단건 LLM 호출 |
+| `llm_request` | `tuple[LLMResponse, ResponseMeta]` | 동기 단건 (`asyncio.run` 래퍼) |
 | `llm_request_stream_async` | `tuple[AsyncIterator[dict], dict]` | 비동기 스트리밍 — `(stream, meta)` 튜플 |
 | `llm_request_stream` | `tuple[Iterator[dict], dict]` | 동기 스트리밍 — `(stream, meta)` 튜플 |
 | `done_check` | `DoneCheckResult` | 캐시 존재 여부만 확인 (LLM 호출 없음) |
-| `fetch_by_cache_key` | `tuple[LLMResponse, RequestMeta]` | 캐시 키로 직접 조회 |
+| `fetch_by_cache_key` | `tuple[LLMResponse, ResponseMeta]` | 캐시 키로 직접 조회 |
 | `delete_cache_async` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (비동기) |
 | `delete_cache` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (`asyncio.run` 래퍼) |
 | `close` | `None` (async) | 하위호환 no-op (httpx 클라이언트 제거됨). 호출해도 안전 |
@@ -284,7 +284,7 @@ def call(
 ) -> LLMResponse
 ```
 
-스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_request.aio.stream()`.
+스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_manager.aio.stream()`.
 
 ## cache_mode / save_mode
 
@@ -337,7 +337,7 @@ response, meta = await llm_request_async(
 | `function_calls` | `list[FunctionCall] \| None` | 모델이 요청한 함수 호출 |
 | `request_id` | `str` | 요청 식별자 |
 
-### RequestMeta
+### ResponseMeta
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
@@ -361,7 +361,7 @@ if meta.file_meta:
         save_to_db(fm["file_path"])
 ```
 
-> 응답 shape — stored_files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `RequestMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
+> 응답 shape — stored_files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `ResponseMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
 
 ## done_check
 
@@ -369,7 +369,7 @@ MDB 캐시 존재 여부만 확인한다. LLM을 호출하지 않는다.
 캐시 키 생성 규칙은 [8. Runner — 캐시 키 생성](#8-runner) 참고.
 
 ```python
-from llm_request import done_check, FileKeyingMeta
+from llm_manager import done_check, FileKeyingMeta
 
 dc = await done_check(
     {"contents": "대한민국의 수도는?", "model": "gemini-2.5-flash"},
@@ -386,7 +386,7 @@ print(dc["cached"])       # 캐시 문서 dict 또는 None
 `done_check`으로 확보한 `cache_key`를 사용해 LLM 재호출 없이 캐시 결과를 조회한다.
 
 ```python
-from llm_request import fetch_by_cache_key
+from llm_manager import fetch_by_cache_key
 
 response, meta = await fetch_by_cache_key(cache_key)
 print(response.text)
@@ -476,7 +476,7 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 `context_cache_ttl` 을 길게 잡아두고, agent task 가 끝났을 때 즉시 단축할 수 있다. storage 비용은 새 TTL 기준으로 분 단위 prorate 청구되므로, "넉넉히 잡고 끝나면 줄이기" 패턴이 비용 효율적이다.
 
 ```python
-from llm_request import llm_request_async, delete_cache_async, StoredFile
+from llm_manager import llm_request_async, delete_cache_async, StoredFile
 
 cache_ids: set[str] = set()
 for q in questions:
@@ -781,7 +781,7 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 
 ## 공개 예외 계층
 
-서버가 제거되어 manager 로직의 예외가 호출자에게 **직접** 전파된다. 모두 `LLMRequestError` 를 상속하며 `.error_type` / `.status_code` 속성을 갖는다 (속성은 분기/로깅용으로 유지).
+서버가 제거되어 manager 로직의 예외가 호출자에게 **직접** 전파된다. 모두 `LLMManagerError` 를 상속하며 `.error_type` / `.status_code` 속성을 갖는다 (속성은 분기/로깅용으로 유지).
 
 | 예외 | `error_type` | `status_code` | 발생 조건 |
 | --- | --- | --- | --- |
@@ -792,14 +792,14 @@ MongoDB TTL 인덱스가 없어 자동 삭제는 동작하지 않으며, 현재 
 | `FileResolveError` | `file_resolve` | 502 | stored_files resolve 실패 (file-manager에서 파일 못 찾음) |
 | `CacheError` | `cache` | 502 | MDB / Redis 캐시 조회·저장 실패 |
 | `CacheKeyNotFoundError` | `not_found` | 404 | `fetch_by_cache_key` 대상 캐시 문서 없음 |
-| `LLMRequestError` | `handler` | 500 | 베이스 / 그 외 fallback |
+| `LLMManagerError` | `handler` | 500 | 베이스 / 그 외 fallback |
 
 LLM 호출 실패는 `HandlerError` / `HandlerConnectionError` 가 그대로 전파된다 (흡수한 handler_client 가 re-export).
 
 ```python
-from llm_request import (
+from llm_manager import (
     llm_request_async, CacheError, FileResolveError,
-    LLMRequestError, HandlerError, HandlerConnectionError,
+    LLMManagerError, HandlerError, HandlerConnectionError,
 )
 
 try:
@@ -808,7 +808,7 @@ except FileResolveError:
     ...                       # 파일 재등록 후 재호출
 except (HandlerError, HandlerConnectionError) as e:
     ...                       # LLM 호출 자체 실패
-except LLMRequestError as e:
+except LLMManagerError as e:
     print(e.error_type, e.status_code, e.message)
 ```
 
@@ -827,7 +827,7 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 
 | 항목 | v0.2.0 | v0.3.0 |
 | --- | --- | --- |
-| 설치 경로 | `packages/llm-request/sdk` | **`packages/llm-request`** (루트가 곧 패키지) |
+| 설치 경로 | `packages/llm-manager/sdk` | **`packages/llm-manager`** (루트가 곧 패키지) |
 | Service 실행 | FastAPI(8101) 필수 | **불필요 — 서버 제거** |
 | 환경변수 | `LLM_REQUEST_URL` | 불필요 (handler URL 하드코딩, 필요 시 개별 override) |
 | 예외 | `ServiceError` / `ServiceConnectionError` | 구체 예외(`FileResolveError`·`CacheError` 등) + `HandlerError` 직접 전파 ([11. 에러 처리](#11-에러-처리)) |
@@ -842,24 +842,24 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 
 | 항목 | v0.1.0 | v0.2.0 |
 | --- | --- | --- |
-| 설치 경로 | `packages/llm-request` | `packages/llm-request/sdk` |
+| 설치 경로 | `packages/llm-manager` | `packages/llm-manager/sdk` |
 | ⚠️ Service 실행 | 불필요 | **별도 FastAPI Service (port 8101) 실행 필수** |
 | 환경변수 | `MDB_HANDLER_URL`, `LLM_HANDLER_URL`, `MONGODB_DATABASE` 등 여러 개 | `LLM_REQUEST_URL` 하나 (기본값 내장) |
 | 초기화 코드 | `llm_handler.configure()`, `MongoDBHandler.reset()` 필요 | 불필요 |
 | ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `stored_files=[StoredFile(...)]` (file-manager `register_or_get` 결과) |
-| ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `RequestMeta` (`meta.source`) |
+| ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `ResponseMeta` (`meta.source`) |
 
 > **⚠️ 설치 경로 변경 주의**
 >
-> v0.1.0 에선 `pip install -e packages/llm-request` 로 설치했지만, v0.2.0 에선 이 경로가 **uv workspace 루트** 로 바뀌었다. 같은 명령을 쓰면 **빈 워크스페이스만 설치**되어 SDK 기능이 없는 상태가 된다. 새 경로로 설치해야 한다.
+> v0.1.0 에선 `pip install -e packages/llm-manager` 로 설치했지만, v0.2.0 에선 이 경로가 **uv workspace 루트** 로 바뀌었다. 같은 명령을 쓰면 **빈 워크스페이스만 설치**되어 SDK 기능이 없는 상태가 된다. 새 경로로 설치해야 한다.
 >
 > ```bash
-> pip install -e packages/llm-request/sdk    # ← sdk 하위 경로 사용
+> pip install -e packages/llm-manager/sdk    # ← sdk 하위 경로 사용
 > # 또는 루트에서 전체 워크스페이스 설치:
-> cd packages/llm-request && uv sync
+> cd packages/llm-manager && uv sync
 > ```
 >
-> 기존 v0.1.0 환경에서 업그레이드할 경우 먼저 `pip uninstall kiwoom-llm-request` 로 구 버전을 제거한 뒤 새 경로로 설치 권장.
+> 기존 v0.1.0 환경에서 업그레이드할 경우 먼저 `pip uninstall kiwoom-llm-manager` 로 구 버전을 제거한 뒤 새 경로로 설치 권장.
 
 ## 초기화 코드 제거
 
@@ -889,7 +889,7 @@ response, meta = await llm_request_async(
 )
 
 # v0.2.0
-from llm_request import llm_request_async, StoredFile
+from llm_manager import llm_request_async, StoredFile
 from file_manager import FileManagerHandler
 
 fm = FileManagerHandler()
@@ -1019,12 +1019,12 @@ Gemini Files API는 계정당 20GB 저장 한도가 있다.
 
 ---
 
-handler 클라이언트는 `llm_request._internal.handler_client` 로 **내부화**되어 있고, `llm_request` 는 그중 **생성 primitive 만 큐레이션해 노출**한다. 캐시/파일 생명주기 ops(`create_cache`/`upload_file`/`configure`/...)는 **매니저의 결정 역할**이라 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 되기 때문. (캐시 생성은 `llm_request_async(timings={"context_cache_ttl": ...})`, 만료는 `delete_cache(grace_seconds=...)` 같은 매니저 API 로.) handler URL 주입 등 설정은 첫 호출 시 `_internal/_config.py` 가 자동(lazy) 처리한다.
+handler 클라이언트는 `llm_manager._internal.handler_client` 로 **내부화**되어 있고, `llm_manager` 는 그중 **생성 primitive 만 큐레이션해 노출**한다. 캐시/파일 생명주기 ops(`create_cache`/`upload_file`/`configure`/...)는 **매니저의 결정 역할**이라 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 되기 때문. (캐시 생성은 `llm_request_async(timings={"context_cache_ttl": ...})`, 만료는 `delete_cache(grace_seconds=...)` 같은 매니저 API 로.) handler URL 주입 등 설정은 첫 호출 시 `_internal/_config.py` 가 자동(lazy) 처리한다.
 
 ## sync — flat import
 
 ```python
-from llm_request import call, stream, embed, session, Part, LLMResponse
+from llm_manager import call, stream, embed, session, Part, LLMResponse
 
 response = call("안녕하세요")
 print(response.text)
@@ -1035,10 +1035,10 @@ for chunk in stream("질문", model="gemini-2.5-flash"):
 result = embed("텍스트", model="text-embedding-004")
 ```
 
-## async — `llm_request.aio`
+## async — `llm_manager.aio`
 
 ```python
-from llm_request.aio import call, stream, embed   # 또는: from llm_request import aio; await aio.call(...)
+from llm_manager.aio import call, stream, embed   # 또는: from llm_manager import aio; await aio.call(...)
 
 response = await call("안녕하세요")
 
@@ -1051,7 +1051,7 @@ async for chunk in stream("질문", model="gemini-2.5-flash"):
 | 분류 | 이름 |
 | --- | --- |
 | 생성 primitive | `call`, `stream`, `embed`, `session` |
-| 클래스 | `Session` (sync) / `AsyncSession` (`llm_request.aio`) |
+| 클래스 | `Session` (sync) / `AsyncSession` (`llm_manager.aio`) |
 | 모델 | `Part`, `LLMResponse`, `StreamChunk`, `FunctionCall`, `CacheRef`, `FileRef`, `TokenUsage`, `ContentsType`, `EmbedResponse`, `EmbeddingStatistics`, `EmbeddingValue` |
 | 예외 | `HandlerError`, `HandlerConnectionError` |
 

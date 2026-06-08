@@ -9,9 +9,9 @@ import asyncio
 import logging
 import os
 
-from llm_request._internal.handler_client.aio import create_cache as _aio_create_cache
-from llm_request._internal.handler_client.aio import upload_file
-from llm_request._internal.handler_client.models import CacheRef, FileRef
+from llm_manager._internal.handler_client.aio import create_cache as _aio_create_cache
+from llm_manager._internal.handler_client.aio import upload_file
+from llm_manager._internal.handler_client.models import CacheRef, FileRef
 
 from .splitter import split_pdf
 
@@ -74,7 +74,7 @@ async def create_context_cache(
 
     Gemini Context Cache 는 cache 생성 시 `tools` / `tool_config` 도 함께 저장해야
     이후 `call(cached_content=...)` 에서 Bad Request 없이 재사용 가능하다. llm_handler
-    의 `create_cache` 가 이들 파라미터를 지원하므로 llm-request wrapper 에서도 그대로 전달.
+    의 `create_cache` 가 이들 파라미터를 지원하므로 llm-manager wrapper 에서도 그대로 전달.
 
     Args:
         file_refs: 업로드된 FileRef 리스트.

@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 
 from redis_handler import BaseJsonStore
 
-from llm_request._internal.handler_client.models import FileRef
-from llm_request._internal.keying import canonicalize_llm_input, make_cache_key
+from llm_manager._internal.handler_client.models import FileRef
+from llm_manager._internal.keying import canonicalize_llm_input, make_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ def compute_files_api_ttl(
 
 
 # ── 모듈 레벨 위임 함수 (호출자 호환성 유지) ──────────────────
-# resolver.py 등 기존 호출자가 `from llm_request._internal.file_processing import cache_store`
+# resolver.py 등 기존 호출자가 `from llm_manager._internal.file_processing import cache_store`
 # 후 `cache_store.find_files_api(...)` 형태로 사용 중이므로, 이 인터페이스를
 # 그대로 유지한다. 실제 로직은 FileCacheStore 클래스 메서드에 위임.
 
