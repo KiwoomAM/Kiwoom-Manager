@@ -1,7 +1,7 @@
 """Context Cache expire e2e — 실제 Gemini + Redis + file-manager 통합.
 
 수동 실행 (Gemini 비용 발생). 전제:
-- llm-request Service 가 LLM_REQUEST_URL 에 떠있음
+- llm-manager Service 가 LLM_REQUEST_URL 에 떠있음
 - 192.7.9.45 file-manager / redis 접근 가능
 - kw_ai_dev database 사용
 
@@ -17,14 +17,14 @@ from pathlib import Path
 
 import pytest
 from file_manager import FileManagerHandler
-from llm_handler import aio as llm_aio
 
-from llm_request import (
+from llm_manager import (
     StoredFile,
     delete_cache_async,
     llm_request_async,
 )
-from llm_request._internal.file_processing import cache_store
+from llm_manager._internal.file_processing import cache_store
+from llm_manager._internal.handler_client import aio as llm_aio
 
 SAMPLE_PDF = (
     Path(__file__).resolve().parents[3] / "quickstarts" / "medium_file.pdf"

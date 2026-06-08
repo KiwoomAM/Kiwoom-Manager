@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from llm_request._internal import _config as providers
+from llm_manager._internal import _config as providers
 
 # ── _ensure_redis_connected ──────────────────────────────────
 

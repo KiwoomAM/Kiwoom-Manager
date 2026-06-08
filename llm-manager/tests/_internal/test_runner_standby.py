@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_handler.models import Content, LLMResponse, StreamChunk, TokenUsage
-
-from llm_request._internal import runner
+from llm_manager._internal import runner
+from llm_manager._internal.handler_client.models import Content, LLMResponse, StreamChunk, TokenUsage
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -216,7 +215,7 @@ class TestAgentLlmStreamStandby:
 class TestStreamAssistantMessageSave:
     """_do_llm_stream 이 handler done event 의 assistant_message 로 저장하는지 회귀 (PR #593 §2).
 
-    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로, llm-request 는
+    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로, llm-manager 는
     chunk 별 누적 없이 그대로 받아 저장한다. last_assistant_message 를 mock 해서 주입.
     """
 
@@ -313,8 +312,8 @@ class TestPhase3LazyFetchDedup:
     ):
         from unittest.mock import AsyncMock, MagicMock
 
-        from llm_request._internal import runner
-        from llm_request.models import StoredFile
+        from llm_manager._internal import runner
+        from llm_manager.models import StoredFile
 
         # fm.get_file mock + counter
         get_file_count = 0
@@ -328,19 +327,19 @@ class TestPhase3LazyFetchDedup:
         fm_instance = MagicMock()
         fm_instance.get_file = AsyncMock(side_effect=fake_get_file)
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.FileManagerHandler",
+            "llm_manager._internal.file_processing.resolver.FileManagerHandler",
             lambda: fm_instance,
         )
 
-        # llm_handler.upload_file mock — Files API URI 1개만 반환
+        # llm_manager._internal.handler_client.upload_file mock — Files API URI 1개만 반환
         async def fake_upload(path, mime_type):
-            from llm_handler.models import FileRef
+            from llm_manager._internal.handler_client.models import FileRef
             return FileRef(
                 name="files/x", uri="https://example.com/x",
                 mime_type=mime_type, state="ACTIVE",
             )
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
         )
 
         # aio_call mock — LLM 응답

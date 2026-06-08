@@ -1,11 +1,12 @@
-"""llm-request 테스트 공통 fixture (서버 제거 후 — TestClient 없음)."""
+"""llm-manager 테스트 공통 fixture (서버 제거 후 — TestClient 없음)."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from llm_handler.models import LLMResponse, StreamChunk, TokenUsage
+
+from llm_manager._internal.handler_client.models import LLMResponse, StreamChunk, TokenUsage
 
 # ── 공통 데이터 (테스트 모듈에서 직접 import) ────────────────────
 
@@ -52,5 +53,5 @@ def mock_collection():
     col.find_one = MagicMock(side_effect=_find_one)
     col.replace_one = MagicMock(side_effect=_replace_one)
 
-    with patch("llm_request._internal.store._get_collection", return_value=col):
+    with patch("llm_manager._internal.store._get_collection", return_value=col):
         yield store

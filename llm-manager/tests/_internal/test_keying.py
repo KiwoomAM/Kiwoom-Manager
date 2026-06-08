@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from llm_handler.models import FileRef, Part
-
-from llm_request._internal.keying import (
+from llm_manager._internal.handler_client.models import FileRef, Part
+from llm_manager._internal.keying import (
     build_llm_input_subset,
     canonicalize_input,
     canonicalize_llm_input,

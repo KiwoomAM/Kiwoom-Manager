@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_request._internal.meta import build_meta
+from llm_manager._internal.meta import build_meta
 
 
 class TestBuildMeta:

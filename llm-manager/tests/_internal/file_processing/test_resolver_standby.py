@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import asyncio
 
-from llm_handler.models import CacheRef, FileRef
-
-from llm_request._internal.file_processing import cache_store
-from llm_request._internal.file_processing.resolver import _process_files_api
-from llm_request._internal.keying import make_file_checksum
-from llm_request.models import FileInput
+from llm_manager._internal.file_processing import cache_store
+from llm_manager._internal.file_processing.resolver import _process_files_api
+from llm_manager._internal.handler_client.models import CacheRef, FileRef
+from llm_manager._internal.keying import make_file_checksum
+from llm_manager.models import FileInput
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -73,7 +72,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/concurrent-{upload_count}")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload_file,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload_file,
         )
 
         async def _run():
@@ -108,7 +107,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/slow-{upload_count}")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", very_slow_upload,
+            "llm_manager._internal.file_processing.resolver.upload_file", very_slow_upload,
         )
 
         async def _run():
@@ -141,7 +140,7 @@ class TestFilesApiStandby:
             return _fake_fileref(f"https://example.com/parallel-{upload_count}")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.upload_file", fake_upload_file,
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload_file,
         )
 
         async def _run(fi, cs):
@@ -190,7 +189,7 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/ctx-{create_count}")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache",
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
             fake_create_context_cache,
         )
 
@@ -232,7 +231,7 @@ class TestContextCacheStandby:
             return _fake_cacheref(f"cachedContents/slow-{create_count}")
 
         monkeypatch.setattr(
-            "llm_request._internal.file_processing.resolver.create_context_cache",
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
             very_slow_create,
         )
 
