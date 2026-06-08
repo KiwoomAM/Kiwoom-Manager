@@ -33,8 +33,21 @@ from typing import Dict, List, Optional
 from mdb_manager._client import SyncClient, _CallerBoundClient
 from mdb_manager.collections.agent_envelope import AgentEnvelopeCollection
 from mdb_manager.collections.blocks import BlocksCollection
+from mdb_manager.exceptions import MDBConfigError
 
 logger = logging.getLogger(__name__)
+
+
+_ENVELOPE_CALLER_REQUIRED = (
+    "envelope 컬렉션(agent_data/agent_output) 접근에는 caller 식별이 필요합니다. "
+    "SERVICE_NAME 환경변수를 설정하거나 with_caller(...)로 caller를 지정하세요."
+)
+
+
+def _require_caller(client) -> None:
+    """envelope 진입 전 caller(env SERVICE_NAME 또는 bound caller) 존재를 강제."""
+    if not client.caller_identity:
+        raise MDBConfigError(_ENVELOPE_CALLER_REQUIRED)
 
 
 class _BoundManager:
@@ -68,6 +81,7 @@ class _BoundManager:
         return BlocksCollection(self._client, collection or "agent_data", database)
 
     def get_agent_data(self, database: str | None = None) -> AgentEnvelopeCollection:
+        _require_caller(self._client)
         return AgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_data",
@@ -75,6 +89,7 @@ class _BoundManager:
         )
 
     def get_agent_output(self, database: str | None = None) -> AgentEnvelopeCollection:
+        _require_caller(self._client)
         return AgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_output",
@@ -266,7 +281,9 @@ class MongoDBManager:
 
         database 인자 미제공 시 현재 핸들러의 database 사용. 반환된 컬렉션은
         모든 read/write가 SERVICE_NAME (X-Caller-Service)으로 자동 스코프됨.
+        caller(env SERVICE_NAME 또는 with_caller) 부재 시 MDBConfigError.
         """
+        _require_caller(self._client)
         return AgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_data",
@@ -274,7 +291,11 @@ class MongoDBManager:
         )
 
     def get_agent_output(self, database: str | None = None) -> AgentEnvelopeCollection:
-        """agent_output envelope 컬렉션 진입점."""
+        """agent_output envelope 컬렉션 진입점.
+
+        caller(env SERVICE_NAME 또는 with_caller) 부재 시 MDBConfigError.
+        """
+        _require_caller(self._client)
         return AgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_output",

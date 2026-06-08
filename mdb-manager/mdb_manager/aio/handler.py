@@ -27,8 +27,21 @@ from mdb_manager.aio.collections.agent_envelope import (
     AsyncAgentEnvelopeCollection,
 )
 from mdb_manager.aio.collections.blocks import AsyncBlocksCollection
+from mdb_manager.exceptions import MDBConfigError
 
 logger = logging.getLogger(__name__)
+
+
+_ENVELOPE_CALLER_REQUIRED = (
+    "envelope 컬렉션(agent_data/agent_output) 접근에는 caller 식별이 필요합니다. "
+    "SERVICE_NAME 환경변수를 설정하거나 with_caller(...)로 caller를 지정하세요."
+)
+
+
+def _require_caller(client) -> None:
+    """envelope 진입 전 caller(env SERVICE_NAME 또는 bound caller) 존재를 강제."""
+    if not client.caller_identity:
+        raise MDBConfigError(_ENVELOPE_CALLER_REQUIRED)
 
 
 class _BoundAsyncManager:
@@ -65,6 +78,7 @@ class _BoundAsyncManager:
     def get_agent_data(
         self, database: str | None = None
     ) -> AsyncAgentEnvelopeCollection:
+        _require_caller(self._client)
         return AsyncAgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_data",
@@ -74,6 +88,7 @@ class _BoundAsyncManager:
     def get_agent_output(
         self, database: str | None = None
     ) -> AsyncAgentEnvelopeCollection:
+        _require_caller(self._client)
         return AsyncAgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_output",
@@ -258,8 +273,10 @@ class AsyncMongoDBManager:
         """agent_data envelope 컬렉션 진입점 (비동기).
 
         모든 read/write가 SERVICE_NAME으로 자동 스코프됨.
+        caller(env SERVICE_NAME 또는 with_caller) 부재 시 MDBConfigError.
         """
         self._ensure_open()
+        _require_caller(self._client)
         return AsyncAgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_data",
@@ -269,8 +286,12 @@ class AsyncMongoDBManager:
     def get_agent_output(
         self, database: str | None = None
     ) -> AsyncAgentEnvelopeCollection:
-        """agent_output envelope 컬렉션 진입점 (비동기)."""
+        """agent_output envelope 컬렉션 진입점 (비동기).
+
+        caller(env SERVICE_NAME 또는 with_caller) 부재 시 MDBConfigError.
+        """
         self._ensure_open()
+        _require_caller(self._client)
         return AsyncAgentEnvelopeCollection(
             client=self._client,
             collection_name="agent_output",
