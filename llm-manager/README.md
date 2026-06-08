@@ -13,7 +13,7 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 파일 처리는 Google 공식 문서 기준으로 구현되어 있어, **사용자는 파일을 넘기는 방법만 알면 된다.**
 크기·타입에 따른 inline / Files API 전환, PDF 50MB 초과 시 자동 분할은 내부에서 처리한다.
 
-- **Quickstart**: `quickstarts/quickstart_sdk.ipynb` — 간단한 예시 실행 가능한 코드
+- **Quickstart**: `quickstarts/llm_manager/quickstart_sdk.ipynb` — 간단한 예시 실행 가능한 코드
 
 # 2. 핵심 특징
 
@@ -58,8 +58,8 @@ packages/llm-request/
 │           └── validators.py     # 파일 유효성 검사
 ├── tests/
 ├── quickstarts/
-│   ├── quickstart_sdk.ipynb
-│   └── verify_all.ipynb
+│   ├── llm_manager/      # 매니저 API 예제 (quickstart_sdk, verify_all)
+│   └── handler_client/   # handler_client SDK 예제 (01–08, 내부)
 └── pyproject.toml
 ```
 
@@ -655,7 +655,7 @@ LLM 호출 + 캐시 조회/저장. SDK `llm_request_async`의 백엔드.
 | 필드 | 타입 | 기본값 | 설명 |
 | --- | --- | --- | --- |
 | `llm_input` | `dict` | — | llm-handler에 전달할 입력 |
-| `stored_files` | `list[StoredFile] \| null` | `null` | file-manager 등록 후 받은 6 필드 리스트. Service 가 `file_path` 로 bytes 를 lazy fetch |
+| `stored_files` | `list[StoredFile] \| null` | `null` | file-manager 등록 후 받은 6 필드 리스트. 내부에서 `file_path` 로 bytes 를 lazy fetch |
 | `cache_mode` | `bool` | `true` | MDB 캐시 조회 여부 |
 | `save_mode` | `bool` | `true` | MDB 저장 여부 |
 | `ttl_seconds` | `int \| null` | `null` | MDB 캐시 수명 (현재 미동작) |

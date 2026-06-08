@@ -6,11 +6,11 @@
 > 아래 예시의 호출 시그니처·와이어 동작은 그대로 유효(이 서버가 구현하는 계약)하지만 import 경로만 다르다.
 > llm-handler 패키지는 이제 **Service(서버)만** 제공한다.
 
-llm_handler 랑 llm_handler.aio 한 프로세스에 import 하면 **죽음.**
-
-자세한 구조 및 개선 사항은 `docs/architecture.md, bottlenecks.md` 참고. 실제 사용케이스는 `quickstarts/` 참고.
+자세한 구조 및 개선 사항은 `../llm-handler/docs/architecture.md, bottlenecks.md` 참고. 실제 사용케이스는 `quickstarts/handler_client/` 참고.
 
 ## 설치 및 설정
+
+클라이언트 SDK 는 llm-request 에 포함된다 (`kiwoom-llm-handler` SDK 패키지는 없어졌고 `llm_request._internal.handler_client` 로 이관됨).
 
 **Docker 환경 (권장):**
 
@@ -18,7 +18,7 @@ llm_handler 랑 llm_handler.aio 한 프로세스에 import 하면 **죽음.**
 RUN GITHUB_TOKEN=$(cat /tmp/github_token) && \
     REPO="git+https://x-access-token:${GITHUB_TOKEN}@github.com/KIWOOMxSNU/Kiwoom-Rag.git@main" && \
     pip install --no-cache-dir \
-        "kiwoom-llm-handler @ ${REPO}#subdirectory=packages/llm-handler/sdk" && \
+        "kiwoom-llm-request @ ${REPO}#subdirectory=packages/llm-request" && \
     rm -f /tmp/github_token
 ```
 
@@ -26,17 +26,14 @@ RUN GITHUB_TOKEN=$(cat /tmp/github_token) && \
 
 ```bash
 # Kiwoom-Rag 레포 클론 후
-pip install -e packages/llm-handler/sdk
+pip install -e packages/llm-request
 ```
 
 ```python
-import llm_handler
+from llm_request import call, stream, embed, session
 
-# 방법 1: 환경변수 (권장) \ main 서버에서는 localhost가 아니라 main 컴 ip
-# export LLM_HANDLER_URL=http://localhost:8100
-
-# 방법 2: 코드에서 직접 설정
-llm_handler.configure(base_url="http://localhost:8100")
+# Handler URL — 환경변수로 지정 (기본 localhost:8100). 사내 서버면:
+# export LLM_HANDLER_URL=http://192.7.9.45:8100
 ```
 
 ### 동기 vs 비동기
@@ -806,7 +803,7 @@ except HandlerError as e:
 `TransportError`, `ProviderError`, `HandlerOpsError`, `HandlerInternalError`.
 세밀한 분기, 시나리오별 어떤 에러가 발생하는지, 예외 계층 등은 별도 문서 참고:
 
-> **자세한 에러 핸들링 가이드**: [docs/error-handling.md](docs/error-handling.md)
+> **자세한 에러 핸들링 가이드**: [../llm-handler/docs/error-handling.md](../llm-handler/docs/error-handling.md)
 
 ---
 
@@ -1355,4 +1352,4 @@ def configure(
 
 자세한 계층, 시나리오별 어떤 에러가 발생하는지, `error_type` / `origin` 분기 패턴 등:
 
-> [docs/error-handling.md](docs/error-handling.md)
+> [../llm-handler/docs/error-handling.md](../llm-handler/docs/error-handling.md)
