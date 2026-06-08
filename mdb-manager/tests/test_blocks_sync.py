@@ -3,7 +3,7 @@
 
 from unittest.mock import MagicMock
 
-from mdb_handler.collections.blocks import BlocksCollection
+from mdb_manager.collections.blocks import BlocksCollection
 
 
 def _make_collection() -> tuple[BlocksCollection, MagicMock]:

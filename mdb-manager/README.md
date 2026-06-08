@@ -1,4 +1,4 @@
-# MDB Handler SDK
+# MDB Manager
 
 > Kiwoom MongoDB Handler SDK v2.0 — HTTP 클라이언트 기반 MongoDB 접근 라이브러리
 
@@ -14,7 +14,7 @@ MDB Handler Service(REST API)를 통해 MongoDB에 접근하는 Python SDK입니
 ## 설치
 
 ```bash
-pip install -e packages/mdb-handler/sdk
+pip install -e packages/mdb-manager
 ```
 
 ## 환경변수
@@ -26,19 +26,19 @@ pip install -e packages/mdb-handler/sdk
 ## 디렉터리 구조
 
 ```
-mdb_handler/
+mdb_manager/
 ├── __init__.py            # 공개 API (sync + aio 노출)
 ├── _client.py             # httpx 기반 SyncClient (내부용)
 ├── _async_client.py       # httpx 기반 AsyncClient (내부용)
 ├── _paths.py              # REST 경로/바디 빌더 (sync/async 공용)
 ├── _transport.py          # SyncTransport/AsyncTransport Protocol (DIP 경계)
-├── handler.py             # MongoDBHandler (Singleton 동기 진입점)
+├── handler.py             # MongoDBManager (Singleton 동기 진입점)
 ├── exceptions.py          # MDBError, MDBConnectionError, MDBHandlerError
 ├── collections/
 │   └── blocks.py          # BlocksCollection (동기 CRUD/집계)
 └── aio/                   # 비동기 인터페이스
-    ├── __init__.py        # AsyncMongoDBHandler 등 공개
-    ├── handler.py         # AsyncMongoDBHandler (비-Singleton, 명시적 lifecycle)
+    ├── __init__.py        # AsyncMongoDBManager 등 공개
+    ├── handler.py         # AsyncMongoDBManager (비-Singleton, 명시적 lifecycle)
     └── collections/
         └── blocks.py      # AsyncBlocksCollection (비동기 CRUD/집계)
 ```
@@ -46,9 +46,9 @@ mdb_handler/
 ## Quick Start
 
 ```python
-from mdb_handler import MongoDBHandler
+from mdb_manager import MongoDBManager
 
-mdb = MongoDBHandler()  # 기본: kw_ai / agent_data
+mdb = MongoDBManager()  # 기본: kw_ai / agent_data
 
 # 조회
 docs = mdb.get_all()
@@ -69,12 +69,12 @@ mdb.close()
 
 ## API Reference
 
-### MongoDBHandler
+### MongoDBManager
 
 Singleton 패턴의 메인 진입점입니다.
 
 ```python
-MongoDBHandler(
+MongoDBManager(
     uri=None,           # Deprecated (v2에서 무시됨)
     database=None,      # 기본값: "kw_ai"
     collection=None,    # 기본값: "agent_data"
@@ -145,7 +145,7 @@ MongoDBHandler(
 
 ### BlocksCollection
 
-컬렉션 단위 CRUD 클래스입니다. `MongoDBHandler`의 모든 CRUD 메서드와 동일한 인터페이스를 갖습니다.
+컬렉션 단위 CRUD 클래스입니다. `MongoDBManager`의 모든 CRUD 메서드와 동일한 인터페이스를 갖습니다.
 직접 생성하지 않고 `get_collection()` / `get_database()`로 얻어서 사용합니다.
 
 ```python
@@ -159,11 +159,12 @@ reports.find({"type": "analysis"}, limit=10)
 ```
 MDBError                    # 기본 에러 (message, status_code)
 ├── MDBConnectionError      # 서비스 연결 실패
-└── MDBHandlerError         # 서비스 에러 응답 (HTTP 4xx/5xx)
+├── MDBHandlerError         # 서비스 에러 응답 (HTTP 4xx/5xx)
+└── MDBConfigError          # 설정 누락 (예: envelope 접근 시 SERVICE_NAME/caller 부재)
 ```
 
 ```python
-from mdb_handler import MDBConnectionError, MDBHandlerError
+from mdb_manager import MDBConnectionError, MDBHandlerError
 
 try:
     mdb.find({"type": "table"})
@@ -173,12 +174,48 @@ except MDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e.message}")
 ```
 
+## SERVICE_NAME과 caller 식별
+
+`SERVICE_NAME` 환경변수는 `X-Caller-Service` 헤더로 부착되어 서버측 write ACL과 envelope
+스코프에 쓰인다. 검증 범위는 다음과 같다:
+
+- **blocks read** (`kw_gp` 등 일반 컬렉션 조회): SERVICE_NAME 없이도 동작 — 검증 안 함.
+- **envelope 접근** (`get_agent_data()` / `get_agent_output()`): caller 필수. env
+  `SERVICE_NAME`도 `with_caller()` caller도 없으면 `MDBConfigError`.
+- **blocks write**: 클라이언트 가드는 없고, 서버측 ACL이 caller를 검증한다(필요 시 HTTP 4xx).
+
+핸들러 생성 자체는 SERVICE_NAME 없이도 항상 성공한다. 따라서 `load_dotenv()`는 envelope를
+호출하기 전까지만 실행되면 된다.
+
+## Caller 정체성 override (`with_caller`)
+
+기본 caller는 env `SERVICE_NAME`이다. 임베디드 라이브러리가 호스트와 다른 정체성으로
+자기 컬렉션에 접근해야 할 때 `with_caller`로 caller를 덮어쓴다.
+
+```python
+mdb = MongoDBManager()                       # 호스트 정체성 (env SERVICE_NAME)
+
+# 보관 후 재사용 (라이브러리 권장)
+llm_mdb = mdb.with_caller("llm-manager")
+llm_mdb.insert_one(doc)                       # X-Caller-Service: llm-manager
+llm_mdb.get_agent_output().find({...})        # 〃
+
+# inline = per-call override
+mdb.with_caller("llm-manager").insert_one(doc)
+
+mdb.insert_one(doc)                           # 호스트 기본 (env) — 영향 없음
+```
+
+- `with_caller`는 **싱글톤을 변경하지 않는** 새 view를 반환한다. 정체성은 요청 단위로만
+  적용되어, bound 호출이 이후 기본 호출로 새지 않는다.
+- 우선순위: `with_caller` bound caller > env `SERVICE_NAME`.
+
 ## 사용 패턴
 
 ### 여러 컬렉션 접근
 
 ```python
-mdb = MongoDBHandler()
+mdb = MongoDBManager()
 reports = mdb.get_collection("overseas_reports")
 rag = mdb.get_database("kw_rag", "kw_gp")
 
@@ -228,7 +265,7 @@ await aio_mdb.insert_one({"a": 1}, ttl=600)
 ## 주의사항
 
 - **`uri` 파라미터**: v2에서 Deprecated. 전달 시 무시되며 DeprecationWarning 발생
-- **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `MongoDBHandler.reset()` 후 재생성
+- **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `MongoDBManager.reset()` 후 재생성
 - **`drop()`**: 비가역적. 컬렉션 전체가 삭제됨
 - **타임아웃**: 기본 30초 (SyncClient 기준)
 - **에러 처리**: HTTP 통신 기반이므로 `MDBConnectionError`/`MDBHandlerError` 처리 권장
@@ -246,16 +283,16 @@ await aio_mdb.insert_one({"a": 1}, ttl=600)
 
 ## 비동기 사용법 (Async)
 
-FastAPI, LangGraph 등 async 환경에서는 `mdb_handler.aio`를 사용하세요.
-동기 인터페이스(`MongoDBHandler`)는 그대로 유지되며, 비동기 인터페이스는 별도 경로로 제공됩니다.
+FastAPI, LangGraph 등 async 환경에서는 `mdb_manager.aio`를 사용하세요.
+동기 인터페이스(`MongoDBManager`)는 그대로 유지되며, 비동기 인터페이스는 별도 경로로 제공됩니다.
 
 ### 기본 사용 (context manager 권장)
 
 ```python
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBManager
 
 async def handler():
-    async with AsyncMongoDBHandler(database="kw_rag", collection="kw_gp") as mdb:
+    async with AsyncMongoDBManager(database="kw_rag", collection="kw_gp") as mdb:
         docs = await mdb.find({"type": "table"}, limit=10)
         return docs
 ```
@@ -265,12 +302,12 @@ async def handler():
 ```python
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBManager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.mdb = AsyncMongoDBHandler()
+    app.state.mdb = AsyncMongoDBManager()
     try:
         yield
     finally:
@@ -289,10 +326,10 @@ async def list_docs(request: Request):
 
 ```python
 import asyncio
-from mdb_handler.aio import AsyncMongoDBHandler
+from mdb_manager.aio import AsyncMongoDBManager
 
 async def fan_out():
-    async with AsyncMongoDBHandler() as mdb:
+    async with AsyncMongoDBManager() as mdb:
         tables, figures, count = await asyncio.gather(
             mdb.find({"type": "table"}, limit=10),
             mdb.find({"type": "figure"}, limit=10),
@@ -305,10 +342,10 @@ async def fan_out():
 
 | 기능 | 동기 | 비동기 |
 |------|------|--------|
-| import | `from mdb_handler import MongoDBHandler` | `from mdb_handler.aio import AsyncMongoDBHandler` |
-| 인스턴스 | Singleton (`MongoDBHandler()`) | 명시적 인스턴스 (매 호출 새 인스턴스 가능) |
+| import | `from mdb_manager import MongoDBManager` | `from mdb_manager.aio import AsyncMongoDBManager` |
+| 인스턴스 | Singleton (`MongoDBManager()`) | 명시적 인스턴스 (매 호출 새 인스턴스 가능) |
 | 호출 | `mdb.find(...)` | `await mdb.find(...)` |
-| 종료 | `mdb.close()` / `MongoDBHandler.reset()` | `await mdb.aclose()` 또는 `async with` |
+| 종료 | `mdb.close()` / `MongoDBManager.reset()` | `await mdb.aclose()` 또는 `async with` |
 | 공개 메서드 | 동일 | 동일 (반환 타입 일치) |
 
 ### 주의사항

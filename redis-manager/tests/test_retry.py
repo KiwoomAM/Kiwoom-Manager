@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import redis
 
-from redis_handler.config import RetryConfig
-from redis_handler.exceptions import RedisRetryExhausted
-from redis_handler.retry import RetryPolicy, RETRYABLE_EXCEPTIONS
+from redis_manager.config import RetryConfig
+from redis_manager.exceptions import RedisRetryExhausted
+from redis_manager.retry import RetryPolicy, RETRYABLE_EXCEPTIONS
 
 
 class _CustomConfig:
@@ -141,7 +141,7 @@ class TestRetryPolicy:
 class TestRetryableDecorator:
     def test_retryable_uses_self_retry_policy(self):
         """@retryable 데코레이터가 self._retry를 사용."""
-        from redis_handler.retry import retryable
+        from redis_manager.retry import retryable
 
         class Stub:
             def __init__(self):

@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import redis
 
-from redis_handler.backends.redis_backend import RedisBackend
-from redis_handler.config import RetryConfig
-from redis_handler.exceptions import RedisRetryExhausted
-from redis_handler.retry import RetryPolicy
+from redis_manager.backends.redis_backend import RedisBackend
+from redis_manager.config import RetryConfig
+from redis_manager.exceptions import RedisRetryExhausted
+from redis_manager.retry import RetryPolicy
 
 
 class _FastConfig:

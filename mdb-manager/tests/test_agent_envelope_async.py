@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mdb_handler.aio.collections.agent_envelope import (
+from mdb_manager.aio.collections.agent_envelope import (
     AsyncAgentEnvelopeCollection,
 )
 

@@ -1,4 +1,4 @@
-# Redis Handler
+# Redis Manager
 
 > Kiwoom Redis Handler v2.0 — 메모리 폴백 + 재시도 + SET 옵션 내장 Redis 클라이언트
 
@@ -12,7 +12,7 @@ Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라�
 - ✅ **도메인 예외** — `RedisHandlerError`, `RedisRetryExhausted`, `RedisUnavailableError`
 - ✅ **테스트 커버리지** — 백엔드/handler/base_store 단위 테스트
 
-기존 `RedisHandler().set(k, v, ttl=N)` 같은 호출은 100% 호환.
+기존 `RedisManager().set(k, v, ttl=N)` 같은 호출은 100% 호환.
 
 ## 요구사항
 
@@ -23,7 +23,7 @@ Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라�
 ## 설치
 
 ```bash
-pip install -e packages/redis-handler
+pip install -e packages/redis-manager
 ```
 
 ## 환경변수
@@ -42,9 +42,9 @@ pip install -e packages/redis-handler
 ## Quick Start
 
 ```python
-from redis_handler import RedisHandler
+from redis_manager import RedisManager
 
-rh = RedisHandler()
+rh = RedisManager()
 
 # 일반 set/get (Redis 실패 시 메모리 폴백 자동)
 rh.set("key", "value", ttl=3600)
@@ -88,7 +88,7 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 
 ## API Reference
 
-### RedisHandler
+### RedisManager
 
 | 메서드 | 반환값 | 설명 |
 |---|---|---|
@@ -117,9 +117,9 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 ### 예외 처리
 
 ```python
-from redis_handler import RedisHandler, RedisUnavailableError, RedisRetryExhausted
+from redis_manager import RedisManager, RedisUnavailableError, RedisRetryExhausted
 
-rh = RedisHandler()
+rh = RedisManager()
 
 # 일반 명령은 폴백 자동 — 예외 노출 없음
 val = rh.get("k")  # Redis 실패 시 메모리에서 조회
@@ -138,7 +138,7 @@ except RedisRetryExhausted:
 ### BaseJsonStore (도메인 store 작성용)
 
 ```python
-from redis_handler import BaseJsonStore
+from redis_manager import BaseJsonStore
 
 class MyStore(BaseJsonStore):
     def __init__(self):
@@ -176,7 +176,7 @@ class MyStore(BaseJsonStore):
 ```
 [Application Code]
    ↓
-RedisHandler (orchestrator)
+RedisManager (orchestrator)
    ├── 입력 검증 (ttl/ex/nx/xx/keepttl 충돌)
    ├── 백엔드 선택 (Redis 가용성)
    └── 폴백 정책 (NX/XX 차단, 일반 명령 자동)
@@ -188,10 +188,10 @@ KeyValueBackend Protocol
 
 ## 주의사항
 
-- **Singleton**: `RedisHandler()`는 항상 동일 인스턴스. 리셋 필요 시 `rh.reset()`
+- **Singleton**: `RedisManager()`는 항상 동일 인스턴스. 리셋 필요 시 `rh.reset()`
 - **메모리 폴백**: Redis 불가 시 인메모리 dict로 동작. 프로세스 종료 시 데이터 소실
 - **TTL**: 초 단위. `None`이면 영구 저장
 - **Thread-safe**: 메모리 백엔드는 `threading.Lock`으로 동시 접근 보호
-- **자동 초기화**: `import redis_handler` 시 `init_redis()`가 자동 호출됨
+- **자동 초기화**: `import redis_manager` 시 `init_redis()`가 자동 호출됨
 - **재시도 비용**: 최악 ~16초 지연 (`socket_timeout=5s × 3 + backoff`)
 - **NX/XX 폴백 없음**: 분산 의미론 보호. Redis 미연결 시 `RedisUnavailableError`
