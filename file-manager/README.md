@@ -134,7 +134,7 @@ asyncio.run(main())
 Singleton 패턴의 async 진입점입니다. `build_metadata`만 동기, 나머지는 async.
 
 ```python
-FileManagerHandler()   # 인자 없음. 환경변수 FILE_MANAGER_URL로 대상 지정
+FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 지정
 ```
 
 #### 메타데이터

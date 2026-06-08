@@ -11,7 +11,7 @@ pip install -e packages/file-manager
 ```
 ```python
 from file_manager import FileManagerHandler
-fm = FileManagerHandler()            # 서버 주소 env: FILE_MANAGER_URL (기본 http://localhost:8600)
+fm = FileManagerHandler()            # 서버 주소 env: FILE_HANDLER_URL (기본 http://localhost:8600)
 metadata = fm.build_metadata(file_name, file_mtime, file_size)
 result = await fm.check_cache(metadata)
 metadata["file_path"] = result["file_path"] if result["hit"] else await fm.upload_file(data, metadata)
