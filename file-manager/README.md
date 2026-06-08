@@ -25,7 +25,7 @@ pip install -e packages/file-manager
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
-| `FILE_MANAGER_URL` | `http://localhost:8600` | File Manager Service URL |
+| `FILE_HANDLER_URL` | `http://localhost:8600` | File Handler Service URL |
 
 ## 디렉터리 구조
 

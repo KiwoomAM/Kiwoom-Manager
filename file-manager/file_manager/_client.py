@@ -4,7 +4,7 @@
 File Manager SDK는 파일 업로드(multipart)와 파일 다운로드(binary)를
 다뤄야 하므로 비동기 클라이언트를 사용한다.
 
-base_url(FILE_MANAGER_URL)은 import 시점이 아니라 **첫 요청 시점**에 읽는다.
+base_url(FILE_HANDLER_URL)은 import 시점이 아니라 **첫 요청 시점**에 읽는다.
 원격 agent나 llm-request의 런타임 설정(예: ensure_configured)이 import 이후에
 env를 세팅하더라도, 첫 HTTP 요청 전에만 잡혀 있으면 정상 동작한다. (모듈 레벨
 상수로 동결하면 import 순서에 따라 localhost로 굳는 footgun이 있었음.)
@@ -23,8 +23,8 @@ DEFAULT_BASE_URL = "http://localhost:8600"
 
 
 def _resolve_base_url() -> str:
-    """FILE_MANAGER_URL을 호출 시점에 읽는다 (import 시점 동결 방지)."""
-    return os.environ.get("FILE_MANAGER_URL", DEFAULT_BASE_URL)
+    """FILE_HANDLER_URL을 호출 시점에 읽는다 (import 시점 동결 방지)."""
+    return os.environ.get("FILE_HANDLER_URL", DEFAULT_BASE_URL)
 
 
 class AsyncClient:
