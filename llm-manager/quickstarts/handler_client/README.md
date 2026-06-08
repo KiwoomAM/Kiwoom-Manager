@@ -1,9 +1,9 @@
 # handler_client SDK Quickstarts
 
-`llm_request._internal.handler_client` (handler 생성·파일·캐시 클라이언트 SDK) 의 실행 가능한 예제.
+`llm_manager._internal.handler_client` (handler 생성·파일·캐시 클라이언트 SDK) 의 실행 가능한 예제.
 **내부 SDK 예제** — 매니저(캐싱) API 예제는 [`../llm_manager/`](../llm_manager/) 참고.
 
-> import: `from llm_request._internal.handler_client import ...` (또는 `from llm_request._internal import handler_client as llm_handler`).
+> import: `from llm_manager._internal.handler_client import ...` (또는 `from llm_manager._internal import handler_client as llm_handler`).
 > 각 노트북 첫 셀의 `llm_handler.configure(base_url=...)` 주석을 해제하거나 `LLM_HANDLER_URL` env 로 Handler URL 을 설정하세요.
 
 | # | 노트북 | 내용 |

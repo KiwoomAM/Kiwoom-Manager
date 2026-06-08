@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 MDB_HANDLER_URL = os.getenv("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 LLM_HANDLER_URL = os.getenv("LLM_HANDLER_URL", "http://192.7.9.45:8100")
 REDIS_URL = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
-FILE_MANAGER_URL = os.getenv("FILE_MANAGER_URL", "http://192.7.9.45:8600")
+FILE_HANDLER_URL = os.getenv("FILE_HANDLER_URL", "http://192.7.9.45:8600")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "kw_ai")
 
 # standby flush 대상 패턴 (cache stampede dedup)
@@ -106,6 +106,6 @@ def ensure_configured() -> None:
         os.environ.setdefault("MONGODB_DATABASE", MONGODB_DATABASE)
 
         # file_manager SDK URL
-        os.environ.setdefault("FILE_MANAGER_URL", FILE_MANAGER_URL)
+        os.environ.setdefault("FILE_HANDLER_URL", FILE_HANDLER_URL)
 
         _configured = True

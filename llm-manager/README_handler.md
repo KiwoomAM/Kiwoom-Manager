@@ -16,17 +16,17 @@
 
 ```dockerfile
 RUN GITHUB_TOKEN=$(cat /tmp/github_token) && \
-    REPO="git+https://x-access-token:${GITHUB_TOKEN}@github.com/KIWOOMxSNU/Kiwoom-Rag.git@main" && \
+    REPO="git+https://x-access-token:${GITHUB_TOKEN}@github.com/KiwoomAM/Kiwoom-Manager.git@main" && \
     pip install --no-cache-dir \
-        "kiwoom-llm-manager @ ${REPO}#subdirectory=packages/llm-manager" && \
+        "kiwoom-llm-manager @ ${REPO}#subdirectory=llm-manager" && \
     rm -f /tmp/github_token
 ```
 
 **로컬 개발 (editable):**
 
 ```bash
-# Kiwoom-Rag 레포 클론 후
-pip install -e packages/llm-manager
+# Kiwoom-Manager 레포 클론 후
+pip install -e llm-manager
 ```
 
 ```python

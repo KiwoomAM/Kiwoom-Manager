@@ -1,6 +1,6 @@
 """llm-manager SDK — LLM 응답 캐싱 manager (순수 SDK, 서버 없음).
 
-handler(mdb·redis·llm·file)들을 조합해 LLM 응답을 캐싱하는 manager. 과거에는
+mdb·redis·file manager 와 llm-handler 를 조합해 LLM 응답을 캐싱하는 manager. 과거에는
 별도 FastAPI 서버(service/)를 httpx 로 호출했으나, 이제 로직을 `_internal/` 로
 흡수해 같은 프로세스에서 직접 실행한다. public API 시그니처는 불변.
 
@@ -143,9 +143,9 @@ __all__ = [
 async def close() -> None:
     """하위호환 no-op. (httpx 클라이언트 제거됨 — 정리할 SDK 소유 커넥션 없음.)
 
-    과거엔 SDK가 소유한 httpx AsyncClient 풀을 닫았다. 이제 핸들러 호출은 각
-    handler SDK가 자체 풀을 관리하므로 llm-manager 가 닫을 자원이 없다. agent
-    종료 전 호출해도 안전(무동작).
+    과거엔 SDK가 소유한 httpx AsyncClient 풀을 닫았다. 이제 백엔드 호출은 각
+    클라이언트 SDK(mdb·redis·file manager + llm-handler)가 자체 풀을 관리하므로
+    llm-manager 가 닫을 자원이 없다. agent 종료 전 호출해도 안전(무동작).
     """
     return None
 

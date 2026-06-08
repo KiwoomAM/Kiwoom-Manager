@@ -1,7 +1,7 @@
 """file_cache Redis 저장소.
 
 Files API URI와 Context Cache name을 Redis에 캐싱한다.
-redis-handler의 BaseJsonStore 패턴을 사용 — 자식 클래스 안에서 `self._make_key`,
+redis-manager의 BaseJsonStore 패턴을 사용 — 자식 클래스 안에서 `self._make_key`,
 `self._get_json` 등 protected 메서드를 호출하는 게 BaseJsonStore docstring의 권장
 사용법. 모듈 레벨 함수에서 `_store._private` 직접 호출은 캡슐화 위반이므로,
 도메인 메서드는 `FileCacheStore` 클래스 안에 두고 모듈 함수는 단순 위임으로 유지.
