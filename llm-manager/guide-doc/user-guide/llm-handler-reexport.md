@@ -1,6 +1,6 @@
 # llm_handler Re-export
 
-`llm_request`만 설치해도 `llm_handler`의 모든 public API를 별도 import 없이 쓸 수 있다.
+`llm_manager`만 설치해도 `llm_handler`의 모든 public API를 별도 import 없이 쓸 수 있다.
 `llm_handler`를 직접 호출해야 하는 경우(예: 캐싱 흐름을 거치지 않고 LLM만 빠르게 호출)에 의존성 추가 없이 그대로 사용한다.
 
 ## 사용 패턴 3가지
@@ -8,7 +8,7 @@
 ### 방법 1 — flat import (sync)
 
 ```python
-from llm_request import call, stream, embed, configure, Part, LLMResponse
+from llm_manager import call, stream, embed, configure, Part, LLMResponse
 
 configure(base_url="http://192.7.9.45:8100")  # 기본값 내장, URL 다를 때만 필요
 
@@ -24,7 +24,7 @@ result = embed("텍스트", model="text-embedding-004")
 ### 방법 2 — `aio` 서브모듈 (async)
 
 ```python
-from llm_request import aio
+from llm_manager import aio
 
 aio.configure(base_url="http://192.7.9.45:8100")
 
@@ -41,7 +41,7 @@ result = await aio.embed("텍스트")
 ### 방법 3 — 모듈 접근
 
 ```python
-from llm_request import llm_handler
+from llm_manager import llm_handler
 
 response = llm_handler.call("안녕하세요")              # sync
 response = await llm_handler.aio.call("안녕하세요")   # async

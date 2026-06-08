@@ -1,6 +1,6 @@
 # Error Handling
 
-`llm-request` SDK는 모든 에러를 두 가지 예외로 통일해서 던진다.
+`llm-manager` SDK는 모든 에러를 두 가지 예외로 통일해서 던진다.
 
 ## SDK 예외 계층
 
@@ -10,12 +10,12 @@
 | `ServiceError` | Service가 4xx/5xx 응답을 반환. `status_code` + `error_type`으로 원인 구분 |
 
 ```python
-from llm_request import llm_request_async, ServiceConnectionError, ServiceError
+from llm_manager import llm_request_async, ServiceConnectionError, ServiceError
 
 try:
     response, meta = await llm_request_async(llm_input)
 except ServiceConnectionError as e:
-    # llm-request Service에 연결 못 함 — 재시도 또는 알림
+    # llm-manager Service에 연결 못 함 — 재시도 또는 알림
     ...
 except ServiceError as e:
     # Service는 응답했지만 4xx/5xx

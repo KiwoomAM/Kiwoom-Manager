@@ -139,7 +139,7 @@ Context Cache는 **시간 단위 보관 비용**이 발생한다. 무조건 켜�
 ### 호출 형태
 
 ```python
-from llm_request import done_check, fetch_by_cache_key, FileKeyingMeta
+from llm_manager import done_check, fetch_by_cache_key, FileKeyingMeta
 
 dc = await done_check(
     {"contents": "이 보고서 요약", "model": "gemini-2.5-flash"},
@@ -161,7 +161,7 @@ if dc["cache_hit"]:
 
 ### 반환
 
-`(LLMResponse, RequestMeta)` 튜플. `meta.source == "cache"`, `meta.cache_hit == True`.
+`(LLMResponse, ResponseMeta)` 튜플. `meta.source == "cache"`, `meta.cache_hit == True`.
 
 ### 예외
 

@@ -1,13 +1,13 @@
 # Architecture
 
-`llm-request`는 두 컴포넌트로 나뉜다 — 에이전트가 설치하는 가벼운 SDK와, 무거운 의존성·캐싱 로직을 담당하는 Service.
+`llm-manager`는 두 컴포넌트로 나뉜다 — 에이전트가 설치하는 가벼운 SDK와, 무거운 의존성·캐싱 로직을 담당하는 Service.
 
 ## SDK ↔ Service 분리
 
 ```
 [Agent 프로세스]                    [Service 프로세스 (FastAPI 8101)]
 ─────────────────                  ──────────────────────────────────
-llm_request                        kiwoom-llm-handler
+llm_manager                        kiwoom-llm-handler
 └── httpx                          kiwoom-mdb-handler
                                    kiwoom-redis-handler
    POST /v1/request    ─────────►  kiwoom-file-manager
@@ -29,14 +29,14 @@ llm_request                        kiwoom-llm-handler
 ## 디렉토리 구조
 
 ```
-packages/llm-request/
+packages/llm-manager/
 ├── sdk/
-│   ├── llm_request/
+│   ├── llm_manager/
 │   │   ├── __init__.py        # 공개 API + close + Timings TypedDict
 │   │   ├── _client.py         # HTTP 클라이언트 (httpx.AsyncClient 싱글톤)
 │   │   ├── aio.py             # llm_handler.aio re-export
 │   │   ├── exceptions.py      # SDKError 계층
-│   │   └── models.py          # FileInput, FileKeyingMeta, RequestMeta 등
+│   │   └── models.py          # FileInput, FileKeyingMeta, ResponseMeta 등
 │   └── pyproject.toml
 │
 ├── service/
@@ -121,7 +121,7 @@ llm_request_async()
   │                                      │
   │                                      │ ⑤ save_result ────────────────────► MDB
   │                                      │
-  │ 3. LLMResponse + RequestMeta parse  │ ⑥ 응답 반환
+  │ 3. LLMResponse + ResponseMeta parse  │ ⑥ 응답 반환
   ◄──────────────────────────────────────┤
   │           HTTP 응답
   ▼          (LLMRequestResponse)
@@ -158,7 +158,7 @@ llm_request_async()
 
 ### `aio.py` — `llm_handler.aio` re-export
 
-`from llm_request import aio` 사용 시 `llm_handler.aio`의 모든 public 심볼이 그대로 노출.
+`from llm_manager import aio` 사용 시 `llm_handler.aio`의 모든 public 심볼이 그대로 노출.
 사용자가 `llm_handler` 별도 의존성 추가 없이 비동기 API 사용 가능 — [user-guide/llm-handler-reexport.md](../user-guide/llm-handler-reexport.md).
 
 ### `exceptions.py` — SDK 예외
@@ -178,8 +178,8 @@ SDKError                       # 기본
 | `FileInput` | `/v1/request` 파일 첨부 (5 meta + bytes) |
 | `FileKeyingMeta` | `/v1/done-check` 경량 메타 (3 필드) |
 | `StoredFile` | 이미 등록된 파일 참조 (5 meta + `file_path`) — Phase 2/3 흐름 |
-| `RequestMeta` | 응답 meta 객체 |
-| `RequestResult` | `/v1/request` raw 응답 (TypedDict) |
+| `ResponseMeta` | 응답 meta 객체 |
+| `ResponseResult` | `/v1/request` raw 응답 (TypedDict) |
 | `DoneCheckResult` | `/v1/done-check` raw 응답 (TypedDict) |
 
 > **`Base64Field`** — bytes를 JSON 직렬화 시 base64로 자동 변환하는 Pydantic 커스텀 타입. `FileInput.data`에 사용. Service의 `requests.py`에 동일 정의가 있음 (의도된 중복 — SDK ↔ Service는 독립 패키지라 모듈 공유 불가).

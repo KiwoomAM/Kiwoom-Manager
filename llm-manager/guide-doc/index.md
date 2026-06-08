@@ -1,4 +1,4 @@
-# kiwoom-llm-request
+# kiwoom-llm-manager
 
 > Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사용**하는 캐싱 레이어.
 
@@ -20,7 +20,7 @@ Google 공식 문서 기준으로 내부에서 처리되므로, 사용자는 파
 ## 설치
 
 ```bash
-pip install -e ./packages/llm-request/sdk
+pip install -e ./packages/llm-manager/sdk
 ```
 
 SDK는 `LLM_REQUEST_URL` 하나만 보고 Service에 연결한다.
@@ -37,7 +37,7 @@ os.environ["LLM_REQUEST_URL"] = "http://192.7.9.45:8101"  # 기본값, 생략 �
 FastAPI 핸들러나 Jupyter 등 **이미 async 컨텍스트 안에서** 호출한다.
 
 ```python
-from llm_request import llm_request_async
+from llm_manager import llm_request_async
 
 response, meta = await llm_request_async(
     {"contents": "대한민국의 수도는?", "model": "gemini-2.5-flash"},
@@ -55,7 +55,7 @@ print(meta.source)   # 'live' (LLM 호출) 또는 'cache' (이전 응답 재사�
 ```python
 from pathlib import Path
 import mimetypes
-from llm_request import llm_request_async, FileInput
+from llm_manager import llm_request_async, FileInput
 
 def make_file_input(p: Path) -> FileInput:
     return FileInput(
@@ -87,7 +87,7 @@ print(meta.source)
 > SDK는 httpx `AsyncClient` 싱글톤을 유지한다. graceful shutdown을 위해 진입점에서 `await close()` 호출 권장. 누락 시 `ResourceWarning: unclosed <httpx.AsyncClient>` 로그가 뜸.
 >
 > ```python
-> from llm_request import close
+> from llm_manager import close
 > await close()  # 종료 직전
 > ```
 
@@ -104,7 +104,7 @@ print(meta.source)
 
 ### API Reference
 
-- [api-reference.md](api-reference.md) — SDK 공개 API (`llm_request_async`, `FileInput`, `RequestMeta` …) + Service HTTP API
+- [api-reference.md](api-reference.md) — SDK 공개 API (`llm_request_async`, `FileInput`, `ResponseMeta` …) + Service HTTP API
 
 ### Developer Guide — 후임 인수용
 
@@ -122,7 +122,7 @@ print(meta.source)
 
 | 항목 | 값 |
 |---|---|
-| 패키지명 | `kiwoom-llm-request` |
+| 패키지명 | `kiwoom-llm-manager` |
 | 버전 | `0.2.0` |
 | Python | `>=3.11` |
 | 구성 | **SDK** (에이전트 설치) + **Service** (FastAPI, port 8101) |

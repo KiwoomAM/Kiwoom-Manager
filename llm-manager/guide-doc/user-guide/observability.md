@@ -1,6 +1,6 @@
 # Observability
 
-`llm-request`가 요청을 어떻게 처리했는지 두 가지 채널로 관찰할 수 있다.
+`llm-manager`가 요청을 어떻게 처리했는지 두 가지 채널로 관찰할 수 있다.
 
 | 채널 | 누가 보나 | 무엇이 보이나 |
 |---|---|---|
@@ -11,7 +11,7 @@
 
 ## 클라이언트가 보는 정보 — `meta`
 
-`llm_request_async()` 응답의 `meta`(= `RequestMeta`)를 통해 처리 결과를 확인한다.
+`llm_request_async()` 응답의 `meta`(= `ResponseMeta`)를 통해 처리 결과를 확인한다.
 
 ### 핵심 필드
 

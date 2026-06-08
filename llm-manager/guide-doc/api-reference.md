@@ -1,10 +1,10 @@
 # API Reference
 
-`llm-request`의 공개 API 명세.
+`llm-manager`의 공개 API 명세.
 
 | 영역 | 사용처 | 다루는 내용 |
 |---|---|---|
-| **SDK** (§2~§10) | Python에서 직접 호출 (`from llm_request import ...`) | 함수, 입력/반환 모델, 예외 |
+| **SDK** (§2~§10) | Python에서 직접 호출 (`from llm_manager import ...`) | 함수, 입력/반환 모델, 예외 |
 | **Service** (§11~§12) | HTTP 호출 (다른 언어/디버깅 시) | 엔드포인트 4개, 요청/응답 스키마 |
 
 대부분의 사용자는 SDK로 충분하다. Service HTTP는 SDK가 그대로 호출하는 인터페이스 — Python 외 언어 접근이나 직접 curl로 찔러볼 때 참고.
@@ -13,12 +13,12 @@
 
 | 함수 | 반환 타입 | 자세히 | 설명 |
 | --- | --- | --- | --- |
-| `llm_request_async` | `tuple[LLMResponse, RequestMeta]` | [§6](#§6-llm_request_async--llm_request) | 비동기 단건 LLM 호출 |
-| `llm_request` | `tuple[LLMResponse, RequestMeta]` | [§6](#§6-llm_request_async--llm_request) | 동기 단건 (`asyncio.run` 래퍼) |
+| `llm_request_async` | `tuple[LLMResponse, ResponseMeta]` | [§6](#§6-llm_request_async--llm_request) | 비동기 단건 LLM 호출 |
+| `llm_request` | `tuple[LLMResponse, ResponseMeta]` | [§6](#§6-llm_request_async--llm_request) | 동기 단건 (`asyncio.run` 래퍼) |
 | `llm_request_stream_async` | `tuple[AsyncIterator[dict], dict]` | [§7](#§7-llm_request_stream_async--llm_request_stream) | 비동기 스트리밍 — `(stream, meta)` |
 | `llm_request_stream` | `tuple[Iterator[dict], dict]` | [§7](#§7-llm_request_stream_async--llm_request_stream) | 동기 스트리밍 — `(stream, meta)` |
 | `done_check` | `DoneCheckResult` | [§8](#§8-done_check) | 캐시 존재 여부만 확인 (LLM 호출 없음) |
-| `fetch_by_cache_key` | `tuple[LLMResponse, RequestMeta]` | [§9](#§9-fetch_by_cache_key) | 캐시 키로 직접 조회 |
+| `fetch_by_cache_key` | `tuple[LLMResponse, ResponseMeta]` | [§9](#§9-fetch_by_cache_key) | 캐시 키로 직접 조회 |
 | `close` | `None` (async) | — | SDK `AsyncClient` 커넥션 풀 정리 — agent 종료 전 `await close()` 호출 권장 ([index.md ⚠️](index.md)) |
 
 ## `llm_input` 구조
@@ -86,7 +86,7 @@ def call(
 `/v1/request` 호출 시 첨부할 파일 — 5개 meta 필드 + bytes.
 
 ```python
-from llm_request import FileInput
+from llm_manager import FileInput
 
 file = FileInput(
     file_name="report.pdf",
@@ -114,7 +114,7 @@ file = FileInput(
 `/v1/done-check` 경량 메타 — 캐시 키 계산용 3 필드만.
 
 ```python
-from llm_request import FileKeyingMeta
+from llm_manager import FileKeyingMeta
 
 meta = FileKeyingMeta(
     file_name="report.pdf",
@@ -136,7 +136,7 @@ meta = FileKeyingMeta(
 시간 관련 설정을 하나의 TypedDict로 묶어 전달한다. 일부 키만 지정하면 나머지는 기본값으로 채워진다.
 
 ```python
-from llm_request import Timings, llm_request_async
+from llm_manager import Timings, llm_request_async
 
 timings: Timings = {
     "mdb_ttl": 3600,
@@ -169,7 +169,7 @@ response, meta = await llm_request_async(llm_input, timings=timings)
 
 `TokenUsage`, `FunctionCall` 등은 `llm_handler` re-export 타입 — [user-guide/llm-handler-reexport.md](user-guide/llm-handler-reexport.md) 참고.
 
-### `RequestMeta`
+### `ResponseMeta`
 
 응답의 두 번째 튜플 원소. 처리 결과 메타데이터.
 
@@ -194,7 +194,7 @@ if meta.file_meta:
         save_to_db(fm["file_path"])
 ```
 
-> 응답 shape — files가 있을 때만 `meta.file_meta` 키가 들어가고, 없으면 키 자체 부재 (MongoDB doc의 `file_meta` 동작과 거울). 옛 SDK 사용 시 `RequestMeta`가 모르는 키는 Pydantic v2 기본 `extra="ignore"`로 폐기 — 자연 호환.
+> 응답 shape — files가 있을 때만 `meta.file_meta` 키가 들어가고, 없으면 키 자체 부재 (MongoDB doc의 `file_meta` 동작과 거울). 옛 SDK 사용 시 `ResponseMeta`가 모르는 키는 Pydantic v2 기본 `extra="ignore"`로 폐기 — 자연 호환.
 
 ### `DoneCheckResult`
 
@@ -210,7 +210,7 @@ if meta.file_meta:
 
 ## `llm_request_async` / `llm_request`
 
-단일 LLM 요청을 실행하고 `(LLMResponse, RequestMeta)` 튜플을 반환한다.
+단일 LLM 요청을 실행하고 `(LLMResponse, ResponseMeta)` 튜플을 반환한다.
 
 ### 시그니처
 
@@ -224,7 +224,7 @@ async def llm_request_async(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[LLMResponse, RequestMeta]: ...
+) -> tuple[LLMResponse, ResponseMeta]: ...
 ```
 
 `llm_request`는 동일 시그니처의 sync 버전 — 내부적으로 `asyncio.run(llm_request_async(...))`.
@@ -243,7 +243,7 @@ async def llm_request_async(
 
 ### 반환
 
-`(LLMResponse, RequestMeta)` 튜플. 각각의 정의는 [§5 반환 타입](#반환-타입).
+`(LLMResponse, ResponseMeta)` 튜플. 각각의 정의는 [§5 반환 타입](#반환-타입).
 
 ### 예외
 
@@ -255,7 +255,7 @@ async def llm_request_async(
 ### 사용 예시
 
 ```python
-from llm_request import llm_request_async, FileInput
+from llm_manager import llm_request_async, FileInput
 
 response, meta = await llm_request_async(
     {"contents": "이 보고서 요약", "model": "gemini-2.5-flash"},
@@ -373,7 +373,7 @@ async def done_check(
 ### 사용 예시
 
 ```python
-from llm_request import done_check, FileKeyingMeta
+from llm_manager import done_check, FileKeyingMeta
 
 dc = await done_check(
     {"contents": "이 보고서 요약", "model": "gemini-2.5-flash"},
@@ -399,7 +399,7 @@ async def fetch_by_cache_key(
     cache_key: str,
     *,
     database: str | None = None,
-) -> tuple[LLMResponse, RequestMeta]: ...
+) -> tuple[LLMResponse, ResponseMeta]: ...
 ```
 
 `fetch_by_cache_key`는 **async만** 제공된다.
@@ -413,7 +413,7 @@ async def fetch_by_cache_key(
 
 ### 반환
 
-`(LLMResponse, RequestMeta)` 튜플. `meta.source == "cache"`, `meta.cache_hit == True`.
+`(LLMResponse, ResponseMeta)` 튜플. `meta.source == "cache"`, `meta.cache_hit == True`.
 
 ### 예외
 
@@ -425,7 +425,7 @@ async def fetch_by_cache_key(
 ### 사용 예시
 
 ```python
-from llm_request import done_check, fetch_by_cache_key, FileKeyingMeta
+from llm_manager import done_check, fetch_by_cache_key, FileKeyingMeta
 
 dc = await done_check(
     {"contents": "...", "model": "gemini-2.5-flash"},
@@ -465,7 +465,7 @@ SDKError                       # 기본 — 모든 SDK 예외의 부모
 ### 사용 예시
 
 ```python
-from llm_request import (
+from llm_manager import (
     llm_request_async,
     SDKError,
     ServiceConnectionError,
@@ -492,7 +492,7 @@ except ServiceError as e:
 try:
     response, meta = await llm_request_async(llm_input)
 except SDKError as e:
-    log.error("llm-request 호출 실패: %s", e)
+    log.error("llm-manager 호출 실패: %s", e)
     raise
 ```
 
