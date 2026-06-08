@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-APIHandlerSDK - HTTP 클라이언트 래퍼 (Singleton)
+APIManager - HTTP 클라이언트 래퍼 (Singleton)
 
 기존 APIHandler와 유사한 인터페이스를 제공합니다.
 내부적으로 API Handler Service에 HTTP 요청을 보냅니다.
 
 사용 예시:
-    from api_handler_sdk import APIHandlerSDK
+    from api_manager import APIManager
 
-    api = APIHandlerSDK()
+    api = APIManager()
 
     result = api.execute("finnhub_price", params={"symbol": "AAPL"})
     result = await api.aexecute("finnhub_price", params={"symbol": "AAPL"})
@@ -19,15 +19,15 @@ APIHandlerSDK - HTTP 클라이언트 래퍼 (Singleton)
 import logging
 from typing import Any, Optional
 
-from api_handler_sdk._client import AsyncClient, SyncClient
+from api_manager._client import AsyncClient, SyncClient
 
 logger = logging.getLogger(__name__)
 
 
-class APIHandlerSDK:
+class APIManager:
     """API Handler Service HTTP 클라이언트 래퍼 (Singleton)."""
 
-    _instance: Optional["APIHandlerSDK"] = None
+    _instance: Optional["APIManager"] = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -41,7 +41,7 @@ class APIHandlerSDK:
         self._sync = SyncClient(timeout=timeout)
         self._async = AsyncClient(timeout=timeout)
         self._initialized = True
-        logger.info("APIHandlerSDK 초기화 완료")
+        logger.info("APIManager 초기화 완료")
 
     # =================================================================
     # 도구 실행
@@ -100,20 +100,20 @@ class APIHandlerSDK:
     def close(self) -> None:
         if self._sync is not None:
             self._sync.close()
-        logger.info("APIHandlerSDK 연결 종료")
+        logger.info("APIManager 연결 종료")
 
     async def aclose(self) -> None:
         if self._async is not None:
             await self._async.close()
-        logger.info("APIHandlerSDK 비동기 연결 종료")
+        logger.info("APIManager 비동기 연결 종료")
 
     @classmethod
     def reset(cls) -> None:
         if cls._instance is not None:
             cls._instance.close()
             cls._instance = None
-            logger.info("APIHandlerSDK Singleton 리셋 완료")
+            logger.info("APIManager Singleton 리셋 완료")
 
     def __repr__(self) -> str:
         status = "initialized" if self._initialized else "not initialized"
-        return f"<APIHandlerSDK status={status}>"
+        return f"<APIManager status={status}>"

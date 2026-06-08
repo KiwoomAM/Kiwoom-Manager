@@ -1,21 +1,24 @@
-# File Manager SDK
+# File Manager (client)
 
-> Kiwoom File Manager SDK — HTTP 클라이언트 기반 파일 저장/캐시/반환 라이브러리
+> `file-handler` 서버용 HTTP 클라이언트 패키지. import name: `file_manager`.
 
-File Manager Service(REST API)를 통해 파일을 저장·조회하는 Python SDK입니다.
+`file-handler` 서버(FastAPI, :8600)를 통해 파일을 저장·조회하는 Python 클라이언트 패키지입니다.
 파일명 + 수정시간 + 크기 조합으로 캐싱하며, 중복 업로드를 자동으로 방지합니다.
-에이전트 개발자는 SDK의 4개 메서드만 호출하면 저장소 경로·MongoDB 메타데이터·MIME 타입 추출을 모두 위임할 수 있습니다.
+에이전트 개발자는 4개 메서드만 호출하면 저장소 경로·MongoDB 메타데이터·MIME 타입 추출을 모두 위임할 수 있습니다.
+
+- **이 패키지** (`file_manager`): import해서 쓰는 클라이언트
+- **서버** (`../file-handler`): 띄우는 FastAPI 서버 (:8600) — [file-handler/CLAUDE.md](../file-handler/CLAUDE.md) 참고
 
 ## 요구사항
 
 - Python >= 3.10
 - httpx >= 0.27.0
-- File Manager Service 실행 중
+- `file-handler` 서버 실행 중
 
 ## 설치
 
 ```bash
-pip install -e packages/file-manager/sdk
+pip install -e packages/file-manager
 ```
 
 ## 환경변수
@@ -27,11 +30,17 @@ pip install -e packages/file-manager/sdk
 ## 디렉터리 구조
 
 ```
-file_manager/
-├── __init__.py            # 공개 API (FileManagerHandler, 예외)
-├── _client.py             # httpx 기반 AsyncClient (내부용)
-├── handler.py             # FileManagerHandler (Singleton, async 진입점)
-└── exceptions.py          # FMError, FMConnectionError, FMServiceError
+packages/file-manager/          # 이 클라이언트 패키지
+├── pyproject.toml
+├── file_manager/
+│   ├── __init__.py             # 공개 API (FileManagerHandler, 예외)
+│   ├── _client.py              # httpx 기반 AsyncClient (내부용)
+│   ├── handler.py              # FileManagerHandler (Singleton, async 진입점)
+│   └── exceptions.py           # FMError, FMConnectionError, FMServiceError
+└── tests/
+
+packages/file-handler/          # 서버 — 별도 패키지
+└── service/                    # FastAPI 서버 (:8600)
 ```
 
 ## 데이터 모델
@@ -247,4 +256,4 @@ result = await fm.register_or_get(file_data, metadata)
 - **`mime_type`/`extension`는 SDK가 결정**: FM Service는 SDK가 전달한 값을 그대로 저장합니다. 재추출 없음.
 - **`check_cache`/`upload_file` 반환값은 `file_path`만**: 나머지 5필드는 로컬 `metadata` dict에 이미 있으므로, 에이전트가 병합해서 6필드 완전체를 구성합니다.
 - **연결 종료**: 장기 실행 프로세스에서는 종료 시 `await fm.close()` 호출 권장.
-- **SDK는 HTTP만, File Server I/O는 Service가 담당**: 파일 저장소 접근(로컬 FS, 향후 S3 등)은 FM Service와 `file_handler` 패키지가 처리합니다. SDK 사용자는 저장소 형태를 알 필요가 없습니다.
+- **클라이언트는 HTTP만, File Server I/O는 서버가 담당**: 파일 저장소 접근(로컬 FS, 향후 S3 등)은 `file-handler` 서버가 처리합니다. 클라이언트 사용자는 저장소 형태를 알 필요가 없습니다.
