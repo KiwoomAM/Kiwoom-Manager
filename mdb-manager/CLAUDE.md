@@ -33,16 +33,23 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 
 ## Gotchas
 
-- **SERVICE_NAME hard-fail (생성 시점)**: `SERVICE_NAME` env가 없으면 `MongoDBManager()` /
-  `AsyncMongoDBManager()` (정확히는 내부 client 생성) 시점에 즉시 `MDBConfigError`를 던진다.
-  서버측 400을 첫 요청까지 기다리지 않는 fail-fast다. 구현: `_client.py`/`_async_client.py`의
-  `_default_headers()`. read-only 소비자도 SERVICE_NAME이 필요하다 (없으면 아무 값이라도 지정).
-- **import 시점 부작용 없음, 생성 시점에 터짐**: 모듈 import 자체는 안전하지만, 핸들러를
-  생성하는 순간 SERVICE_NAME 가드가 작동한다. 따라서 `load_dotenv()`는 **핸들러 생성보다
-  먼저** 실행돼야 한다. 에이전트가 모듈 로드 시점에 핸들러를 만든다면(예: 모듈-레벨 싱글톤),
-  그 import 전에 env가 떠 있어야 한다.
+- **SERVICE_NAME guard (envelope 진입 시점)**: `SERVICE_NAME`이 없어도
+  `MongoDBManager()` / `AsyncMongoDBManager()` 생성과 blocks read/write는 정상 동작한다.
+  caller 식별이 필수인 **envelope 진입점**(`get_agent_data()` / `get_agent_output()`)에서만,
+  env `SERVICE_NAME`도 `with_caller()` caller도 없으면 `MDBConfigError`를 던진다. 구현:
+  각 핸들러 파일의 `_require_caller()` + 클라이언트 `caller_identity` 프로퍼티. (과거에는 client
+  생성 시점에 hard-fail했으나, read-only blocks 소비자 마찰과 load_dotenv import-order
+  footgun을 없애기 위해 가드를 envelope 진입점으로 좁혔다.)
+- **import/생성 시점 부작용 없음**: 모듈 import도, 핸들러 생성도 SERVICE_NAME을 요구하지
+  않는다. 따라서 모듈-레벨 싱글톤(`mdb = MongoDBManager()`)을 `load_dotenv()` 전에 만들어도
+  안전하다. SERVICE_NAME은 envelope를 실제로 호출하기 전까지만 떠 있으면 된다.
+- **envelope-heavy 소비자의 부팅 검증(권장)**: 가드가 envelope 진입 시점으로 옮겨졌으므로,
+  항상 envelope를 쓰는 장수 프로세스(FastAPI lifespan 등)에서 SERVICE_NAME 누락을 부팅 때
+  빨리 발견하려면, lifespan에서 `os.environ.get("SERVICE_NAME")`를 assert하거나 envelope
+  진입을 한 번 호출(예: `get_agent_data()`)해 검증하라. (강제 아님 — 선택적 fail-fast.)
 - **Singleton(sync) poisoning 방지**: 생성 실패 시 `MongoDBManager.__init__`이 `_instance`를
   비운다. 그래서 SERVICE_NAME 누락으로 실패한 뒤 env를 채우고 다시 생성하면 정상 동작.
+  (SERVICE_NAME은 더 이상 생성 실패 요인이 아니지만, 다른 생성 오류에 대한 일반 방어로 유지.)
 - **HANDLER URL은 고정 기본값**: `MDB_HANDLER_URL` 미설정 시 `http://192.7.9.45:8300`.
   사용자는 보통 설정하지 않는다. env override는 테스트/특수 환경용 escape hatch.
 - **AsyncMongoDBManager는 Singleton 아님**: 명시적 `aclose()` 필요 (`async with` 또는 FastAPI
@@ -60,7 +67,7 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 
 | 변수 | 기본값 | 설정 필요? |
 |---|---|---|
-| `SERVICE_NAME` | (없음) | **필수** — write/envelope 작업의 caller 식별. 누락 시 생성 시점 `MDBConfigError` |
+| `SERVICE_NAME` | (없음) | envelope(`agent_data`/`agent_output`) 접근·owned 컬렉션 write의 caller 식별용. blocks read만 한다면 불필요. envelope 진입 시 누락이면 `MDBConfigError`. `with_caller()`로 대체 가능 |
 | `MDB_HANDLER_URL` | `http://192.7.9.45:8300` | 불필요 (고정 기본값). 테스트/특수 환경만 override |
 
 ## Commands

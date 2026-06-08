@@ -159,7 +159,8 @@ reports.find({"type": "analysis"}, limit=10)
 ```
 MDBError                    # 기본 에러 (message, status_code)
 ├── MDBConnectionError      # 서비스 연결 실패
-└── MDBHandlerError         # 서비스 에러 응답 (HTTP 4xx/5xx)
+├── MDBHandlerError         # 서비스 에러 응답 (HTTP 4xx/5xx)
+└── MDBConfigError          # 설정 누락 (예: envelope 접근 시 SERVICE_NAME/caller 부재)
 ```
 
 ```python
@@ -172,6 +173,19 @@ except MDBConnectionError:
 except MDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e.message}")
 ```
+
+## SERVICE_NAME과 caller 식별
+
+`SERVICE_NAME` 환경변수는 `X-Caller-Service` 헤더로 부착되어 서버측 write ACL과 envelope
+스코프에 쓰인다. 검증 범위는 다음과 같다:
+
+- **blocks read** (`kw_gp` 등 일반 컬렉션 조회): SERVICE_NAME 없이도 동작 — 검증 안 함.
+- **envelope 접근** (`get_agent_data()` / `get_agent_output()`): caller 필수. env
+  `SERVICE_NAME`도 `with_caller()` caller도 없으면 `MDBConfigError`.
+- **blocks write**: 클라이언트 가드는 없고, 서버측 ACL이 caller를 검증한다(필요 시 HTTP 4xx).
+
+핸들러 생성 자체는 SERVICE_NAME 없이도 항상 성공한다. 따라서 `load_dotenv()`는 envelope를
+호출하기 전까지만 실행되면 된다.
 
 ## Caller 정체성 override (`with_caller`)
 
