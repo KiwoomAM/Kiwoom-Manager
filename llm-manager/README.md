@@ -83,7 +83,7 @@ handler URL 기본값이 사내 주소이므로 보통 그대로 두면 된다. 
 | `LLM_HANDLER_URL` | `http://192.7.9.45:8100` | LLM Handler 서비스 |
 | `MDB_HANDLER_URL` | `http://192.7.9.45:8300` | MDB Handler 서비스 |
 | `REDIS_URL` | `redis://192.7.9.45:7617/0` | Redis |
-| `FILE_MANAGER_URL` | `http://192.7.9.45:8600` | file-manager 서비스 |
+| `FILE_HANDLER_URL` | `http://192.7.9.45:8600` | file-handler 서비스 |
 | `MONGODB_DATABASE` | `kw_ai` | MongoDB 데이터베이스명 (`database=` 인자로도 지정 가능) |
 
 ## 데이터베이스 안내
