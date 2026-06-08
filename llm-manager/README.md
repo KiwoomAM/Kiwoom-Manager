@@ -25,13 +25,13 @@ Agent에서 LLM을 호출할 때 **중복 호출 없이 이전 응답을 재사�
 | 버전 | `0.3.0` |
 | Python | **`>=3.11`** |
 | 구성 | **순수 SDK manager** (별도 서버 없음). agent 프로세스 안에서 직접 실행 |
-| 의존성 | `kiwoom-mdb-handler`, `kiwoom-redis-handler`, `kiwoom-file-manager`, `httpx`, `pydantic`, `pydantic-settings`, `filetype`, `PyMuPDF` (llm-handler 클라이언트 SDK는 흡수 — 외부 의존 아님) |
-| 동작 방식 | SDK가 handler(mdb·redis·llm·file) 서버들을 **직접 조합 호출**. (구 0.2.0의 FastAPI Service(8101) 레이어는 제거됨 — 근거: [docs/23](docs/23.manager-sdk-refactoring-plan.md)) |
+| 의존성 | `kiwoom-mdb-manager`, `kiwoom-redis-manager`, `kiwoom-file-manager`, `httpx`, `pydantic`, `pydantic-settings`, `filetype`, `PyMuPDF` (llm-handler 클라이언트 SDK는 흡수 — 외부 의존 아님) |
+| 동작 방식 | SDK가 mdb·redis·file manager 와 llm-handler 를 **직접 조합 호출**. (구 0.2.0의 FastAPI Service(8101) 레이어는 제거됨 — 근거: [docs/23](docs/23.manager-sdk-refactoring-plan.md)) |
 
 # 3. 디렉터리 구조
 
 ```
-packages/llm-manager/
+llm-manager/
 ├── llm_manager/                  # 단일 SDK manager 패키지
 │   ├── __init__.py               # 공개 API (llm_request_async + 큐레이션한 handler primitive)
 │   ├── aio.py                    # 비동기 공개 표면 (call/stream/embed/session — handler_client.aio 큐레이션)
@@ -69,7 +69,7 @@ packages/llm-manager/
 ## 설치
 
 ```bash
-pip install -e ./packages/llm-manager
+pip install -e ./llm-manager
 ```
 
 별도 서버를 띄울 필요가 없다. 첫 호출 시 SDK가 handler 들을 하드코딩된 사내 URL로 자동 초기화한다 (`LLM_REQUEST_URL` 같은 설정 불필요).
@@ -835,86 +835,6 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | **공개 API 시그니처·호출** | — | **불변** (`llm_request_async`, `stored_files`, `meta.*` 그대로) |
 
 > 핵심: **호출 코드는 거의 그대로**다. 바뀌는 건 (1) 설치 경로, (2) 서버 안 띄움, (3) `except ServiceError` 쓰던 곳을 구체 예외로 교체. `ServiceError` 를 import 하던 코드만 수정 필요.
-
-## v0.1.0 → v0.2.0 (이력)
-
-## 변경 요약
-
-| 항목 | v0.1.0 | v0.2.0 |
-| --- | --- | --- |
-| 설치 경로 | `packages/llm-manager` | `packages/llm-manager/sdk` |
-| ⚠️ Service 실행 | 불필요 | **별도 FastAPI Service (port 8101) 실행 필수** |
-| 환경변수 | `MDB_HANDLER_URL`, `LLM_HANDLER_URL`, `MONGODB_DATABASE` 등 여러 개 | `LLM_REQUEST_URL` 하나 (기본값 내장) |
-| 초기화 코드 | `llm_handler.configure()`, `MongoDBHandler.reset()` 필요 | 불필요 |
-| ⚠️ 파일 입력 | `file_paths=["report.pdf"]` | `stored_files=[StoredFile(...)]` (file-manager `register_or_get` 결과) |
-| ⚠️ meta 반환 타입 | `dict` (`meta["source"]`) | `ResponseMeta` (`meta.source`) |
-
-> **⚠️ 설치 경로 변경 주의**
->
-> v0.1.0 에선 `pip install -e packages/llm-manager` 로 설치했지만, v0.2.0 에선 이 경로가 **uv workspace 루트** 로 바뀌었다. 같은 명령을 쓰면 **빈 워크스페이스만 설치**되어 SDK 기능이 없는 상태가 된다. 새 경로로 설치해야 한다.
->
-> ```bash
-> pip install -e packages/llm-manager/sdk    # ← sdk 하위 경로 사용
-> # 또는 루트에서 전체 워크스페이스 설치:
-> cd packages/llm-manager && uv sync
-> ```
->
-> 기존 v0.1.0 환경에서 업그레이드할 경우 먼저 `pip uninstall kiwoom-llm-manager` 로 구 버전을 제거한 뒤 새 경로로 설치 권장.
-
-## 초기화 코드 제거
-
-```python
-# v0.1.0 — 이 블록 전체 제거 가능
-import llm_handler
-llm_handler.configure()
-llm_handler.aio.configure()
-
-from mdb_handler import MongoDBHandler
-MongoDBHandler.reset()
-
-os.environ["MDB_HANDLER_URL"] = "http://192.7.9.45:8300"
-os.environ["MONGODB_DATABASE"] = "kw_ai"
-
-# v0.2.0 — 필요한 경우만
-os.environ["LLM_REQUEST_URL"] = "http://192.7.9.45:8101"  # 기본값, 생략 가능
-```
-
-## ⚠️ 파일 입력 변경
-
-```python
-# v0.1.0
-response, meta = await llm_request_async(
-    {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-    file_paths=["report.pdf"],
-)
-
-# v0.2.0
-from llm_manager import llm_request_async, StoredFile
-from file_manager import FileManagerHandler
-
-fm = FileManagerHandler()
-sf_dict = await fm.register_or_get(
-    bytes_data=open("report.pdf", "rb").read(),
-    metadata=fm.build_metadata("report.pdf"),
-)
-response, meta = await llm_request_async(
-    {"contents": "분석해줘", "model": "gemini-2.5-flash"},
-    stored_files=[StoredFile(**sf_dict)],
-)
-```
-
-## ⚠️ meta 접근 방식 변경
-
-```python
-# v0.1.0 — dict 접근
-print(meta["source"])
-print(meta["cache_hit"])
-
-# v0.2.0 — 속성 접근
-print(meta.source)
-print(meta.cache_hit)
-```
-
 
 # 13. 주의사항
 
