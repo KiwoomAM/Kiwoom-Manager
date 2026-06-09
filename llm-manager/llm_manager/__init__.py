@@ -41,8 +41,9 @@ from llm_manager._internal.done_check import done_check as _done_check
 # handler_client(흡수한 HTTP 클라이언트)는 llm_manager 내부. 공개 표면은 매니저가 큐레이션한다:
 #   - 생성 primitive (매니저가 캐싱 의견 없음): call/stream/embed/session
 #   - 모델·타입·예외 (항상 공개)
-# 캐시/파일 생명주기 ops (create_cache/upload_file/configure 등)는 매니저의 결정 역할이라
+# 캐시/파일 생명주기 ops (create_cache/upload_file 등)는 매니저의 결정 역할이라
 # 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 됨.
+# 단, configure(base_url/timeout) 는 HTTP 클라이언트 설정용이라 공개한다 (캐시 상태 무관).
 from llm_manager._internal.handler_client import (
     CacheRef,
     ContentsType,
@@ -59,6 +60,7 @@ from llm_manager._internal.handler_client import (
     StreamChunk,
     TokenUsage,
     call,
+    configure,
     embed,
     session,
     stream,
@@ -122,6 +124,8 @@ __all__ = [
     "embed",
     "session",
     "Session",
+    # handler 클라이언트 설정 (HTTP base_url/timeout — 캐시 상태 무관)
+    "configure",
     # handler 모델·타입 (타입힌트/Part 생성용 — 항상 공개)
     "CacheRef",
     "ContentsType",
