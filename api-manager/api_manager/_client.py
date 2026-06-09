@@ -16,7 +16,7 @@ import httpx
 
 from api_manager.exceptions import APIManagerConnectionError, APIManagerError
 
-DEFAULT_BASE_URL = "http://localhost:8400"
+DEFAULT_BASE_URL = "http://192.7.9.45:8400"
 
 
 def _resolve_base_url() -> str:
