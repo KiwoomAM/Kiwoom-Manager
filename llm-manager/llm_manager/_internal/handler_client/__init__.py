@@ -128,6 +128,10 @@ def configure(base_url: str | None = None, timeout: float | None = None) -> None
     url = base_url or settings.handler_url
     t = timeout if timeout is not None else settings.timeout
     _instance = SyncClient(base_url=url, timeout=t)
+    if timeout is not None:
+        # 사용자 지정 timeout 기록 → lazy 초기화(ensure_configured)가 600 으로 덮어쓰지 않게.
+        from llm_manager._internal import _config
+        _config._user_timeout = timeout
 
 
 def last_assistant_message() -> Content | None:

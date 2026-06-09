@@ -29,6 +29,12 @@ _STANDBY_PATTERNS: tuple[str, ...] = (
 _configured = False
 _lock = threading.Lock()
 
+# configure(timeout=) 로 사용자가 지정한 SDK→handler HTTP 타임아웃(초).
+# None = 미지정 → ensure_configured 가 기본 600 적용. handler_client.configure /
+# handler_client.aio.configure 호출 시 기록되어, 첫 요청 전에 설정해도 lazy 초기화가
+# 600 으로 덮어쓰지 않게 한다 (base_url 은 항상 LLM_HANDLER_URL 로 강제).
+_user_timeout: float | None = None
+
 
 def _ensure_redis_connected() -> None:
     """Redis 연결 확보. 실패 시 RuntimeError.
@@ -88,8 +94,9 @@ def ensure_configured() -> None:
         from llm_manager._internal.handler_client import aio as handler_client_aio
         # base_url 을 명시 주입한다. handler_client.get_settings() 가 lazy 라 위 setdefault 로도
         # 반영되지만, 원격 agent 에선 하드코딩 URL 을 직접 전달하는 편이 명확하고 안전하다.
-        handler_client.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
-        handler_client_aio.configure(base_url=LLM_HANDLER_URL, timeout=600.0)
+        t = _user_timeout if _user_timeout is not None else 600.0
+        handler_client.configure(base_url=LLM_HANDLER_URL, timeout=t)
+        handler_client_aio.configure(base_url=LLM_HANDLER_URL, timeout=t)
 
         # MongoDB database (store.py 에서 사용)
         os.environ.setdefault("MONGODB_DATABASE", MONGODB_DATABASE)
