@@ -4,7 +4,7 @@ version = "2.0.0"
 description = "Kiwoom 프로젝트 Redis 핸들러 (메모리 폴백 + 재시도 + SET 옵션)"
 requires-python = ">=3.10"
 dependencies = [
-    "redis>=5.0.0",
+    "redis>=5.0.0,<8",
     "python-dotenv>=1.0.0",
 ]
 
