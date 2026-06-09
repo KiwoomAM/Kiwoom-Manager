@@ -66,11 +66,72 @@ llm-manager/
 
 # 4. 설정 및 준비사항
 
-## 설치
+llm-manager 하나만 설치하면 종속 manager(`kiwoom-mdb-manager`·`kiwoom-redis-manager`·`kiwoom-file-manager`)가 **자동으로 함께 설치**된다. 의존성이 같은 GitHub **private** 모노레포의 하위 폴더를 가리키므로, repo 접근 인증이 한 번 필요하다. 환경에 따라 A·B·C 중 하나를 쓴다.
+
+### A. 개발자 로컬 — `gh` 로그인 (권장)
+
+본인 GitHub 계정으로 로그인해두면 별도 키·토큰이 필요 없다.
+
+**1회 준비** (이미 `gh` 로 로그인돼 있으면 생략)
+
+```bash
+gh auth login
+```
+
+로그인 후 git 의 https 인증이 자동으로 `gh` 자격증명을 사용한다(`credential.helper = gh auth git-credential`).
+
+**설치**
+
+```bash
+pip install "git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirectory=llm-manager"
+```
+
+이 한 줄로 llm-manager + 종속 manager 3개 + 공개 패키지까지 한 번에 설치된다.
+
+> 전제: 그 계정이 `KiwoomAM/Kiwoom-Manager` repo 접근 권한이 있어야 한다 (org 멤버 또는 collaborator).
+
+### B. Docker / 무인 배포 — GitHub App 토큰
+
+`gh` 로그인이 없는 빌드 환경에서는, 사내 공용 **GitHub App 개인키(`certs/kiwoom.pem`)** 로 단기 토큰(1시간)을 발급해 인증한다. 토큰을 `git config insteadOf` 로 주입하면 평범한 https 의존성 URL 이 자동으로 인증되므로 — **pyproject 는 수정할 필요가 없다.**
+
+```dockerfile
+# 사내 공용 GitHub App 키를 빌드 컨텍스트에 둔다 (certs/kiwoom.pem)
+COPY certs/kiwoom.pem /tmp/kiwoom.pem
+ARG GITHUB_APP_ID=2826312
+ARG GITHUB_INSTALLATION_ID=108948292
+
+RUN pip install --no-cache-dir PyJWT cryptography requests \
+    && GITHUB_TOKEN=$(python -c "\
+import jwt, time, requests; \
+pem = open('/tmp/kiwoom.pem', 'rb').read(); \
+now = int(time.time()); \
+payload = {'iat': now - 60, 'exp': now + 600, 'iss': '${GITHUB_APP_ID}'}; \
+token = jwt.encode(payload, pem, algorithm='RS256'); \
+r = requests.post('https://api.github.com/app/installations/${GITHUB_INSTALLATION_ID}/access_tokens', \
+    headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'}); \
+print(r.json()['token'])") \
+    && git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" \
+    && pip install --no-cache-dir "git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirectory=llm-manager" \
+    && rm -f /tmp/kiwoom.pem \
+    && git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf
+```
+
+- 토큰·키가 이미지에 남지 않도록 **같은 `RUN` 레이어**에서 설치 후 `insteadOf` 해제 + pem 삭제까지 한다.
+- `git` 이 있어야 한다(`pip install git+https://` 용). slim 이미지면 `apt-get install -y --no-install-recommends git` 를 먼저 추가.
+- App ID·Installation ID 는 비밀이 아니므로 그대로 둬도 되고, `--build-arg` 로 덮어써도 된다. 비밀은 `kiwoom.pem` 뿐이다.
+
+### C. 모노레포 로컬 개발 — editable
+
+모노레포 안에서 개발할 때는 옆 폴더를 직접 참조(editable)한다:
 
 ```bash
 pip install -e ./llm-manager
+# 또는 종속 manager 까지 editable 로:  pip install -r llm-manager/requirements.txt
 ```
+
+`pyproject.toml` 의 `[tool.uv.sources]` 로컬 경로가 우선 적용되어, 이때는 GitHub 가 아니라 옆 폴더에서 가져온다. 그래서 A·B 의 GitHub 의존성 선언과 충돌하지 않는다.
+
+---
 
 별도 서버를 띄울 필요가 없다. 첫 호출 시 SDK가 handler 들을 하드코딩된 사내 URL로 자동 초기화한다 (`LLM_REQUEST_URL` 같은 설정 불필요).
 
