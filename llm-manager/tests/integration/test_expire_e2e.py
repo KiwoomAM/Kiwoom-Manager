@@ -27,7 +27,7 @@ from llm_manager._internal.file_processing import cache_store
 from llm_manager._internal.handler_client import aio as llm_aio
 
 SAMPLE_PDF = (
-    Path(__file__).resolve().parents[3] / "quickstarts" / "medium_file.pdf"
+    Path(__file__).resolve().parents[2] / "quickstarts" / "llm_manager" / "medium_file.pdf"
 )
 # medium_file.pdf ≈ 24MB / 약 12K tokens — gemini-2.5-flash 의 Context Cache
 # 최소 토큰치 (4096) 를 넘는 것으로 검증됨 (2026-05 기준 통합 테스트 PASS).
