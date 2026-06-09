@@ -19,7 +19,7 @@ import httpx
 
 from file_manager.exceptions import FMConnectionError, FMServiceError
 
-DEFAULT_BASE_URL = "http://localhost:8600"
+DEFAULT_BASE_URL = "http://192.7.9.45:8600"
 
 
 def _resolve_base_url() -> str:
