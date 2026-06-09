@@ -71,22 +71,11 @@ def ensure_configured() -> None:
         if _configured:  # lock 획득 후 재확인
             return
 
-        # mdb-handler — agent_llm 컬렉션은 mdb-handler ACL 상 write_caller="llm-manager".
-        # mdb_manager 는 SyncClient 생성 시점에 SERVICE_NAME env 를 읽어 X-Caller-Service
-        # 헤더에 굽으므로, MongoDBManager 생성 **전에** "llm-manager" 로 설정해야 캐시 쓰기가
-        # 인가된다. (서버 시절 docker-compose 의 SERVICE_NAME=llm-manager 와 동일 역할 —
-        # SDK 모드에선 llm-manager 가 이 프로세스의 mdb 프록시이므로 프로세스 caller 가 된다.)
-        _existing_sn = os.environ.get("SERVICE_NAME")
-        if _existing_sn and _existing_sn != "llm-manager":
-            logger.warning(
-                "기존 SERVICE_NAME=%r 를 'llm-manager' 로 덮어씁니다 — agent_llm 캐시 쓰기는 "
-                "caller='llm-manager' 가 강제됩니다 (mdb-handler ACL).",
-                _existing_sn,
-            )
-        os.environ["SERVICE_NAME"] = "llm-manager"
+        # mdb-manager — agent_llm 컬렉션 write 는 mdb-handler ACL 상 caller="llm-manager" 필요.
+        # 전역 SERVICE_NAME 을 덮어쓰지 않는다 — store.py 가 mdb 접근마다
+        # with_caller("llm-manager") 로 per-call 주입하므로, 호스트 앱의 SERVICE_NAME·
+        # mdb 싱글톤을 건드리지 않는다 (정체성 격리, 부작용 없음).
         os.environ.setdefault("MDB_HANDLER_URL", MDB_HANDLER_URL)
-        from mdb_manager import MongoDBManager
-        MongoDBManager.reset()
 
         # redis-handler — 연결 실패 시 초기화 중단
         os.environ.setdefault("REDIS_URL", REDIS_URL)

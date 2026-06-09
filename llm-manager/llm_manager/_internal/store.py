@@ -18,7 +18,10 @@ DEFAULT_HISTORY_DB = "kw_ai"
 def _get_collection(collection: str, database: str | None = None):
     db_name = database or os.getenv("MONGODB_DATABASE", DEFAULT_HISTORY_DB)
     mdb = MongoDBManager()
-    return mdb.get_database(db_name, collection)
+    # caller 는 전역 SERVICE_NAME 이 아니라 이 호출에서만 per-call 로 주입한다 —
+    # agent_llm write 는 mdb-handler ACL 상 caller="llm-manager" 가 필요하고,
+    # with_caller 는 싱글톤·호스트 정체성을 건드리지 않는 bound view 를 돌려준다.
+    return mdb.with_caller("llm-manager").get_database(db_name, collection)
 
 
 def cache_get(
