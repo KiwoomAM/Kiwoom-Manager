@@ -34,7 +34,12 @@ class RedisConfig:
     configure() 메서드로 명시적 설정도 지원합니다.
     """
 
+    # ── Handler 접속 정보 (v3) ─────────────────────────────────
+    HANDLER_URL: str = os.getenv("REDIS_HANDLER_URL", "http://192.7.9.45:8800")
+    HANDLER_TIMEOUT: float = float(os.getenv("REDIS_HANDLER_TIMEOUT", "5"))
+
     # ── 접속 정보 ──────────────────────────────────────────────
+    # [v3] REDIS_URL/SOCKET_*는 handler 서버 측 설정으로 이동 — manager에서는 미사용 (호환용 유지)
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
 
     # ── 소켓 설정 ──────────────────────────────────────────────
@@ -58,7 +63,9 @@ class RedisConfig:
     def get_summary(cls) -> Dict[str, Any]:
         """현재 설정 요약"""
         return {
-            "url": cls.REDIS_URL,
+            "handler_url": cls.HANDLER_URL,
+            "handler_timeout": cls.HANDLER_TIMEOUT,
+            "url": cls.REDIS_URL,  # [v3] legacy — handler 측 설정, 참고용
             "socket_timeout": cls.SOCKET_TIMEOUT,
             "socket_connect_timeout": cls.SOCKET_CONNECT_TIMEOUT,
             "env_path": cls.get_env_path(),
@@ -70,6 +77,8 @@ class RedisConfig:
         url: Optional[str] = None,
         socket_timeout: Optional[int] = None,
         socket_connect_timeout: Optional[int] = None,
+        handler_url: Optional[str] = None,
+        handler_timeout: Optional[float] = None,
     ) -> None:
         """명시적 설정"""
         if url is not None:
@@ -78,8 +87,12 @@ class RedisConfig:
             cls.SOCKET_TIMEOUT = socket_timeout
         if socket_connect_timeout is not None:
             cls.SOCKET_CONNECT_TIMEOUT = socket_connect_timeout
+        if handler_url is not None:
+            cls.HANDLER_URL = handler_url
+        if handler_timeout is not None:
+            cls.HANDLER_TIMEOUT = handler_timeout
 
-        logger.info(f"RedisConfig 수동 설정 완료: {cls.REDIS_URL}")
+        logger.info(f"RedisConfig 수동 설정 완료: handler={cls.HANDLER_URL}")
 
     @classmethod
     def reload_from_env(cls) -> None:
@@ -87,16 +100,14 @@ class RedisConfig:
         cls.REDIS_URL = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
         cls.SOCKET_TIMEOUT = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
         cls.SOCKET_CONNECT_TIMEOUT = int(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "5"))
+        cls.HANDLER_URL = os.getenv("REDIS_HANDLER_URL", "http://192.7.9.45:8800")
+        cls.HANDLER_TIMEOUT = float(os.getenv("REDIS_HANDLER_TIMEOUT", "5"))
 
         logger.info("RedisConfig 환경변수에서 재로드 완료")
 
 
 class RetryConfig:
-    """
-    Redis 명령 재시도 설정
-
-    환경변수에서 자동 로드. RetryPolicy가 참조한다.
-    """
+    """[v3 deprecated] retry는 redis-handler 서버로 이관 — manager에서 미사용. import 호환용 유지."""
 
     MAX_ATTEMPTS: int = int(os.getenv("REDIS_RETRY_MAX_ATTEMPTS", "3"))
     INITIAL_BACKOFF: float = float(os.getenv("REDIS_RETRY_INITIAL_BACKOFF", "0.1"))
