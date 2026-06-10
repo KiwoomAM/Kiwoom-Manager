@@ -22,6 +22,10 @@ redis_manager
 
     # 토큰 갱신 (만료시각 유지)
     rh.set("session:abc", new_token, keepttl=True)
+
+v3.0.0: transport가 redis-py 직결 → redis-handler HTTP 경유로 변경.
+RedisManager/BaseJsonStore API는 v2와 100% 호환.
+제거됨: RedisBackend, RetryPolicy (CLAUDE.md상 직접 사용 금지 대상이었음)
 """
 
 # ── Config ────────────────────────────────────────────────
@@ -44,11 +48,8 @@ from .exceptions import (
     RedisUnavailableError,
 )
 
-# ── Retry ─────────────────────────────────────────────────
-from .retry import RetryPolicy
-
 # ── Backends ──────────────────────────────────────────────
-from .backends import KeyValueBackend, MemoryBackend, RedisBackend
+from .backends import HandlerBackend, KeyValueBackend, MemoryBackend
 
 # ── Handler ───────────────────────────────────────────────
 from .handler import RedisManager
@@ -78,12 +79,10 @@ __all__ = [
     "RedisHandlerError",
     "RedisRetryExhausted",
     "RedisUnavailableError",
-    # Retry
-    "RetryPolicy",
     # Backends (Protocol + 구현체)
+    "HandlerBackend",
     "KeyValueBackend",
     "MemoryBackend",
-    "RedisBackend",
     # Handler
     "RedisManager",
     "redis_manager",

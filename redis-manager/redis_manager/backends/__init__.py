@@ -4,6 +4,5 @@
 from .base import KeyValueBackend
 from .handler_backend import HandlerBackend
 from .memory_backend import MemoryBackend
-from .redis_backend import RedisBackend
 
-__all__ = ["KeyValueBackend", "HandlerBackend", "MemoryBackend", "RedisBackend"]
+__all__ = ["KeyValueBackend", "HandlerBackend", "MemoryBackend"]
