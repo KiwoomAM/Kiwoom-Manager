@@ -1,8 +1,17 @@
 # Redis Manager
 
-> Kiwoom Redis Handler v2.0 — 메모리 폴백 + 재시도 + SET 옵션 내장 Redis 클라이언트
+> Kiwoom Redis Manager v3.0 — redis-handler HTTP 경유 + 메모리 폴백 + SET 옵션 내장 Redis 클라이언트
 
-Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라이브러리. Redis 서버가 불가할 때 메모리 백엔드로 투명하게 폴백하며, 일시적 네트워크 장애는 exponential backoff + jitter로 자동 복구한다.
+Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라이브러리. redis-py 직결 대신 redis-handler HTTP 서버를 경유하며, Redis 서버가 불가할 때 메모리 백엔드로 투명하게 폴백한다.
+
+## v3.0 변경사항
+
+- ✅ **transport 전환** — redis-py 직결 → **redis-handler HTTP 서버 경유** (`REDIS_HANDLER_URL`, 기본 `http://192.7.9.45:8800`)
+- ✅ **health 진단 live화** — `health_check()`/`is_redis_connected`/`ping()`이 매 호출 handler의 live PING 결과를 조회. 가용성 캐시 플래그(`_redis_available`) 제거로 false-negative(웜업 의존)·false-positive(sticky) 구조적 해소
+- ✅ **per-call 폴백** — 일반 명령은 호출 단위로 메모리 폴백. NX/XX는 기존대로 폴백 차단
+- ⚠️ **제거됨** — `RedisBackend`, `RetryPolicy` export, `redis` 패키지 의존성. retry는 handler 서버로 이관 (`REDIS_RETRY_*`는 handler 배포 환경에서 설정)
+- `RedisManager`/`BaseJsonStore` API는 v2와 100% 호환 — 소비자는 재설치만 하면 동작
+- 소비자측 임시 미티게이션(startup eager `init_redis()`, 자체 live ping 교차검증)은 제거 가능
 
 ## v2.0 변경사항
 
@@ -17,8 +26,9 @@ Redis 연결 관리, CRUD, JSON 저장소 베이스를 제공하는 Python 라�
 ## 요구사항
 
 - Python >= 3.10
-- redis >= 5.0.0
+- httpx >= 0.27.0
 - python-dotenv >= 1.0.0
+- 네트워크상 redis-handler 서버 도달 가능 (기본 `http://192.7.9.45:8800`)
 
 ## 설치
 
@@ -30,14 +40,11 @@ pip install -e packages/redis-manager
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `REDIS_URL` | `redis://192.7.9.45:7617/0` | Redis 서버 URL |
-| `REDIS_SOCKET_TIMEOUT` | 5 | 소켓 타임아웃 (초) |
-| `REDIS_SOCKET_CONNECT_TIMEOUT` | 5 | 연결 타임아웃 (초) |
-| `REDIS_RETRY_MAX_ATTEMPTS` | 3 | 첫 시도 포함 최대 시도 |
-| `REDIS_RETRY_INITIAL_BACKOFF` | 0.1 | 첫 백오프 (초) |
-| `REDIS_RETRY_MAX_BACKOFF` | 1.0 | 백오프 상한 (초) |
-| `REDIS_RETRY_MULTIPLIER` | 2.0 | exp 배율 |
-| `REDIS_RETRY_JITTER_RATIO` | 0.2 | 지터 ±20% |
+| `REDIS_HANDLER_URL` | `http://192.7.9.45:8800` | redis-handler 서버 URL |
+| `REDIS_HANDLER_TIMEOUT` | 5 | handler HTTP timeout (초) |
+| `SERVICE_NAME` | (없음) | 설정 시 `X-Caller-Service` 헤더로 전송 |
+
+> v2의 `REDIS_URL`, `REDIS_SOCKET_*`, `REDIS_RETRY_*`는 **handler 서버 측 환경변수로 이동** — manager에서는 더 이상 사용하지 않는다.
 
 ## Quick Start
 
@@ -182,7 +189,7 @@ RedisManager (orchestrator)
    └── 폴백 정책 (NX/XX 차단, 일반 명령 자동)
    ↓
 KeyValueBackend Protocol
-   ├── RedisBackend (redis-py + @retryable)
+   ├── HandlerBackend (httpx → redis-handler 서버)
    └── MemoryBackend (dict + threading.Lock)
 ```
 
@@ -192,6 +199,6 @@ KeyValueBackend Protocol
 - **메모리 폴백**: Redis 불가 시 인메모리 dict로 동작. 프로세스 종료 시 데이터 소실
 - **TTL**: 초 단위. `None`이면 영구 저장
 - **Thread-safe**: 메모리 백엔드는 `threading.Lock`으로 동시 접근 보호
-- **자동 초기화**: `import redis_manager` 시 `init_redis()`가 자동 호출됨
-- **재시도 비용**: 최악 ~16초 지연 (`socket_timeout=5s × 3 + backoff`)
+- **진단은 live**: health_check()/is_redis_connected/ping()은 매 호출 handler에 HTTP 1회 — 진단 용도로만 사용
+- **재시도는 handler 서버 담당**: manager는 HTTP timeout(기본 5s)만 적용
 - **NX/XX 폴백 없음**: 분산 의미론 보호. Redis 미연결 시 `RedisUnavailableError`
