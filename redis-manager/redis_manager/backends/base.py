@@ -3,7 +3,7 @@
 
 KeyValueBackend Protocol — Redis 백엔드와 메모리 백엔드의 공통 계약.
 
-신규 명령 추가 시 이 Protocol → RedisBackend → MemoryBackend 순으로 갱신할 것.
+신규 명령 추가 시 이 Protocol → HandlerBackend → MemoryBackend 순으로 갱신할 것.
 
 NOTE: `from __future__ import annotations`는 클래스 내부 `set()` 메서드와
 `set[str]` 타입 힌트의 이름 충돌(shadowing)을 회피하기 위해 필요. 모든 어노테이션이

@@ -59,8 +59,8 @@ from .base_store import BaseJsonStore
 
 
 # ── 전역 인스턴스 ─────────────────────────────────────────
-# 연결은 첫 사용 시점에 get_client()가 lazy로 수행한다. import 시점에 ping하지 않는다
-# (import가 블로킹되거나 configure() 전에 연결이 고정되는 것을 방지).
+# HTTP 클라이언트는 첫 명령 시점에 lazy 생성된다. import 시점에 연결하지 않으며,
+# import 후 RedisConfig.configure(handler_url=...) 호출도 첫 사용 전이면 반영된다.
 redis_manager = RedisManager()
 
 

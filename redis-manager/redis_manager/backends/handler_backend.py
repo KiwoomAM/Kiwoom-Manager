@@ -37,26 +37,34 @@ class HandlerBackend:
     name = "redis"
 
     def __init__(self, client: Optional[httpx.Client] = None):
-        if client is None:
+        # client 미주입 시 첫 요청 시점에 lazy 생성 — import 후
+        # RedisConfig.configure(handler_url=...) 호출을 존중하기 위함.
+        self._http: Optional[httpx.Client] = client
+
+    def _ensure_client(self) -> httpx.Client:
+        if self._http is None:
             headers = {}
             service_name = os.getenv("SERVICE_NAME")
             if service_name:
                 headers["X-Caller-Service"] = service_name
-            client = httpx.Client(
+            self._http = httpx.Client(
                 base_url=RedisConfig.HANDLER_URL,
                 timeout=RedisConfig.HANDLER_TIMEOUT,
                 headers=headers,
             )
-        self._http = client
+        return self._http
 
     def close(self) -> None:
-        self._http.close()
+        """클라이언트 종료. 다음 요청 시 현재 RedisConfig로 재생성된다."""
+        if self._http is not None:
+            self._http.close()
+            self._http = None
 
     # ── HTTP 공통 ─────────────────────────────────────
     def _request(self, method: str, path: str, *, params: dict | None = None,
                  json: dict | None = None) -> Any:
         try:
-            resp = self._http.request(method, path, params=params, json=json)
+            resp = self._ensure_client().request(method, path, params=params, json=json)
         except httpx.TransportError as e:
             raise RedisUnavailableError(f"redis-handler 연결 실패: {e}") from e
 

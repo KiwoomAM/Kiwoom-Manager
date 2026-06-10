@@ -111,7 +111,7 @@ class MemoryBackend:
             return True
 
     def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
-        """fnmatch 기반 SCAN simulate. RedisBackend와 인터페이스 호환.
+        """fnmatch 기반 SCAN simulate. HandlerBackend와 인터페이스 호환.
 
         Lock 안에서 키 snapshot을 만든 뒤 lock 밖에서 yield — generator 소비
         도중 다른 스레드가 mutation을 기다리며 blocking되는 상황을 회피.
