@@ -144,3 +144,20 @@ def test_ping_false_when_handler_unreachable():
         raise httpx.ConnectError("refused")
 
     assert make_backend(handler).ping() is False
+
+
+def test_non_json_success_body_raises_handler_error():
+    """2xx인데 본문이 JSON이 아니면 폴백 가능한 RedisHandlerError로 매핑된다."""
+    backend = make_backend(lambda r: httpx.Response(200, text="<html>proxy error</html>"))
+    with pytest.raises(RedisHandlerError):
+        backend.get("k")
+
+
+def test_non_transport_httpx_error_raises_handler_error():
+    """TransportError가 아닌 httpx 오류(DecodingError 등)도 RedisHandlerError 계열로 매핑된다."""
+    def handler(request):
+        raise httpx.DecodingError("bad encoding", request=request)
+
+    backend = make_backend(handler)
+    with pytest.raises(RedisHandlerError):
+        backend.get("k")

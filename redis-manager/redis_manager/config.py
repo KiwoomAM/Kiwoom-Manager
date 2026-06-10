@@ -16,7 +16,7 @@ Redis 연결 설정 클래스
 
     또는 명시적으로 설정:
 
-    >>> RedisConfig.configure(url="redis://localhost:6379/0")
+    >>> RedisConfig.configure(handler_url="http://localhost:8800")
 """
 
 import os

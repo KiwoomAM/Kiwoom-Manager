@@ -67,6 +67,10 @@ class HandlerBackend:
             resp = self._ensure_client().request(method, path, params=params, json=json)
         except httpx.TransportError as e:
             raise RedisUnavailableError(f"redis-handler 연결 실패: {e}") from e
+        except httpx.HTTPError as e:
+            # TransportError 외 httpx 오류(DecodingError, TooManyRedirects 등)도
+            # 폴백 계약(RedisHandlerError 계열)을 지키도록 매핑
+            raise RedisHandlerError(f"redis-handler 요청 실패: {e}") from e
 
         if resp.status_code == 503:
             raise RedisRetryExhausted(
@@ -76,7 +80,10 @@ class HandlerBackend:
             raise RedisHandlerError(
                 f"redis-handler 오류 ({resp.status_code}): {self._error_message(resp)}"
             )
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as e:
+            raise RedisHandlerError(f"redis-handler 응답 파싱 실패 (비JSON 본문): {e}") from e
 
     @staticmethod
     def _error_message(resp: httpx.Response) -> str:

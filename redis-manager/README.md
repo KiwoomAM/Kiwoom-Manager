@@ -111,7 +111,7 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 | `smembers(key)` | `Set[str]` | Set 전체 멤버 |
 | `srem(key, *members)` | `int` | Set에서 멤버 제거 |
 | `ping()` | `bool` | Redis 연결 확인 |
-| `health_check()` | `dict` | `{"connected", "storage", "config"}` |
+| `health_check()` | `dict` | `{"connected", "storage", "config", "handler"}` |
 | `close()` | `None` | 연결 종료 |
 | `reset()` | `None` | 연결 종료 + 메모리 초기화 |
 | `cleanup_memory()` | `int` | 메모리 백엔드 만료 키 정리 |
@@ -141,6 +141,8 @@ except RedisRetryExhausted:
     # 재시도 소진 — 일시 장애 지속
     return
 ```
+
+> NX/XX 경로에서 그 외 handler 오류는 베이스 `RedisHandlerError`로 전파될 수 있다 — 포괄 처리가 필요하면 `except RedisHandlerError`를 사용.
 
 ### BaseJsonStore (도메인 store 작성용)
 

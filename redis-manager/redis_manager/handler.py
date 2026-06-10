@@ -60,6 +60,7 @@ class RedisManager:
         v2의 _redis_available 캐시 플래그 + is_available() early-return은
         제거됨 (health 진단 false-negative/false-positive의 원인).
         각 명령이 handler 호출 실패 시 그 호출만 폴백한다.
+        기존 `if rb is not None` 분기는 v2 diff 최소화를 위해 유지된 항상-참 경로다.
         """
         return self._backend
 
