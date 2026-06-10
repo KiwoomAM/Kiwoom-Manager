@@ -5,10 +5,15 @@ description = "Kiwoom File Manager SDK - 파일 저장/캐시/반환 HTTP 클라
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
+    "kiwoom-mdb-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=mdb-manager",
 ]
 
 [project.optional-dependencies]
 scripts = ["tqdm>=4.66.0"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -16,3 +21,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["file_manager*"]
+
+[tool.uv.sources]
+kiwoom-mdb-manager = { path = "../mdb-manager", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

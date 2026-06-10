@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""FileManagerHandler 오케스트레이션 테스트 (mdb + file-handler 모킹)."""
+
+import pytest
+
+import file_manager.handler as handler_mod
+from file_manager.handler import FileManagerHandler
+
+
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    FileManagerHandler.reset()
+    yield
+    FileManagerHandler.reset()
+
+
+async def test_check_cache_hit(monkeypatch):
+    captured = {}
+
+    async def fake_find(filter):
+        captured["filter"] = filter
+        return {"metadata": {"file_path": "abc.xlsx"}}
+
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    fm = FileManagerHandler()
+    result = await fm.check_cache(
+        {"file_name": "r.xlsx", "file_mtime": 1713000000, "file_size": 100}
+    )
+    assert result == {"hit": True, "file_path": "abc.xlsx"}
+    assert captured["filter"] == {
+        "metadata.file_name": "r.xlsx",
+        "metadata.file_mtime": 1713000000,
+        "metadata.file_size": 100,
+    }
+
+
+async def test_check_cache_miss(monkeypatch):
+    async def fake_find(filter):
+        return None
+
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    fm = FileManagerHandler()
+    result = await fm.check_cache(
+        {"file_name": "r.xlsx", "file_mtime": 1, "file_size": 2}
+    )
+    assert result == {"hit": False, "file_path": None}
+
+
+async def test_upload_file_stores_then_records_metadata(monkeypatch):
+    posted = {}
+    inserted = {}
+
+    async def fake_post(path, files=None, data=None):
+        posted["path"] = path
+        posted["files"] = files
+        posted["data"] = data
+        return {"file_path": "uuid123.xlsx"}
+
+    async def fake_insert(document):
+        inserted["doc"] = document
+        return "id-1"
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(fm._client, "post", fake_post)
+    monkeypatch.setattr(handler_mod, "insert_metadata", fake_insert)
+
+    metadata = {
+        "file_name": "r.xlsx",
+        "file_mtime": 1713000000,
+        "file_size": 100,
+        "mime_type": "application/vnd.ms-excel",
+        "extension": "xlsx",
+    }
+    file_path = await fm.upload_file(b"BYTES", metadata)
+
+    assert file_path == "uuid123.xlsx"
+    assert posted["path"] == "/v1/files/upload"
+    assert posted["data"] == {"extension": "xlsx"}
+    assert posted["files"]["file"][0] == "r.xlsx"
+    assert inserted["doc"] == {
+        "metadata": {
+            "file_name": "r.xlsx",
+            "file_mtime": 1713000000,
+            "file_size": 100,
+            "file_path": "uuid123.xlsx",
+            "mime_type": "application/vnd.ms-excel",
+            "extension": "xlsx",
+        }
+    }
+
+
+async def test_get_file_returns_bytes_and_metadata(monkeypatch):
+    async def fake_find(filter):
+        assert filter == {"metadata.file_path": "uuid123.xlsx"}
+        return {
+            "metadata": {
+                "file_name": "r.xlsx",
+                "file_mtime": 1713000000,
+                "file_size": 100,
+                "file_path": "uuid123.xlsx",
+                "mime_type": "application/vnd.ms-excel",
+                "extension": "xlsx",
+            }
+        }
+
+    async def fake_get_bytes(path):
+        assert path == "/v1/files/uuid123.xlsx"
+        return b"BYTES", {}
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    monkeypatch.setattr(fm._client, "get_bytes_with_headers", fake_get_bytes)
+
+    data, meta = await fm.get_file("uuid123.xlsx")
+    assert data == b"BYTES"
+    assert meta["file_path"] == "uuid123.xlsx"
+    assert set(meta.keys()) == {
+        "file_name", "file_mtime", "file_size", "file_path", "mime_type", "extension"
+    }
+
+
+async def test_get_file_missing_metadata_raises(monkeypatch):
+    from file_manager.exceptions import MetadataNotFoundError
+
+    async def fake_find(filter):
+        return None
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    with pytest.raises(MetadataNotFoundError):
+        await fm.get_file("missing.xlsx")
+
+
+async def test_close_also_closes_mdb(monkeypatch):
+    closed = {"mdb": False, "client": False}
+
+    async def fake_close_mdb():
+        closed["mdb"] = True
+
+    async def fake_client_close():
+        closed["client"] = True
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "close_mdb", fake_close_mdb)
+    monkeypatch.setattr(fm._client, "close", fake_client_close)
+
+    await fm.close()
+    assert closed == {"mdb": True, "client": True}

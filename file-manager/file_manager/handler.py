@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-FileManagerHandler — FM Service HTTP 클라이언트 + 로컬 메타데이터 헬퍼
+FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-handler)
 
-HTTP 래퍼 3개(check_cache/upload_file/get_file) + 로컬 추출 헬퍼 1개(build_metadata).
-파생 메타데이터(mime_type/extension) 추출은 SDK 측에서 결정적으로 수행되며,
-FM Service는 SDK가 전달한 값을 그대로 저장한다.
+파일 바이트는 file-handler(내장 HTTP 클라이언트)에 저장하고,
+메타데이터(MongoDB)는 mdb-manager SDK(→ mdb-handler)로 접근한다.
+  - check_cache    : mdb-handler에 메타데이터 직접 질의
+  - upload_file    : 파일 바이트는 file-handler에 저장 + 6필드 메타데이터는 mdb-handler에 기록
+  - get_file       : 메타데이터는 mdb-handler 조회 + 파일 바이트는 file-handler 수신
+  - build_metadata : 로컬에서 mime_type/extension 파생 (HTTP 호출 없음)
 
 사용 예시:
     from file_manager import FileManagerHandler
@@ -34,15 +37,14 @@ FM Service는 SDK가 전달한 값을 그대로 저장한다.
     await fm.close()
 """
 
-import json
 import logging
 import mimetypes
 from pathlib import PurePosixPath
 from typing import Optional
-from urllib.parse import unquote
 
 from file_manager._client import AsyncClient
-from file_manager.exceptions import FMServiceError
+from file_manager._mdb import close_mdb, find_metadata, insert_metadata
+from file_manager.exceptions import MetadataNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -100,78 +102,77 @@ class FileManagerHandler:
         }
 
     async def check_cache(self, metadata: dict) -> dict:
-        """캐시 체크. 입력 metadata에서 캐시 키 3개만 서버에 전달한다.
+        """캐시 체크. 캐시 키 3개로 mdb-handler에 직접 질의한다.
 
         Args:
             metadata: file_name/file_mtime/file_size를 포함하는 dict
-                      (build_metadata 결과를 그대로 넣어도 됨)
 
         Returns:
             {"hit": True,  "file_path": "<UUID.확장자>"}  (캐시 히트)
             {"hit": False, "file_path": None}              (캐시 미스)
         """
-        payload = {
-            "file_name": metadata["file_name"],
-            "file_mtime": metadata["file_mtime"],
-            "file_size": metadata["file_size"],
+        filter = {
+            "metadata.file_name": metadata["file_name"],
+            "metadata.file_mtime": metadata["file_mtime"],
+            "metadata.file_size": metadata["file_size"],
         }
-        return await self._client.post(
-            f"{_API_PREFIX}/check-cache",
-            json=payload,
-        )
+        doc = await find_metadata(filter)
+        if doc is None:
+            return {"hit": False, "file_path": None}
+        return {"hit": True, "file_path": doc["metadata"]["file_path"]}
 
     async def upload_file(self, file_data: bytes, metadata: dict) -> str:
-        """파일 업로드 + 메타데이터 저장.
+        """파일 바이트는 file-handler에 저장하고, 메타데이터는 mdb-handler에 기록.
 
         Args:
             file_data: 파일 바이너리 데이터
             metadata: {file_name, file_mtime, file_size, mime_type, extension}
-                      build_metadata 결과를 그대로 전달하면 된다
 
         Returns:
-            FM Service가 생성한 file_path (UUID.확장자) 문자열
+            file-handler가 생성한 file_path (UUID.확장자) 문자열
         """
-        files = {
-            "file": (metadata["file_name"], file_data),
-        }
-        data = {
-            "file_name": metadata["file_name"],
-            "file_mtime": str(metadata["file_mtime"]),
-            "file_size": str(metadata["file_size"]),
-            "mime_type": metadata["mime_type"],
-            "extension": metadata["extension"],
-        }
+        files = {"file": (metadata["file_name"], file_data)}
+        data = {"extension": metadata["extension"]}
         resp = await self._client.post(
             f"{_API_PREFIX}/upload",
             files=files,
             data=data,
         )
-        return resp["file_path"]
+        file_path = resp["file_path"]
+
+        document = {
+            "metadata": {
+                "file_name": metadata["file_name"],
+                "file_mtime": metadata["file_mtime"],
+                "file_size": metadata["file_size"],
+                "file_path": file_path,
+                "mime_type": metadata["mime_type"],
+                "extension": metadata["extension"],
+            }
+        }
+        await insert_metadata(document)
+        return file_path
 
     async def get_file(self, file_path: str) -> tuple[bytes, dict]:
-        """File Server에서 파일을 꺼내 (바이너리, 메타데이터) 튜플로 반환.
+        """(바이너리, 6필드 메타데이터) 튜플 반환.
 
-        FM Service는 MongoDB에 저장된 6개 필드 메타데이터를
-        `X-File-Metadata` 헤더(URL-encoded JSON)로 함께 전달한다.
+        메타데이터는 mdb-handler에서 조회하고, 파일 바이트는 file-handler에서 받는다.
 
         Args:
-            file_path: FM Service가 반환한 file_path (예: "a1b2c3d4e5f6.xlsx")
+            file_path: file-handler가 반환했던 file_path (예: "a1b2c3.xlsx")
 
         Returns:
             (file_data, metadata)
-              - file_data: 파일 바이너리
-              - metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path} (6개)
+              metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path}
         """
-        file_data, headers = await self._client.get_bytes_with_headers(
+        doc = await find_metadata({"metadata.file_path": file_path})
+        if doc is None:
+            raise MetadataNotFoundError(file_path)
+        metadata = doc["metadata"]
+
+        file_data, _headers = await self._client.get_bytes_with_headers(
             f"{_API_PREFIX}/{file_path}"
         )
-        metadata_header = headers.get("x-file-metadata")
-        if not metadata_header:
-            raise FMServiceError(
-                "X-File-Metadata 헤더 누락 — FM Service 버전이 오래됐을 수 있음",
-                status_code=500,
-            )
-        metadata = json.loads(unquote(metadata_header))
         return file_data, metadata
 
     async def register_or_get(
@@ -204,10 +205,11 @@ class FileManagerHandler:
         return {**metadata, "file_path": file_path}
 
     async def close(self) -> None:
-        """HTTP 클라이언트 연결 종료."""
+        """HTTP 클라이언트 + mdb 클라이언트 연결 종료."""
         if self._client is not None:
             await self._client.close()
-            logger.info("FileManagerHandler 연결 종료")
+        await close_mdb()
+        logger.info("FileManagerHandler 연결 종료")
 
     @classmethod
     def reset(cls) -> None:
