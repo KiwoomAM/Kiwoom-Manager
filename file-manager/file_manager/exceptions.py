@@ -25,3 +25,23 @@ class FMServiceError(FMError):
 
     def __init__(self, message: str, status_code: int) -> None:
         super().__init__(message, status_code)
+
+
+class MetadataNotFoundError(FMError):
+    """파일 서버에는 파일이 있으나 MongoDB에 메타데이터가 없는 데이터 정합성 오류.
+
+    정상 흐름에선 발생하지 않아야 한다(업로드 시 반드시 메타데이터가 기록됨).
+    """
+
+    def __init__(self, file_path: str) -> None:
+        super().__init__(
+            f"메타데이터를 찾을 수 없습니다 (file_path={file_path})",
+            status_code=500,
+        )
+
+
+class MDBConnectionError(FMError):
+    """MDB Handler(메타데이터 저장소) 연결/응답 오류."""
+
+    def __init__(self, message: str = "MDB Handler 연결 실패") -> None:
+        super().__init__(message, status_code=503)

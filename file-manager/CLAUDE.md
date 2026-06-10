@@ -1,9 +1,10 @@
 # File Manager (client)
 
-`file-handler` 서버용 **HTTP 클라이언트**. 소비자(예: llm-request)가 `pip install` 후 `import file_manager`로 사용한다.
+파일 I/O + MongoDB 캐시·메타데이터를 **오케스트레이션하는 SDK**. file-handler(파일 저장/반환)와 mdb-handler(캐시 조회/메타데이터 기록)를 직접 호출하여 조합한다. 소비자(예: llm-request)가 `pip install` 후 `import file_manager`로 사용한다.
 
-- **import해서 쓰는 클라이언트** → 이 패키지 (`file_manager`)
-- **띄우는 서버** → `../file-handler` (FastAPI, :8600)
+- **import해서 쓰는 SDK** → 이 패키지 (`file_manager`)
+- **파일 I/O 서버** → `../file-handler` (FastAPI, :8600) — 순수 파일 저장/반환만 담당
+- **MongoDB 서버** → mdb-handler (mdb-manager SDK 경유, caller="file-manager" 주입)
 
 ## 설치 / 사용
 ```bash
@@ -19,8 +20,8 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 ```
 
 ## 메서드
-`build_metadata`(동기, 로컬 mime/extension 추출) · `check_cache` · `upload_file` · `get_file` · `register_or_get`.
-서버 엔드포인트/책임 상세는 [`../file-handler/CLAUDE.md`](../file-handler/CLAUDE.md) 참고.
+`build_metadata`(동기, 로컬 mime/extension 추출) · `check_cache`(mdb-handler 직접 조회) · `upload_file`(file-handler 저장 + mdb 메타데이터 기록) · `get_file`(mdb 메타 조회 + file-handler 바이너리 반환) · `register_or_get`.
+파이프라인 명세는 [`../file-handler/file-manager-pipeline.md`](../file-handler/file-manager-pipeline.md) 참고.
 
 ## 예외
 `FMError` · `FMConnectionError` · `FMServiceError` (from `file_manager`).

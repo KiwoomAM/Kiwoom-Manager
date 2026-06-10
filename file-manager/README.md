@@ -1,13 +1,13 @@
 # File Manager (client)
 
-> `file-handler` 서버용 HTTP 클라이언트 패키지. import name: `file_manager`.
+> 파일 I/O + MongoDB 캐시·메타데이터 오케스트레이션 SDK 패키지. import name: `file_manager`.
 
-`file-handler` 서버(FastAPI, :8600)를 통해 파일을 저장·조회하는 Python 클라이언트 패키지입니다.
+file-handler(순수 파일 I/O, :8600)와 mdb-handler(MongoDB)를 직접 호출하여 파일 저장·캐시 조회·메타데이터 관리를 조합합니다.
 파일명 + 수정시간 + 크기 조합으로 캐싱하며, 중복 업로드를 자동으로 방지합니다.
 에이전트 개발자는 4개 메서드만 호출하면 저장소 경로·MongoDB 메타데이터·MIME 타입 추출을 모두 위임할 수 있습니다.
 
-- **이 패키지** (`file_manager`): import해서 쓰는 클라이언트
-- **서버** (`../file-handler`): 띄우는 FastAPI 서버 (:8600) — [file-handler/CLAUDE.md](../file-handler/CLAUDE.md) 참고
+- **이 패키지** (`file_manager`): import해서 쓰는 오케스트레이션 SDK
+- **파일 I/O 서버** (`../file-handler`): 띄우는 FastAPI 서버 (:8600) — [file-handler/CLAUDE.md](../file-handler/CLAUDE.md) 참고
 
 ## 요구사항
 
@@ -51,7 +51,7 @@ SDK가 다루는 메타데이터는 세 단계로 늘어납니다.
 |------|---------|------|-----------|
 | 입력 | 3 | `file_name`, `file_mtime`, `file_size` | 에이전트 |
 | `build_metadata` 후 | 5 | + `mime_type`, `extension` | SDK (로컬 추출) |
-| `upload_file` 후 | 6 | + `file_path` | FM Service (UUID 생성) |
+| `upload_file` 후 | 6 | + `file_path` | file-handler (UUID 생성) |
 
 - `file_name` + `file_mtime` + `file_size` 3개가 **캐시 키**
 - `file_path`는 `UUID.확장자` 형식의 저장 경로 (원본 파일명과 별개)
@@ -147,8 +147,8 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `await check_cache(metadata)` | `dict` | `{"hit": bool, "file_path": str \| None}` — 캐시 키 3개(`file_name`/`file_mtime`/`file_size`)로 MongoDB 조회 |
-| `await upload_file(file_data, metadata)` | `str` | 파일 저장 + MongoDB 레코드 생성. FM Service가 생성한 `file_path` 반환 |
+| `await check_cache(metadata)` | `dict` | `{"hit": bool, "file_path": str \| None}` — 캐시 키 3개(`file_name`/`file_mtime`/`file_size`)로 mdb-handler 직접 조회 |
+| `await upload_file(file_data, metadata)` | `str` | file-handler에 파일 저장 + mdb-handler에 MongoDB 레코드 생성. file-handler가 생성한 `file_path`를 반환 |
 | `await register_or_get(bytes_data, metadata)` | `dict` (6필드) | `check_cache` + `upload_file` 합성 — miss 면 upload, hit 이면 skip. metadata + `{file_path}` 반환 |
 
 #### 조회
@@ -253,7 +253,7 @@ result = await fm.register_or_get(file_data, metadata)
 - **비동기 SDK**: `build_metadata`를 제외한 모든 메서드가 async입니다. 동기 환경에서는 `asyncio.run(...)`이나 thread pool로 감싸야 합니다.
 - **Singleton**: `FileManagerHandler()`는 첫 호출 시 생성되며 이후 동일 인스턴스를 반환합니다. HTTP 커넥션 풀 공유를 위해 의도된 설계. 테스트에서 재생성이 필요하면 `FileManagerHandler.reset()` 후 다시 인스턴스화하세요.
 - **`file_mtime`**: Frontend 업로드 경로에서는 반드시 명시 전달 필요 (상단 ⚠️ 섹션 참고). 서버 파일시스템은 `os.path.getmtime`으로 자동.
-- **`mime_type`/`extension`는 SDK가 결정**: FM Service는 SDK가 전달한 값을 그대로 저장합니다. 재추출 없음.
+- **`mime_type`/`extension`는 SDK가 결정**: mdb-handler에 저장 시 SDK가 전달한 값을 그대로 기록합니다. 재추출 없음.
 - **`check_cache`/`upload_file` 반환값은 `file_path`만**: 나머지 5필드는 로컬 `metadata` dict에 이미 있으므로, 에이전트가 병합해서 6필드 완전체를 구성합니다.
 - **연결 종료**: 장기 실행 프로세스에서는 종료 시 `await fm.close()` 호출 권장.
-- **클라이언트는 HTTP만, File Server I/O는 서버가 담당**: 파일 저장소 접근(로컬 FS, 향후 S3 등)은 `file-handler` 서버가 처리합니다. 클라이언트 사용자는 저장소 형태를 알 필요가 없습니다.
+- **파일 저장소 접근은 file-handler가 담당**: 파일 저장소 접근(로컬 FS, 향후 S3 등)은 `file-handler` 서버가 처리합니다. SDK 사용자는 저장소 형태를 알 필요가 없습니다. MongoDB 연동은 mdb-handler를 통해 SDK가 직접 처리합니다.
