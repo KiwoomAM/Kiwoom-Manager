@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from file_manager import FileManagerHandler
-from file_manager.exceptions import FMServiceError
+from file_manager.exceptions import FMServiceError, MetadataNotFoundError
 
 from llm_manager._internal.file_processing.validators import (
     validate_file_sizes,
@@ -55,11 +55,26 @@ async def resolve_stored_files(refs: list[StoredFile]) -> list[FileInput]:
     return placeholders
 
 
+def _is_not_found(e: Exception) -> bool:
+    """get_file 의 '파일/메타 없음' 예외인지 — check_cache fallback 대상.
+
+    - MetadataNotFoundError : mdb 에 메타 doc 없음 (stale file_path / 재등록·eviction 후)
+    - FMServiceError 404    : 메타는 있으나 file-handler 에 바이트 없음
+    MDBConnectionError·5xx 등 인프라 장애는 not-found 가 아니므로 제외(전파).
+    """
+    if isinstance(e, MetadataNotFoundError):
+        return True
+    return isinstance(e, FMServiceError) and e.status_code == 404
+
+
 async def fetch_with_fallback(fm: FileManagerHandler, fi: FileInput) -> bytes:
-    """fi.file_path 로 bytes fetch. 404 시 check_cache → 새 path 재시도 → fallback.
+    """fi.file_path 로 bytes fetch. not-found 시 check_cache → 새 path 재시도 → fallback.
 
     호출자: resolver.py 의 _process_inline / _upload_and_cache_file. miss 시
     FileResolveError raise. fi.file_path / fi.resolved_via 를 fallback 시 갱신.
+
+    not-found 판정은 _is_not_found 참조 (file-manager mdb-orchestration 이후
+    stale path 는 FMServiceError 404 가 아니라 MetadataNotFoundError 로 온다).
 
     Args:
         fm: FileManagerHandler 싱글톤
@@ -71,13 +86,13 @@ async def fetch_with_fallback(fm: FileManagerHandler, fi: FileInput) -> bytes:
     try:
         data, _ = await fm.get_file(fi.file_path)
         return data
-    except FMServiceError as e:
-        if e.status_code != 404:
+    except (FMServiceError, MetadataNotFoundError) as e:
+        if not _is_not_found(e):
             logger.exception(
-                "file-manager get_file 실패 (비-404, 전파): file_path=%s, status=%s",
-                fi.file_path, e.status_code,
+                "file-manager get_file 실패 (not-found 아님, 전파): file_path=%s, error=%s",
+                fi.file_path, e,
             )
-            raise  # 비-404 (network / 5xx) 그대로 전파
+            raise  # 인프라 장애(MDBConnectionError / network / 5xx) 그대로 전파
 
         cache = await fm.check_cache({
             "file_name": fi.file_name,
@@ -99,7 +114,7 @@ async def fetch_with_fallback(fm: FileManagerHandler, fi: FileInput) -> bytes:
         fi.resolved_via = "fallback"
         try:
             data, _ = await fm.get_file(new_path)
-        except FMServiceError as e2:
+        except (FMServiceError, MetadataNotFoundError) as e2:
             # race: check_cache hit 후 새 path 도 삭제됨. miss 와 동일 의미로 통일.
             raise FileResolveError(
                 f"check_cache hit but new_path '{new_path}' also unfetchable "

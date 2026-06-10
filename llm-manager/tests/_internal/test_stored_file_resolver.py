@@ -208,3 +208,79 @@ class TestFetchWithFallbackRace:
         fi = _fi("stale.pdf")
         with pytest.raises(FileResolveError, match="also unfetchable"):
             await fetch_with_fallback(mock_fm, fi)
+
+
+class TestFetchWithFallbackMetadataNotFound:
+    """file-manager mdb-orchestration 회귀 — stale path 는 FMServiceError 404 가 아니라
+    MetadataNotFoundError 로 온다. 이것도 not-found 로 보고 check_cache fallback 을 타야 함."""
+
+    async def test_metadata_not_found_recovers(self, mock_fm, caplog):
+        """1차 MetadataNotFoundError → check_cache hit → 새 path 재시도 → fi 갱신."""
+        from file_manager.exceptions import MetadataNotFoundError
+
+        from llm_manager._internal.stored_file_resolver import fetch_with_fallback
+
+        new_path = "new-uuid.pdf"
+        mock_fm.get_file.side_effect = [
+            MetadataNotFoundError("stale.pdf"),
+            (b"\x10\x20", {}),
+        ]
+        mock_fm.check_cache.return_value = {"hit": True, "file_path": new_path}
+
+        fi = _fi("stale.pdf")
+        with caplog.at_level("WARNING"):
+            data = await fetch_with_fallback(mock_fm, fi)
+
+        assert data == b"\x10\x20"
+        assert fi.file_path == new_path
+        assert fi.resolved_via == "fallback"
+        assert mock_fm.get_file.await_count == 2
+        mock_fm.check_cache.assert_awaited_once()
+
+    async def test_metadata_not_found_then_check_cache_miss_raises(self, mock_fm):
+        """1차 MetadataNotFoundError + check_cache miss → FileResolveError."""
+        from file_manager.exceptions import MetadataNotFoundError
+
+        from llm_manager._internal.stored_file_resolver import fetch_with_fallback
+
+        mock_fm.get_file.side_effect = MetadataNotFoundError("ghost.pdf")
+        mock_fm.check_cache.return_value = {"hit": False, "file_path": None}
+
+        fi = _fi("ghost.pdf")
+        with pytest.raises(FileResolveError, match="not found"):
+            await fetch_with_fallback(mock_fm, fi)
+
+    async def test_second_get_file_metadata_not_found_raises(self, mock_fm):
+        """1차 not-found → check_cache hit → 2차 MetadataNotFoundError (race) → FileResolveError."""
+        from file_manager.exceptions import MetadataNotFoundError
+
+        from llm_manager._internal.stored_file_resolver import fetch_with_fallback
+
+        mock_fm.get_file.side_effect = [
+            MetadataNotFoundError("stale.pdf"),
+            MetadataNotFoundError("new.pdf"),
+        ]
+        mock_fm.check_cache.return_value = {"hit": True, "file_path": "new.pdf"}
+
+        fi = _fi("stale.pdf")
+        with pytest.raises(FileResolveError, match="also unfetchable"):
+            await fetch_with_fallback(mock_fm, fi)
+
+        assert mock_fm.get_file.await_count == 2
+
+
+class TestFetchWithFallbackInfraError:
+    """MDBConnectionError(503) 등 인프라 장애는 not-found 가 아니므로 그대로 전파 (fallback 안 탐)."""
+
+    async def test_mdb_connection_error_propagates(self, mock_fm):
+        from file_manager.exceptions import MDBConnectionError
+
+        from llm_manager._internal.stored_file_resolver import fetch_with_fallback
+
+        mock_fm.get_file.side_effect = MDBConnectionError("mdb down")
+
+        fi = _fi("abc.pdf")
+        with pytest.raises(MDBConnectionError, match="mdb down"):
+            await fetch_with_fallback(mock_fm, fi)
+
+        mock_fm.check_cache.assert_not_awaited()
