@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator, Optional
 import httpx
 
 from .. import _http
+from .._circuit import CircuitBreaker
 from ..config import RedisConfig
 from ..exceptions import RedisHandlerError, RedisUnavailableError
 
@@ -29,6 +30,7 @@ class AsyncHandlerBackend:
         # client 미주입 시 첫 요청 시점에 lazy 생성 — import 후
         # RedisConfig.configure(handler_url=...) 호출을 존중하기 위함.
         self._http: Optional[httpx.AsyncClient] = client
+        self._breaker = CircuitBreaker()
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -51,14 +53,23 @@ class AsyncHandlerBackend:
 
     # ── HTTP 공통 ─────────────────────────────────────
     async def _request(self, method: str, path: str, *, params: dict | None = None,
-                       json: dict | None = None) -> Any:
+                       json: dict | None = None, breaker: bool = True) -> Any:
+        if breaker and not self._breaker.allow():
+            raise RedisUnavailableError(
+                "redis-handler 서킷 open — 최근 연속 미도달로 HTTP 시도 생략"
+            )
         try:
             resp = await self._ensure_client().request(method, path, params=params, json=json)
         except httpx.TransportError as e:
+            if breaker:
+                self._breaker.record_failure()
             raise RedisUnavailableError(f"redis-handler 연결 실패: {e}") from e
         except httpx.HTTPError as e:
             raise RedisHandlerError(f"redis-handler 요청 실패: {e}") from e
 
+        # 응답 수신 = handler 도달 — 503/4xx여도 브레이커 관점에선 성공
+        if breaker:
+            self._breaker.record_success()
         _http.raise_for_handler_status(resp)
         try:
             return resp.json()
@@ -135,8 +146,8 @@ class AsyncHandlerBackend:
 
     # ── Health ────────────────────────────────────────
     async def health(self) -> dict:
-        """handler /v1/admin/health 원본 응답 (live PING 결과)."""
-        return await self._request("GET", "/v1/admin/health")
+        """handler /v1/admin/health 원본 응답 (live PING 결과). 브레이커 미적용 — 진단은 항상 live."""
+        return await self._request("GET", "/v1/admin/health", breaker=False)
 
     async def ping(self) -> bool:
         """live 연결 확인. handler 미도달/Redis 다운 모두 False."""
