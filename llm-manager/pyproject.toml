@@ -7,9 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
     # llm-handler SDK 를 흡수 — handler 는 서버(부하 관리·로깅·네트워크)만 담당하고,
     # 클라이언트 SDK(llm_handler) 는 manager 인 llm-manager 가 직접 보유한다.
-    "kiwoom-mdb-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirectory=mdb-manager",
-    "kiwoom-redis-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirectory=redis-manager",
-    "kiwoom-file-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirectory=file-manager",
+    # 형제 git URL 은 ref 없이(no-ref=기본 브랜치) 선언 — file-manager·rdb-manager 와 동일 규칙.
+    # consumer 명령줄과 다른 manager 메타데이터가 같은 문자열을 쓰도록 통일해 pip 리졸버 충돌 방지.
+    "kiwoom-mdb-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=mdb-manager",
+    "kiwoom-redis-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=redis-manager",
+    "kiwoom-file-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=file-manager",
     "httpx>=0.27.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.13.1",
