@@ -113,13 +113,16 @@ def test_execute_many_sends_params_list():
 
 
 def test_insert_and_update_endpoints():
+    paths = []
+
     def handler(request):
-        assert request.url.path in ("/v1/dml/insert", "/v1/dml/update")
+        paths.append(request.url.path)
         return httpx.Response(200, json={"rowcount": 1, "request_id": "r"})
 
     client = make_client(handler)
     assert client.execute_insert("INSERT ...") == 1
     assert client.execute_update("UPDATE ...") == 1
+    assert paths == ["/v1/dml/insert", "/v1/dml/update"]
 
 
 def test_connect_error_maps_to_handler_connection_error():
@@ -138,6 +141,16 @@ def test_http_400_maps_to_handler_error_with_detail():
         make_client(handler).execute_dml("BAD")
     assert exc.value.status_code == 400
     assert exc.value.detail == "syntax"
+
+
+def test_http_500_maps_to_handler_error():
+    def handler(request):
+        return httpx.Response(500, json={"error": "internal error", "detail": "trace"})
+
+    with pytest.raises(HandlerError) as exc:
+        make_client(handler).fetch_all("SELECT 1")
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "trace"
 
 
 def test_check_database_connection_true_and_false():
