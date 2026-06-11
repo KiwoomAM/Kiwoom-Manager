@@ -47,12 +47,14 @@ class AsyncClient:
         return response
 
     def _query_body(self, query: str, params: dict[str, Any] | None) -> dict:
+        """SELECT 요청 바디."""
         body: dict[str, Any] = {"query": query}
         if params is not None:
             body["params"] = params
         return body
 
     def _dml_body(self, sql: str, params: dict[str, Any] | None) -> dict:
+        """DML 요청 바디."""
         body: dict[str, Any] = {"sql": sql}
         if params is not None:
             body["params"] = params
@@ -63,6 +65,7 @@ class AsyncClient:
     async def query_to_dataframe(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> pd.DataFrame:
+        """SELECT → pandas DataFrame."""
         resp = await self._request("POST", "/v1/query/dataframe", json=self._query_body(query, params))
         data = DataFrameData.model_validate(resp.json())
         df = pd.DataFrame(data.rows, columns=data.columns)
@@ -81,6 +84,7 @@ class AsyncClient:
     async def fetch_all(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> list[tuple]:
+        """SELECT → list of tuples."""
         resp = await self._request("POST", "/v1/query/all", json=self._query_body(query, params))
         data = RowsData.model_validate(resp.json())
         return [tuple(row) for row in data.rows]
@@ -88,6 +92,7 @@ class AsyncClient:
     async def fetch_all_dict(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> list[dict]:
+        """SELECT → list of dicts."""
         resp = await self._request("POST", "/v1/query/all-dict", json=self._query_body(query, params))
         data = DictRowsData.model_validate(resp.json())
         return data.rows
@@ -95,6 +100,7 @@ class AsyncClient:
     async def fetch_one(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> tuple | None:
+        """SELECT → 첫 번째 row 또는 None."""
         resp = await self._request("POST", "/v1/query/one", json=self._query_body(query, params))
         data = OneRowData.model_validate(resp.json())
         return tuple(data.row) if data.row is not None else None
@@ -104,12 +110,14 @@ class AsyncClient:
     async def execute_dml(
         self, sql: str, params: dict[str, Any] | None = None,
     ) -> int:
+        """일반 DML 실행."""
         resp = await self._request("POST", "/v1/dml/execute", json=self._dml_body(sql, params))
         return DmlResult.model_validate(resp.json()).rowcount
 
     async def execute_many_dml(
         self, sql: str, params_list: list[dict[str, Any]],
     ) -> int:
+        """배치 DML 실행."""
         if not params_list:
             return 0
         resp = await self._request(
@@ -121,18 +129,21 @@ class AsyncClient:
     async def execute_insert(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> int:
+        """INSERT 전용."""
         resp = await self._request("POST", "/v1/dml/insert", json=self._dml_body(query, params))
         return DmlResult.model_validate(resp.json()).rowcount
 
     async def execute_update(
         self, query: str, params: dict[str, Any] | None = None,
     ) -> int:
+        """UPDATE 전용."""
         resp = await self._request("POST", "/v1/dml/update", json=self._dml_body(query, params))
         return DmlResult.model_validate(resp.json()).rowcount
 
     # ── Health ─────────────────────────────────────────
 
     async def check_database_connection(self) -> bool:
+        """DB 연결 상태 확인."""
         try:
             resp = await self._request("GET", "/v1/check")
             return resp.json().get("connected", False)

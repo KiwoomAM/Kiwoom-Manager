@@ -39,6 +39,7 @@ async def test_query_to_dataframe_request_and_dtype_restore():
         "query": "SELECT * FROM t WHERE id = %(id)s",
         "params": {"id": 1},
     }
+    assert list(df.columns) == ["id", "ts"]
     assert str(df["id"].dtype) == "int64"
     assert str(df["ts"].dtype) == "datetime64[ns]"
 
@@ -80,16 +81,20 @@ async def test_query_body_omits_params_when_none():
 
 async def test_dml_endpoints_path_order_and_rowcount():
     paths = []
+    bodies = []
 
     def handler(request):
+        import json as _json
         paths.append(request.url.path)
+        bodies.append(_json.loads(request.content))
         return httpx.Response(200, json={"rowcount": 4, "request_id": "r"})
 
     client = make_client(handler)
-    assert await client.execute_dml("UPDATE ...") == 4
+    assert await client.execute_dml("UPDATE t SET x=1", {}) == 4
     assert await client.execute_insert("INSERT ...") == 4
     assert await client.execute_update("UPDATE ...") == 4
     assert paths == ["/v1/dml/execute", "/v1/dml/insert", "/v1/dml/update"]
+    assert bodies[0] == {"sql": "UPDATE t SET x=1", "params": {}}
 
 
 async def test_execute_many_empty_short_circuits():
@@ -128,6 +133,16 @@ async def test_http_error_maps():
         await make_client(handler).execute_dml("X")
     assert exc.value.status_code == 500
     assert exc.value.detail == "trace"
+
+
+async def test_http_400_maps_with_detail():
+    def handler(request):
+        return httpx.Response(400, json={"error": "bad sql", "detail": "syntax"})
+
+    with pytest.raises(HandlerError) as exc:
+        await make_client(handler).execute_dml("BAD")
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "syntax"
 
 
 async def test_check_connection_true_false():
