@@ -4,9 +4,9 @@ version = "1.0.0"
 description = "Kiwoom 프로젝트 PostgreSQL 매니저 (공개 클라이언트)"
 requires-python = ">=3.10"
 dependencies = [
-    "psycopg[binary]>=3.1.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.5.0",
     "pandas>=2.0.0",
-    "kiwoom-rdb-handler @ git+https://github.com/KiwoomAM/Kiwoom-Handler.git#subdirectory=rdb-handler",
 ]
 
 [project.optional-dependencies]
