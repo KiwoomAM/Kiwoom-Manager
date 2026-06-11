@@ -12,10 +12,9 @@ class _TestStore(BaseJsonStore):
 
 
 @pytest.fixture
-def store():
-    h = RedisManager()
-    h.reset()
-    return _TestStore(handler=h)
+def store(offline_manager):
+    # offline_manager: Singleton 리셋 + ConnectError backend (= 메모리 폴백)
+    return _TestStore(handler=offline_manager)
 
 
 class TestSetJsonOptions:

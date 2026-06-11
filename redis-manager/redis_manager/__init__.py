@@ -22,6 +22,10 @@ redis_manager
 
     # 토큰 갱신 (만료시각 유지)
     rh.set("session:abc", new_token, keepttl=True)
+
+v3.0.0: transport가 redis-py 직결 → redis-handler HTTP 경유로 변경.
+RedisManager/BaseJsonStore API는 v2와 100% 호환.
+제거됨: RedisBackend, RetryPolicy (CLAUDE.md상 직접 사용 금지 대상이었음)
 """
 
 # ── Config ────────────────────────────────────────────────
@@ -44,11 +48,8 @@ from .exceptions import (
     RedisUnavailableError,
 )
 
-# ── Retry ─────────────────────────────────────────────────
-from .retry import RetryPolicy
-
 # ── Backends ──────────────────────────────────────────────
-from .backends import KeyValueBackend, MemoryBackend, RedisBackend
+from .backends import HandlerBackend, KeyValueBackend, MemoryBackend
 
 # ── Handler ───────────────────────────────────────────────
 from .handler import RedisManager
@@ -56,10 +57,13 @@ from .handler import RedisManager
 # ── BaseJsonStore ─────────────────────────────────────────
 from .base_store import BaseJsonStore
 
+# ── Async 인터페이스 ──────────────────────────────────────
+from redis_manager import aio
+
 
 # ── 전역 인스턴스 ─────────────────────────────────────────
-# 연결은 첫 사용 시점에 get_client()가 lazy로 수행한다. import 시점에 ping하지 않는다
-# (import가 블로킹되거나 configure() 전에 연결이 고정되는 것을 방지).
+# HTTP 클라이언트는 첫 명령 시점에 lazy 생성된다. import 시점에 연결하지 않으며,
+# import 후 RedisConfig.configure(handler_url=...) 호출도 첫 사용 전이면 반영된다.
 redis_manager = RedisManager()
 
 
@@ -78,15 +82,15 @@ __all__ = [
     "RedisHandlerError",
     "RedisRetryExhausted",
     "RedisUnavailableError",
-    # Retry
-    "RetryPolicy",
     # Backends (Protocol + 구현체)
+    "HandlerBackend",
     "KeyValueBackend",
     "MemoryBackend",
-    "RedisBackend",
     # Handler
     "RedisManager",
     "redis_manager",
     # BaseJsonStore
     "BaseJsonStore",
+    # Async
+    "aio",
 ]

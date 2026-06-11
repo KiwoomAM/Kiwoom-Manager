@@ -4,13 +4,13 @@
 RedisManager — Redis 백엔드와 메모리 백엔드를 조율하는 orchestrator.
 
 책임:
-    - 백엔드 선택 (Redis 가용성에 따라)
+    - 백엔드 선택 (HandlerBackend 경유, per-call 예외로 가용성 판단)
     - 입력 검증 (ttl/ex 충돌, nx/xx 충돌, keepttl 충돌)
     - 일반 명령 폴백 (Redis 실패 → 메모리)
     - NX/XX 폴백 차단 (분산 의미론 보호)
     - Singleton 인스턴스 관리
 
-신규 명령 추가 시 KeyValueBackend Protocol → RedisBackend → MemoryBackend → 이 클래스 순으로 갱신.
+신규 명령 추가 시 KeyValueBackend Protocol → HandlerBackend → MemoryBackend → 이 클래스 순으로 갱신.
 
 NOTE: `from __future__ import annotations`는 클래스 내부 `set()` 메서드와
 `Set[str]` 타입 힌트의 충돌을 회피하기 위해 필요.
@@ -21,11 +21,9 @@ from __future__ import annotations
 import logging
 from typing import Iterator, Optional, Set
 
-from .backends import MemoryBackend, RedisBackend
+from .backends import HandlerBackend, MemoryBackend
 from .config import RedisConfig
-from .connection import close_redis, get_client, is_available
-from .exceptions import RedisHandlerError, RedisUnavailableError
-from .retry import RetryPolicy
+from .exceptions import RedisHandlerError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ class RedisManager:
     """
     Redis 기본 CRUD 핸들러 (Singleton).
 
-    Redis 가용 시 RedisBackend(redis-py + retry)를 사용,
+    handler 호출 성공 시 HandlerBackend(redis-handler HTTP 경유)를 사용,
     실패 시 MemoryBackend로 자동 폴백한다.
     NX/XX 명령은 분산 의미론 보호를 위해 폴백을 차단하고
     RedisUnavailableError 또는 RedisRetryExhausted를 raise한다.
@@ -52,27 +50,27 @@ class RedisManager:
         if self._initialized:
             return
         self._memory = MemoryBackend()
-        self._retry_policy = RetryPolicy()
+        self._backend = HandlerBackend()
         self._initialized = True
 
     # ── 백엔드 선택 ──────────────────────────────────
-    def _redis(self) -> Optional[RedisBackend]:
-        """Redis 가용 시 RedisBackend, 아니면 None.
+    def _redis(self) -> HandlerBackend:
+        """항상 HandlerBackend 반환 — 가용성 판단은 per-call 예외로.
 
-        is_available()을 먼저 확인해 get_client()의 자동 재초기화를 방지한다.
-        테스트에서 connection._redis_available = False 로 직접 설정한 경우를 존중함.
+        v2의 _redis_available 캐시 플래그 + is_available() early-return은
+        제거됨 (health 진단 false-negative/false-positive의 원인).
+        각 명령이 handler 호출 실패 시 그 호출만 폴백한다.
+        기존 `if rb is not None` 분기는 v2 diff 최소화를 위해 유지된 항상-참 경로다.
         """
-        if not is_available():
-            # _redis_available이 False면 auto-reinit 없이 바로 None 반환
-            return None
-        client = get_client()
-        if client is None:
-            return None
-        return RedisBackend(client, self._retry_policy)
+        return self._backend
 
     @property
     def is_redis_connected(self) -> bool:
-        return self._redis() is not None
+        """live 확인 — handler /v1/admin/health 1회 호출 (HTTP 왕복 발생).
+
+        진단 용도 전제. hot path에서 매 요청 호출하지 말 것.
+        """
+        return self._backend.ping()
 
     @property
     def storage_mode(self) -> str:
@@ -115,14 +113,10 @@ class RedisManager:
         if keepttl and effective_ttl is not None:
             raise ValueError("keepttl과 ttl/ex는 동시 사용 불가")
 
-        # NX/XX: 폴백 차단
+        # NX/XX: 폴백 차단 — handler 미도달 시 backend가 RedisUnavailableError,
+        # handler가 Redis 재시도 소진 보고 시 RedisRetryExhausted를 raise한다.
         if nx or xx:
-            rb = self._redis()
-            if rb is None:
-                raise RedisUnavailableError(
-                    "NX/XX 명령은 Redis 연결이 필요합니다 (메모리 폴백 시 분산 의미론 깨짐)"
-                )
-            return rb.set(key, value, ex=effective_ttl, nx=nx, xx=xx, keepttl=keepttl)
+            return self._redis().set(key, value, ex=effective_ttl, nx=nx, xx=xx, keepttl=keepttl)
 
         # 일반 set: 폴백 허용
         rb = self._redis()
@@ -190,7 +184,7 @@ class RedisManager:
     def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
         """Cursor 기반 키 SCAN.
 
-        Redis 가용 시 RedisBackend.scan_iter를 사용, 미가용 또는 일시 장애 시
+        Redis 가용 시 HandlerBackend.scan_iter를 사용, 미가용 또는 일시 장애 시
         MemoryBackend.scan_iter로 폴백한다. 다른 명령과 동일한 폴백 정책.
 
         주의: Redis와 메모리 백엔드는 독립된 키 공간이라 폴백 결과는 해당
@@ -242,28 +236,30 @@ class RedisManager:
 
     # ── 유틸리티 ─────────────────────────────────────
     def ping(self) -> bool:
-        """Redis 연결 확인. Redis 미연결 시 False (메모리 백엔드는 ping 의미 없음)."""
-        rb = self._redis()
-        if rb is None:
-            return False
-        try:
-            return rb.ping()
-        except RedisHandlerError:
-            return False
+        """Redis 연결 확인 (live). handler 미도달/Redis 다운 모두 False."""
+        return self._backend.ping()
 
     def health_check(self) -> dict:
+        """진단 — 매 호출 handler의 live PING 결과를 조회한다."""
+        try:
+            upstream = self._backend.health()
+        except RedisHandlerError as e:
+            upstream = {"status": "error", "error": str(e)}
+        connected = upstream.get("status") == "connected"
         return {
-            "connected": self.is_redis_connected,
-            "storage": self.storage_mode,
+            "connected": connected,
+            "storage": "redis" if connected else "memory",
             "config": RedisConfig.get_summary(),
+            "handler": upstream,
         }
 
     def close(self) -> None:
-        close_redis()
+        self._backend.close()
 
     def reset(self) -> None:
-        """핸들러 리셋 (테스트용): 연결 종료 + 메모리 초기화."""
-        close_redis()
+        """핸들러 리셋 (테스트용): backend 재생성 + 메모리 초기화."""
+        self._backend.close()
+        self._backend = HandlerBackend()
         self._memory.flush()
 
     def cleanup_memory(self) -> int:

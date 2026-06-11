@@ -2,148 +2,85 @@
 """
 redis_manager/connection.py
 
-Redis 연결 관리 (Singleton)
+[v3] redis-py 직결 제거 — redis-handler HTTP 경유로 전환됨.
+본 모듈은 v2 공개 함수의 호환 shim만 제공한다. 신규 코드는 RedisManager를 사용할 것.
 
-redis-py 클라이언트의 라이프사이클을 관리합니다.
-Redis가 없으면 None을 반환하며, 각 Store가 메모리 폴백으로 동작합니다.
+v2와의 차이:
+    - _redis_available 캐시 플래그 없음 — 모든 확인은 live (handler /v1/admin/health)
+    - get_client()는 항상 None (redis-py 클라이언트가 존재하지 않음)
 """
 
 import logging
-from typing import Optional
+import warnings
 
 from .config import RedisConfig
 
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Redis 클라이언트 (Singleton)
-# =============================================================================
-
-_redis_client = None
-_redis_available: bool = False
-
-
 def init_redis() -> bool:
+    """[v2 호환] handler 도달성 1회 확인 (eager warmup 용도).
+
+    v3에서는 init이라는 상태가 없다 — live 확인 결과만 반환한다.
     """
-    Redis 클라이언트 초기화
+    from .handler import RedisManager
 
-    RedisConfig의 설정을 사용하여 redis-py 클라이언트를 생성합니다.
-    연결에 실패하면 False를 반환하며, 각 Store는 메모리 폴백으로 동작합니다.
-
-    Returns:
-        Redis 연결 성공 여부
-    """
-    global _redis_client, _redis_available
-
-    if not RedisConfig.is_configured():
-        logger.warning("Redis URL이 설정되지 않음 - 메모리 저장소 사용")
-        _redis_available = False
-        return False
-
-    try:
-        import redis
-
-        _redis_client = redis.from_url(
-            RedisConfig.REDIS_URL,
-            decode_responses=True,
-            socket_timeout=RedisConfig.SOCKET_TIMEOUT,
-            socket_connect_timeout=RedisConfig.SOCKET_CONNECT_TIMEOUT,
-        )
-        # 연결 테스트
-        _redis_client.ping()
-        _redis_available = True
-        logger.info(f"Redis 연결 성공: {RedisConfig.REDIS_URL}")
-        return True
-
-    except ImportError:
-        logger.warning("redis 패키지가 설치되지 않음 - 메모리 저장소 사용")
-        _redis_available = False
-        return False
-
-    except Exception as e:
-        logger.warning(f"Redis 연결 실패: {e} - 메모리 저장소 사용")
-        _redis_available = False
-        return False
+    ok = RedisManager().ping()
+    if ok:
+        logger.info("redis-handler 연결 성공: %s", RedisConfig.HANDLER_URL)
+    else:
+        logger.warning("redis-handler 연결 실패 - 메모리 폴백 모드: %s", RedisConfig.HANDLER_URL)
+    return ok
 
 
 def get_client():
+    """[deprecated] redis-py 클라이언트는 v3에서 존재하지 않음 — 항상 None.
+
+    v2에서도 미연결 시 None 계약이었으므로 호출측 None 분기는 그대로 동작한다.
     """
-    Redis 클라이언트 반환
-
-    초기화되지 않았으면 자동으로 init_redis()를 호출합니다.
-    연결 실패 시 None을 반환합니다.
-
-    Returns:
-        redis.Redis 인스턴스 또는 None
-    """
-    global _redis_client, _redis_available
-
-    if _redis_client is None and not _redis_available:
-        init_redis()
-
-    return _redis_client if _redis_available else None
+    warnings.warn(
+        "get_client()는 v3에서 항상 None을 반환합니다. RedisManager API를 사용하세요.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return None
 
 
 def is_available() -> bool:
-    """Redis 연결 가능 여부 반환"""
-    return _redis_available
+    """[v2 호환] live 확인 — handler /v1/admin/health 1회 호출."""
+    from .handler import RedisManager
+
+    return RedisManager().ping()
 
 
 def close_redis() -> None:
-    """Redis 클라이언트 종료"""
-    global _redis_client, _redis_available
+    """[v2 호환] backend HTTP 클라이언트 종료."""
+    from .handler import RedisManager
 
-    if _redis_client is not None:
-        try:
-            _redis_client.close()
-            logger.info("Redis 연결 종료됨")
-        except Exception as e:
-            logger.warning(f"Redis 연결 종료 중 오류: {e}")
-        _redis_client = None
-    _redis_available = False
+    RedisManager().close()
 
 
 def reset_redis() -> None:
-    """Redis 클라이언트 리셋 (테스트용)"""
-    global _redis_client, _redis_available
-    _redis_client = None
-    _redis_available = False
+    """[v2 호환] 핸들러 리셋 (테스트용)."""
+    from .handler import RedisManager
+
+    RedisManager().reset()
 
 
 def check_redis_connection(verbose: bool = True) -> bool:
-    """
-    Redis 연결 상태 확인 (헬스 체크)
+    """Redis(handler) 연결 상태 확인 (헬스 체크) — live."""
+    from .handler import RedisManager
 
-    Args:
-        verbose: 상세 출력 여부
-
-    Returns:
-        연결 성공 여부
-    """
     if verbose:
-        print("\n Redis 설정:")
-        print(f"   URL: {RedisConfig.REDIS_URL}")
-        print(f"   Socket Timeout: {RedisConfig.SOCKET_TIMEOUT}s")
+        print("\n Redis Handler 설정:")
+        print(f"   Handler URL: {RedisConfig.HANDLER_URL}")
+        print(f"   Timeout: {RedisConfig.HANDLER_TIMEOUT}s")
 
-    client = get_client()
-
-    if client is None:
-        if verbose:
-            print("   Redis 연결 실패 - 메모리 폴백 모드로 동작")
-        return False
-
-    try:
-        client.ping()
-        if verbose:
-            print("   Redis 연결 성공")
-        logger.info("Redis 연결 테스트 성공")
-        return True
-    except Exception as e:
-        if verbose:
-            print(f"   Redis 연결 실패: {e}")
-        logger.error(f"Redis 연결 테스트 실패: {e}")
-        return False
+    ok = RedisManager().ping()
+    if verbose:
+        print("   연결 성공" if ok else "   연결 실패 - 메모리 폴백 모드로 동작")
+    logger.info("redis-handler 연결 테스트 %s", "성공" if ok else "실패")
+    return ok
 
 
 __all__ = [

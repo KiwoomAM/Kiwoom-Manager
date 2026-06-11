@@ -1,8 +1,8 @@
 # Redis Manager
 
-메모리 폴백 + 재시도 내장 Redis 클라이언트 패키지(`redis_manager`). 외부 에이전트가
+redis-handler HTTP 서버 경유 Redis 클라이언트 패키지(`redis_manager`). 외부 에이전트가
 GitHub에서 import해 쓰는 것을 전제로 한다. Redis 서버가 불가할 때 인메모리 백엔드로
-투명하게 폴백하고, 일시 장애는 exponential backoff + jitter로 자동 복구한다.
+투명하게 폴백하고, retry는 handler 서버가 담당한다.
 
 > 사용자 가이드·API 표는 @README.md 참조. 이 문서는 코드 수정 시 알아야 할 것만 담는다.
 
@@ -22,36 +22,41 @@ cd packages/redis-manager && python3 -m pytest tests/ -v
 
 3계층 분리:
 - **handler.py** — orchestrator. 백엔드 선택, 폴백 정책, 입력 검증
-- **backends/** — `KeyValueBackend` Protocol 구현. `RedisBackend`(redis-py + retry), `MemoryBackend`(dict + Lock)
+- **backends/** — `KeyValueBackend` Protocol 구현. `HandlerBackend`(httpx → redis-handler 서버), `MemoryBackend`(dict + Lock)
 - **base_store.py** — `BaseJsonStore`. 도메인 store의 베이스 (JSON 직렬화, 키 프리픽스)
+
+v3: transport는 redis-handler HTTP 서버(`Kiwoom-Handler/redis-handler`, 포트 8800) 경유.
+retry는 handler 서버 담당. 가용성 캐시 플래그 없음 — 모든 판단은 per-call.
+
+**async 인터페이스 (`redis_manager.aio`)** — sync 미러:
+- `aio/handler.py` `AsyncRedisManager`(비싱글톤, `async with`/`aclose()`), `aio/base_store.py` `AsyncBaseJsonStore`(handler 주입 필수), `aio/backend.py` `AsyncHandlerBackend`(httpx.AsyncClient)
+- sync/async 공용 *순수 로직*(키 경로 인코딩, status→예외 매핑)은 `_http.py` — 양쪽 backend가 import (genuine DRY)
+- 메모리 폴백은 sync `MemoryBackend` 재사용(별도 async 백엔드 없음). async Protocol 미신설(구현체 1개 — premature abstraction 회피)
+- 진단은 property가 아니라 `await ping()` / `await health_check()` (HTTP 왕복)
 
 ## Conventions
 
-- **신규 코드는 RedisManager API만 사용.** `get_client()` 직접 호출 금지 (encapsulation 위반)
-- **분산 의미론 필요한 명령(NX/XX)은 `setnx()` 등 Handler 메서드 사용.** Redis 미연결 시 `RedisUnavailableError` 발생 — 메모리 폴백 없음
+- **신규 코드는 RedisManager API만 사용.** `get_client()`는 v3에서 항상 None (deprecated shim)
+- **분산 의미론 필요한 명령(NX/XX)은 `setnx()` 등 Handler 메서드 사용.** handler 미도달 시 `RedisUnavailableError`, handler가 재시도 소진 보고 시 `RedisRetryExhausted` — 메모리 폴백 없음
 - **일반 명령(get/set 등)은 폴백 자동.** 호출자가 try/except로 메모리 백업 구현 금지
-- **새 SET 옵션 추가 시** `KeyValueBackend` Protocol → `RedisBackend` → `MemoryBackend` 3곳 모두 갱신 (OCP 보장)
-- **재시도 정책은 RedisBackend 메서드의 `@retryable` 데코레이터로 적용.** Handler에서 try/except는 폴백 분기 전용
-- 환경변수는 `os.getenv`에서 직접 읽는다. `.env` 자동 로드는 호출 애플리케이션 책임 (`RedisConfig.configure(url=...)`로 코드 설정도 가능).
+- **새 명령 추가 시** handler 서버 엔드포인트 → `KeyValueBackend` Protocol → `HandlerBackend` → `MemoryBackend` → `RedisManager` 순으로 갱신. **async 표면도 함께 갱신**: `AsyncHandlerBackend` → `AsyncRedisManager` (→ 필요 시 `AsyncBaseJsonStore`). sync/async 두 표면을 같은 동작으로 유지
+- 환경변수는 `os.getenv`에서 직접 읽는다. `.env` 자동 로드는 호출 애플리케이션 책임 (`RedisConfig.configure(handler_url=...)`로 코드 설정도 가능)
 
 ## Gotchas
 
-- `RedisManager()`는 Singleton — 테스트에서 `rh.reset()`으로 초기화
-- `import redis_manager`는 연결을 시도하지 않는다 — 첫 `get_client()` 호출 시 lazy로 연결한다 (import 블로킹 방지)
-- 재시도 최악 지연 ~16초 (`socket_timeout=5s × 3 + backoff`). SLA 민감 경로는 `REDIS_RETRY_MAX_ATTEMPTS=1`
-- 메모리 폴백 데이터는 프로세스 종료 시 휘발 — 영속성 필요 시 Redis 가용성 모니터링
+- `RedisManager()`는 Singleton — 테스트에서 `RedisManager._instance = None`으로 리셋 후 MockTransport backend 주입 (tests/conftest.py 참조)
+- **서킷 브레이커는 명령 경로 전용** (`_circuit.py`, 연속 3회 미도달 → 1s open). `health()`/`ping()` 진단은 브레이커를 우회해 항상 live — 진단에 캐시/차단을 더하지 말 것 (#6 재발 방지). transport 실패만 카운트하며 503/4xx는 카운트하지 않는다
+- **`AsyncRedisManager`는 비싱글톤** (sync와 반대) — `async with AsyncRedisManager() as rh:` 또는 명시적 `aclose()`. import 시점 전역 인스턴스 없음 (httpx.AsyncClient 이벤트루프 바인딩 회피). 테스트는 MockTransport `AsyncHandlerBackend` 주입 (tests/aio/conftest.py)
+- `health_check()`/`is_redis_connected`/`ping()`은 **매 호출 HTTP 1회** (live PING) — hot path에서 호출 금지
+- HTTP 클라이언트는 첫 명령 시점 lazy 생성 — import 후 `RedisConfig.configure(handler_url=...)`도 첫 사용 전이면 반영됨
+- 메모리 폴백 데이터는 프로세스 종료 시 휘발 — 영속성 필요 시 handler 가용성 모니터링
 - gunicorn 4 workers는 각자 독립 Singleton — 의도된 동작
-- NX/XX는 `MemoryBackend`도 simulate하지만 단일 프로세스 한정 — Handler에서 폴백 차단됨
-- **REDIS_URL은 고정 기본값**: 미설정 시 `redis://192.7.9.45:7617/0`. 사용자는 보통 설정하지 않는다. SERVICE_NAME 같은 caller 식별은 쓰지 않으므로 일반 사용에서 설정할 env가 없다.
+- **테스트에서 `connection._redis_available` 직접 주입 금지** — v3에서 해당 상태 자체가 없음
 
 ## Environment Variables
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
-| `REDIS_URL` | `redis://192.7.9.45:7617/0` | 연결 URL (고정 기본값, 보통 설정 불필요) |
-| `REDIS_SOCKET_TIMEOUT` | 5 | 소켓 타임아웃(초) |
-| `REDIS_RETRY_MAX_ATTEMPTS` | 3 | 첫 시도 포함 |
-| `REDIS_RETRY_INITIAL_BACKOFF` | 0.1 | 초 |
-| `REDIS_RETRY_MAX_BACKOFF` | 1.0 | 초, 상한 |
-| `REDIS_RETRY_MULTIPLIER` | 2.0 | exp 배율 |
-| `REDIS_RETRY_JITTER_RATIO` | 0.2 | ±20% (0=비활성) |
+| `REDIS_HANDLER_URL` | `http://192.7.9.45:8800` | redis-handler 서버 URL |
+| `REDIS_HANDLER_TIMEOUT` | 5 | handler HTTP timeout (초) |
+| `SERVICE_NAME` | (없음) | `X-Caller-Service` 헤더 |

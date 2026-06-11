@@ -1,10 +1,10 @@
 [project]
 name = "kiwoom-redis-manager"
-version = "2.0.0"
-description = "Kiwoom 프로젝트 Redis 핸들러 (메모리 폴백 + 재시도 + SET 옵션)"
+version = "3.0.0"
+description = "Kiwoom 프로젝트 Redis 매니저 (redis-handler HTTP 경유 + 메모리 폴백 + SET 옵션)"
 requires-python = ">=3.10"
 dependencies = [
-    "redis>=5.0.0,<8",
+    "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
 ]
 
@@ -12,6 +12,7 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-mock>=3.12.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [build-system]
@@ -24,3 +25,4 @@ include = ["redis_manager*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+asyncio_mode = "auto"
