@@ -57,6 +57,9 @@ from .handler import RedisManager
 # ── BaseJsonStore ─────────────────────────────────────────
 from .base_store import BaseJsonStore
 
+# ── Async 인터페이스 ──────────────────────────────────────
+from redis_manager import aio
+
 
 # ── 전역 인스턴스 ─────────────────────────────────────────
 # HTTP 클라이언트는 첫 명령 시점에 lazy 생성된다. import 시점에 연결하지 않으며,
@@ -88,4 +91,6 @@ __all__ = [
     "redis_manager",
     # BaseJsonStore
     "BaseJsonStore",
+    # Async
+    "aio",
 ]
