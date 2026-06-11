@@ -44,7 +44,9 @@ pip install -e packages/redis-manager
 | `REDIS_HANDLER_TIMEOUT` | 5 | handler HTTP timeout (초) |
 | `SERVICE_NAME` | (없음) | 설정 시 `X-Caller-Service` 헤더로 전송 |
 
-> v2의 `REDIS_URL`, `REDIS_SOCKET_*`, `REDIS_RETRY_*`는 **handler 서버 측 환경변수로 이동** — manager에서는 더 이상 사용하지 않는다.
+> v2의 `REDIS_URL`, `REDIS_SOCKET_*`, `REDIS_RETRY_*`는 **handler 서버 측 환경변수로 이동했으며, manager 설정에서 제거됨**.
+> Redis 자격증명(비밀번호 포함)은 handler 서버만 안다 — manager 사용자는 `REDIS_HANDLER_URL`만 설정하면 된다.
+> `RedisConfig.REDIS_URL` 참조·`configure(url=...)` 호출이 남아있다면 제거할 것 (v3에서 AttributeError/TypeError).
 
 ## Quick Start
 
