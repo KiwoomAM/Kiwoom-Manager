@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # 사내 핸들러 하드코딩 기본값 (환경변수로 override 가능).
 MDB_HANDLER_URL = os.getenv("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 LLM_HANDLER_URL = os.getenv("LLM_HANDLER_URL", "http://192.7.9.45:8100")
-REDIS_URL = os.getenv("REDIS_URL", "redis://192.7.9.45:7617/0")
+REDIS_HANDLER_URL = os.getenv("REDIS_HANDLER_URL", "http://192.7.9.45:8800")
 FILE_HANDLER_URL = os.getenv("FILE_HANDLER_URL", "http://192.7.9.45:8600")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "kw_ai")
 
@@ -46,20 +46,18 @@ def _ensure_redis_connected() -> None:
     if not init_redis():
         raise RuntimeError(
             "Redis 연결 실패 — llm-manager 를 초기화할 수 없습니다. "
-            "REDIS_URL 설정 및 Redis 서버 상태를 확인하세요."
+            "REDIS_HANDLER_URL 설정 및 redis-handler 서버 상태를 확인하세요."
         )
 
 
 def _flush_stale_standbys() -> None:
     """기동 시 이전 세션의 stale standby 키 일괄 정리 (SIGKILL 등 고아 키 제거)."""
-    from redis_manager import get_client
-    client = get_client()
-    if client is None:
-        return
+    from redis_manager import RedisManager
+    rm = RedisManager()
     total = 0
     for pattern in _STANDBY_PATTERNS:
-        for key in client.scan_iter(match=pattern, count=100):
-            client.delete(key)
+        for key in rm.scan_iter(match=pattern, count=100):
+            rm.delete(key)
             total += 1
     if total > 0:
         logger.info("startup standby flush: %d stale keys 정리", total)
@@ -84,7 +82,7 @@ def ensure_configured() -> None:
         os.environ.setdefault("MDB_HANDLER_URL", MDB_HANDLER_URL)
 
         # redis-handler — 연결 실패 시 초기화 중단
-        os.environ.setdefault("REDIS_URL", REDIS_URL)
+        os.environ.setdefault("REDIS_HANDLER_URL", REDIS_HANDLER_URL)
         _ensure_redis_connected()
         _flush_stale_standbys()
 

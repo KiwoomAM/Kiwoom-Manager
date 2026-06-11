@@ -4,7 +4,7 @@
 
 Mock:
 - runner.aio_call / runner.aio_stream: 카운터 + LLMResponse/StreamChunk 반환
-- dedup.get_client: FakeRedisClient (fake_redis fixture)
+- dedup.RedisManager: FakeRedisHandler (fake_redis fixture)
 - MongoDB: mock_collection (tests/conftest.py) — store/done_check/_recheck 자동 연결
 
 공유 fixture:
