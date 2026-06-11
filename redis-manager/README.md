@@ -241,3 +241,9 @@ class ChatStore(AsyncBaseJsonStore):
 | `manager.get(k)` | `await manager.get(k)` |
 | `manager.storage_mode` (property) | `await manager.health_check()` (메서드) |
 | `BaseJsonStore(prefix=...)` (싱글톤 자동) | `AsyncBaseJsonStore(prefix=..., handler=<AsyncRedisManager>)` (주입 필수) |
+
+## 장애 내성 (운영 노트)
+
+- **서킷 브레이커**: handler 미도달이 연속 3회 발생하면 1초간 HTTP 시도를 건너뛰고
+  즉시 폴백한다 (블랙홀 timeout 장애 시 호출당 5s 누적 방지, Issue #11).
+  진단(`health_check`/`ping`)은 브레이커를 우회해 항상 실제 상태를 반영한다.

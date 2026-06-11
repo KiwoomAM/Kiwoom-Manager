@@ -45,6 +45,7 @@ retry는 handler 서버 담당. 가용성 캐시 플래그 없음 — 모든 판
 ## Gotchas
 
 - `RedisManager()`는 Singleton — 테스트에서 `RedisManager._instance = None`으로 리셋 후 MockTransport backend 주입 (tests/conftest.py 참조)
+- **서킷 브레이커는 명령 경로 전용** (`_circuit.py`, 연속 3회 미도달 → 1s open). `health()`/`ping()` 진단은 브레이커를 우회해 항상 live — 진단에 캐시/차단을 더하지 말 것 (#6 재발 방지). transport 실패만 카운트하며 503/4xx는 카운트하지 않는다
 - **`AsyncRedisManager`는 비싱글톤** (sync와 반대) — `async with AsyncRedisManager() as rh:` 또는 명시적 `aclose()`. import 시점 전역 인스턴스 없음 (httpx.AsyncClient 이벤트루프 바인딩 회피). 테스트는 MockTransport `AsyncHandlerBackend` 주입 (tests/aio/conftest.py)
 - `health_check()`/`is_redis_connected`/`ping()`은 **매 호출 HTTP 1회** (live PING) — hot path에서 호출 금지
 - HTTP 클라이언트는 첫 명령 시점 lazy 생성 — import 후 `RedisConfig.configure(handler_url=...)`도 첫 사용 전이면 반영됨
