@@ -53,7 +53,7 @@ def _get_client() -> AsyncClient:
 
 
 async def close() -> None:
-    """SDK 클라이언트 정리."""
+    """SDK 클라이언트 정리. 애플리케이션 종료 또는 FastAPI lifespan 종료 시 호출해야 한다."""
     global _instance
     if _instance is not None:
         await _instance.close()

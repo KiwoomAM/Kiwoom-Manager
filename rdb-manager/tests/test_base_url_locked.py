@@ -15,6 +15,7 @@ def _reset_modules():
     import rdb_manager.aio as aio
 
     rdb_manager.close()
+    aio._instance = None
     yield
     rdb_manager.close()
     aio._instance = None
@@ -122,3 +123,16 @@ def test_async_resolve_base_url_is_constant(monkeypatch):
     import rdb_manager.aio as aio
     importlib.reload(aio)
     assert aio._resolve_base_url() == LOCKED_URL
+
+
+def test_async_configure_replaces_instance(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    first = aio._get_client()
+    aio.configure(timeout=7.0)
+    # 새 인스턴스로 교체됨
+    assert aio._get_client() is not first
+    # 동기 configure와 달리 이전 AsyncClient는 닫지 않는다 (await 불가, 수용된 한계)
+    assert first._http.is_closed is False
