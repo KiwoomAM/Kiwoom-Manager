@@ -204,3 +204,40 @@ KeyValueBackend Protocol
 - **진단은 live**: health_check()/is_redis_connected/ping()은 매 호출 handler에 HTTP 1회 — 진단 용도로만 사용
 - **재시도는 handler 서버 담당**: manager는 HTTP timeout(기본 5s)만 적용
 - **NX/XX 폴백 없음**: 분산 의미론 보호. Redis 미연결 시 `RedisUnavailableError`
+
+## Async 사용법 (redis_manager.aio)
+
+sync API와 별개로 async 네이티브 인터페이스를 제공한다 (다른 `*_manager.aio`와 동일 컨벤션).
+
+```python
+from redis_manager.aio import AsyncRedisManager
+
+async with AsyncRedisManager() as rh:
+    await rh.set("key", "value", ttl=3600)
+    val = await rh.get("key")
+    if await rh.setnx("lock:job", "owner-A", ttl=30):
+        ...
+
+# FastAPI lifespan:
+#   app.state.redis = AsyncRedisManager()
+#   ... finally: await app.state.redis.aclose()
+```
+
+도메인 Store는 `AsyncBaseJsonStore`를 상속하고 `handler`를 주입한다:
+
+```python
+from redis_manager.aio import AsyncBaseJsonStore
+
+class ChatStore(AsyncBaseJsonStore):
+    def __init__(self, handler):
+        super().__init__(prefix="chat:history", default_ttl=604800, handler=handler)
+```
+
+### sync → async 차이
+
+| sync | async |
+|---|---|
+| `RedisManager()` 전역 싱글톤 | `AsyncRedisManager()` 비싱글톤 + `async with`/`aclose()` |
+| `manager.get(k)` | `await manager.get(k)` |
+| `manager.storage_mode` (property) | `await manager.health_check()` (메서드) |
+| `BaseJsonStore(prefix=...)` (싱글톤 자동) | `AsyncBaseJsonStore(prefix=..., handler=<AsyncRedisManager>)` (주입 필수) |
