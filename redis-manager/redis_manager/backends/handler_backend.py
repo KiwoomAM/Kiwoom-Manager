@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import os
 from typing import Any, Iterator, Optional
-from urllib.parse import quote
 
 import httpx
 
+from .. import _http
 from ..config import RedisConfig
 from ..exceptions import (
     RedisHandlerError,
-    RedisRetryExhausted,
     RedisUnavailableError,
 )
 
@@ -68,37 +67,17 @@ class HandlerBackend:
         except httpx.TransportError as e:
             raise RedisUnavailableError(f"redis-handler 연결 실패: {e}") from e
         except httpx.HTTPError as e:
-            # TransportError 외 httpx 오류(DecodingError, TooManyRedirects 등)도
-            # 폴백 계약(RedisHandlerError 계열)을 지키도록 매핑
             raise RedisHandlerError(f"redis-handler 요청 실패: {e}") from e
 
-        if resp.status_code == 503:
-            raise RedisRetryExhausted(
-                f"redis-handler: Redis 재시도 소진 — {self._error_message(resp)}"
-            )
-        if resp.status_code >= 400:
-            raise RedisHandlerError(
-                f"redis-handler 오류 ({resp.status_code}): {self._error_message(resp)}"
-            )
+        _http.raise_for_handler_status(resp)
         try:
             return resp.json()
         except ValueError as e:
             raise RedisHandlerError(f"redis-handler 응답 파싱 실패 (비JSON 본문): {e}") from e
 
-    @staticmethod
-    def _error_message(resp: httpx.Response) -> str:
-        try:
-            return resp.json().get("error", resp.text)
-        except Exception:  # noqa: BLE001 — 비JSON 오류 응답 방어
-            return resp.text
-
-    @staticmethod
-    def _key_path(key: str) -> str:
-        return quote(key, safe="")
-
     # ── String ────────────────────────────────────────
     def get(self, key: str) -> Optional[str]:
-        return self._request("GET", f"/v1/keys/{self._key_path(key)}")["value"]
+        return self._request("GET", f"/v1/keys/{_http.key_path(key)}")["value"]
 
     def set(
         self,
@@ -113,22 +92,22 @@ class HandlerBackend:
         body: dict[str, Any] = {"value": value, "nx": nx, "xx": xx, "keepttl": keepttl}
         if ex is not None and ex > 0:
             body["ex"] = ex
-        data = self._request("POST", f"/v1/keys/{self._key_path(key)}/set", json=body)
+        data = self._request("POST", f"/v1/keys/{_http.key_path(key)}/set", json=body)
         return bool(data["ok"])
 
     def delete(self, key: str) -> int:
-        return self._request("DELETE", f"/v1/keys/{self._key_path(key)}")["deleted"]
+        return self._request("DELETE", f"/v1/keys/{_http.key_path(key)}")["deleted"]
 
     # ── Key ───────────────────────────────────────────
     def exists(self, key: str) -> bool:
-        return bool(self._request("GET", f"/v1/keys/{self._key_path(key)}/exists")["exists"])
+        return bool(self._request("GET", f"/v1/keys/{_http.key_path(key)}/exists")["exists"])
 
     def ttl(self, key: str) -> int:
-        return self._request("GET", f"/v1/keys/{self._key_path(key)}/ttl")["ttl"]
+        return self._request("GET", f"/v1/keys/{_http.key_path(key)}/ttl")["ttl"]
 
     def expire(self, key: str, seconds: int) -> bool:
         data = self._request(
-            "POST", f"/v1/keys/{self._key_path(key)}/expire", json={"seconds": seconds}
+            "POST", f"/v1/keys/{_http.key_path(key)}/expire", json={"seconds": seconds}
         )
         return bool(data["ok"])
 
@@ -148,16 +127,16 @@ class HandlerBackend:
     # ── Set ───────────────────────────────────────────
     def sadd(self, key: str, *members: str) -> int:
         data = self._request(
-            "POST", f"/v1/sets/{self._key_path(key)}/add", json={"members": list(members)}
+            "POST", f"/v1/sets/{_http.key_path(key)}/add", json={"members": list(members)}
         )
         return data["count"]
 
     def smembers(self, key: str) -> set[str]:
-        return set(self._request("GET", f"/v1/sets/{self._key_path(key)}")["members"])
+        return set(self._request("GET", f"/v1/sets/{_http.key_path(key)}")["members"])
 
     def srem(self, key: str, *members: str) -> int:
         data = self._request(
-            "POST", f"/v1/sets/{self._key_path(key)}/remove", json={"members": list(members)}
+            "POST", f"/v1/sets/{_http.key_path(key)}/remove", json={"members": list(members)}
         )
         return data["count"]
 
