@@ -57,6 +57,20 @@ def test_sync_configure_base_url_is_ignored(monkeypatch):
     assert client._http.timeout.connect == 10.0
 
 
+def test_sync_configure_closes_previous_client(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager
+    importlib.reload(rdb_manager)
+
+    first = rdb_manager._get_client()
+    assert first._http.is_closed is False
+    rdb_manager.configure(timeout=5.0)
+    # 이전 클라이언트의 httpx 풀이 닫혀야 한다 (누수 방지)
+    assert first._http.is_closed is True
+    # 새 인스턴스로 교체됨
+    assert rdb_manager._get_client() is not first
+
+
 def test_sync_resolve_base_url_is_constant(monkeypatch):
     monkeypatch.setenv("RDB_HANDLER_URL", "http://something-else:1")
     import rdb_manager

@@ -91,6 +91,8 @@ def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
     timeout만 적용됩니다.
     """
     global _instance
+    if _instance is not None:
+        _instance.close()
     _instance = SyncClient(base_url=_resolve_base_url(), timeout=timeout)
 
 
