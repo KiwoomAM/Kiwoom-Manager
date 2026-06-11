@@ -125,6 +125,14 @@ async def test_connect_error_maps():
         await make_client(handler).fetch_all("SELECT 1")
 
 
+async def test_read_timeout_maps():
+    def handler(request):
+        raise httpx.ReadTimeout("timed out")
+
+    with pytest.raises(HandlerConnectionError):
+        await make_client(handler).fetch_all("SELECT 1")
+
+
 async def test_http_error_maps():
     def handler(request):
         return httpx.Response(500, json={"error": "boom", "detail": "trace"})

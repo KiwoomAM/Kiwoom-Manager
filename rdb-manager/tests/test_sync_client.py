@@ -133,6 +133,14 @@ def test_connect_error_maps_to_handler_connection_error():
         make_client(handler).fetch_all("SELECT 1")
 
 
+def test_read_timeout_maps_to_handler_connection_error():
+    def handler(request):
+        raise httpx.ReadTimeout("timed out")
+
+    with pytest.raises(HandlerConnectionError):
+        make_client(handler).fetch_all("SELECT 1")
+
+
 def test_http_400_maps_to_handler_error_with_detail():
     def handler(request):
         return httpx.Response(400, json={"error": "bad sql", "detail": "syntax"})

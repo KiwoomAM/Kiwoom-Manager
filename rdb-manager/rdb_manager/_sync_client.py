@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from rdb_manager.exceptions import HandlerConnectionError, HandlerError
+from rdb_manager.exceptions import HandlerConnectionError, HandlerError, SDKError
 from rdb_manager.models import (
     DataFrameData,
     DictRowsData,
@@ -31,7 +31,9 @@ class SyncClient:
         """공통 HTTP 요청 처리."""
         try:
             response = self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
-        except httpx.ConnectError as e:
+        except httpx.TimeoutException as e:
+            raise HandlerConnectionError(f"[RDB 핸들러] 요청 시간 초과: {e}") from e
+        except httpx.TransportError as e:  # ConnectError 포함 그 외 전송 계층 오류
             raise HandlerConnectionError(f"[RDB 핸들러] 연결 실패: {e}") from e
 
         if response.status_code >= 400:
@@ -147,5 +149,6 @@ class SyncClient:
         try:
             resp = self._request("GET", "/v1/check")
             return resp.json().get("connected", False)
-        except Exception:
+        except (SDKError, httpx.HTTPError) as e:
+            logger.warning("[RDB 핸들러] DB 연결 확인 실패: %s", e)
             return False
