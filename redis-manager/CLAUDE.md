@@ -28,17 +28,24 @@ cd packages/redis-manager && python3 -m pytest tests/ -v
 v3: transport는 redis-handler HTTP 서버(`Kiwoom-Handler/redis-handler`, 포트 8800) 경유.
 retry는 handler 서버 담당. 가용성 캐시 플래그 없음 — 모든 판단은 per-call.
 
+**async 인터페이스 (`redis_manager.aio`)** — sync 미러:
+- `aio/handler.py` `AsyncRedisManager`(비싱글톤, `async with`/`aclose()`), `aio/base_store.py` `AsyncBaseJsonStore`(handler 주입 필수), `aio/backend.py` `AsyncHandlerBackend`(httpx.AsyncClient)
+- sync/async 공용 *순수 로직*(키 경로 인코딩, status→예외 매핑)은 `_http.py` — 양쪽 backend가 import (genuine DRY)
+- 메모리 폴백은 sync `MemoryBackend` 재사용(별도 async 백엔드 없음). async Protocol 미신설(구현체 1개 — premature abstraction 회피)
+- 진단은 property가 아니라 `await ping()` / `await health_check()` (HTTP 왕복)
+
 ## Conventions
 
 - **신규 코드는 RedisManager API만 사용.** `get_client()`는 v3에서 항상 None (deprecated shim)
 - **분산 의미론 필요한 명령(NX/XX)은 `setnx()` 등 Handler 메서드 사용.** handler 미도달 시 `RedisUnavailableError`, handler가 재시도 소진 보고 시 `RedisRetryExhausted` — 메모리 폴백 없음
 - **일반 명령(get/set 등)은 폴백 자동.** 호출자가 try/except로 메모리 백업 구현 금지
-- **새 명령 추가 시** handler 서버 엔드포인트 → `KeyValueBackend` Protocol → `HandlerBackend` → `MemoryBackend` → `RedisManager` 순으로 갱신
+- **새 명령 추가 시** handler 서버 엔드포인트 → `KeyValueBackend` Protocol → `HandlerBackend` → `MemoryBackend` → `RedisManager` 순으로 갱신. **async 표면도 함께 갱신**: `AsyncHandlerBackend` → `AsyncRedisManager` (→ 필요 시 `AsyncBaseJsonStore`). sync/async 두 표면을 같은 동작으로 유지
 - 환경변수는 `os.getenv`에서 직접 읽는다. `.env` 자동 로드는 호출 애플리케이션 책임 (`RedisConfig.configure(handler_url=...)`로 코드 설정도 가능)
 
 ## Gotchas
 
 - `RedisManager()`는 Singleton — 테스트에서 `RedisManager._instance = None`으로 리셋 후 MockTransport backend 주입 (tests/conftest.py 참조)
+- **`AsyncRedisManager`는 비싱글톤** (sync와 반대) — `async with AsyncRedisManager() as rh:` 또는 명시적 `aclose()`. import 시점 전역 인스턴스 없음 (httpx.AsyncClient 이벤트루프 바인딩 회피). 테스트는 MockTransport `AsyncHandlerBackend` 주입 (tests/aio/conftest.py)
 - `health_check()`/`is_redis_connected`/`ping()`은 **매 호출 HTTP 1회** (live PING) — hot path에서 호출 금지
 - HTTP 클라이언트는 첫 명령 시점 lazy 생성 — import 후 `RedisConfig.configure(handler_url=...)`도 첫 사용 전이면 반영됨
 - 메모리 폴백 데이터는 프로세스 종료 시 휘발 — 영속성 필요 시 handler 가용성 모니터링
