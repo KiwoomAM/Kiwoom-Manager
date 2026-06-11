@@ -76,3 +76,49 @@ def test_sync_resolve_base_url_is_constant(monkeypatch):
     import rdb_manager
     importlib.reload(rdb_manager)
     assert rdb_manager._resolve_base_url() == LOCKED_URL
+
+
+# ── 비동기 ────────────────────────────────────────────
+
+
+def _get_async_client(env_value, monkeypatch):
+    if env_value is None:
+        monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    else:
+        monkeypatch.setenv("RDB_HANDLER_URL", env_value)
+
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+    return aio._get_client()
+
+
+def test_async_no_env_uses_locked_url(monkeypatch):
+    client = _get_async_client(None, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+@pytest.mark.parametrize(
+    "wrong_url",
+    ["http://wrong-host:1234", "http://localhost:8700", "http://rdb-handler:8700", ""],
+)
+def test_async_env_is_ignored(monkeypatch, wrong_url):
+    client = _get_async_client(wrong_url, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+def test_async_configure_base_url_is_ignored(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    aio.configure(base_url="http://malicious-host:9999", timeout=12.0)
+    client = aio._get_client()
+    assert str(client._http.base_url) == LOCKED_URL
+    assert client._http.timeout.connect == 12.0
+
+
+def test_async_resolve_base_url_is_constant(monkeypatch):
+    monkeypatch.setenv("RDB_HANDLER_URL", "http://something-else:1")
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+    assert aio._resolve_base_url() == LOCKED_URL
