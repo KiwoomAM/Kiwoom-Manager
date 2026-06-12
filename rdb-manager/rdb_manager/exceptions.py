@@ -1,4 +1,11 @@
-"""기존 rdb_manager 호환 예외 인터페이스와 HTTP SDK 전용 예외를 정의한다."""
+"""기존 rdb_manager 호환 예외 인터페이스와 HTTP SDK 전용 예외를 정의한다.
+
+주의: HTTP SDK 전환 이후 클라이언트가 실제로 raise하는 것은 ``HandlerError`` /
+``HandlerConnectionError`` (둘 다 ``SDKError`` 하위)뿐이다. 아래 레거시 예외
+(``DatabaseException`` / ``ConnectionPoolException`` / ``QueryExecutionException``)는
+import 호환을 위해 정의·export만 유지되며 현재 경로에서는 raise되지 않는다.
+``except QueryExecutionException`` 으로는 쿼리 오류를 잡을 수 없다.
+"""
 
 
 class DatabaseException(Exception):

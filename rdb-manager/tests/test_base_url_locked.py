@@ -136,3 +136,19 @@ def test_async_configure_replaces_instance(monkeypatch):
     assert aio._get_client() is not first
     # 동기 configure와 달리 이전 AsyncClient는 닫지 않는다 (await 불가, 수용된 한계)
     assert first._http.is_closed is False
+
+
+def test_async_configure_warns_when_instance_alive(monkeypatch, caplog):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    # 살아있는 인스턴스가 없으면 경고 없음
+    with caplog.at_level("WARNING", logger="rdb_manager.aio"):
+        aio.configure(timeout=5.0)
+    assert not caplog.records
+
+    # 살아있는 인스턴스를 두고 재호출하면 풀 누수 경고
+    with caplog.at_level("WARNING", logger="rdb_manager.aio"):
+        aio.configure(timeout=6.0)
+    assert any("await close()" in r.message for r in caplog.records)

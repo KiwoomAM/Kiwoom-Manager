@@ -17,12 +17,15 @@ Handler 접속 URL은 운영 서버(http://192.7.9.45:8700)로 고정되어 있�
 환경변수나 configure(base_url=...)로 변경할 수 없습니다.
 """
 
+import logging
 from typing import Any
 
 import pandas as pd
 
 from rdb_manager._client import AsyncClient
 from rdb_manager._config import HANDLER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "configure",
@@ -69,8 +72,15 @@ def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
     주의: 동기 함수이므로 이전 인스턴스를 await close()할 수 없다. 이미
     인스턴스가 생성된 뒤 재설정하려면 먼저 `await close()`를 호출해 기존
     연결 풀을 정리한 다음 configure()를 호출하라 (풀 누수 방지).
+    살아있는 인스턴스를 두고 재호출하면 이전 AsyncClient 풀이 닫히지 못해
+    누수되므로 런타임 경고를 남긴다.
     """
     global _instance
+    if _instance is not None:
+        logger.warning(
+            "rdb_manager.aio.configure() 재호출: 동기 함수라 이전 AsyncClient 풀을 "
+            "닫을 수 없어 누수됩니다. 재설정 전에 `await close()`를 호출하세요."
+        )
     _instance = AsyncClient(base_url=_resolve_base_url(), timeout=timeout)
 
 
