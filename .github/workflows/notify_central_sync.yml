@@ -2,10 +2,9 @@ name: Notify central sync
 
 on:
   issues:
-    types: [opened, edited, reopened, closed, labeled, unlabeled, unassigned, milestoned, demilestoned]
+    types: [opened, edited, reopened, closed, assigned]
 jobs:
   dispatch:
-    if: github.event.action != 'assigned'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Kiwoom-Rag workflow
