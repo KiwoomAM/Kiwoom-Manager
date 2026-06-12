@@ -40,7 +40,7 @@ class ValidationError(LLMManagerError):
 class UnsupportedFileTypeError(LLMManagerError):
     """Gemini 지원 외 mime 타입.
 
-    docs/inline-vs-files-api-strategy.md §2.4 화이트리스트에 없는 파일 타입이
+    docs/07.inline-vs-files-api-strategy.md §2.4 화이트리스트에 없는 파일 타입이
     전달된 경우. resolve_files 진입 전 fail-fast로 차단.
     """
 
@@ -52,7 +52,7 @@ class FileTooLargeError(LLMManagerError):
     """개별 파일 2GB 초과.
 
     Gemini Files API 파일당 상한을 초과하여 inline·Files API 어느 경로로도
-    처리 불가. docs/inline-vs-files-api-strategy.md §4.6 참고.
+    처리 불가. docs/07.inline-vs-files-api-strategy.md §4.6 참고.
     """
 
     def __init__(self, message: str) -> None:

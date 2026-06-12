@@ -242,7 +242,7 @@ class TestResolveFiles:
 class TestFilesApiBytesRelease:
     """Files API 경로 처리 후 fi.data 가 b'' 로 비워지는지 검증.
 
-    docs/16.memory-cleanup-plan.md §3.2 / §5.1 참조.
+    docs/11.minor-features-and-backlog.md 참조.
     """
 
     async def test_live_upload_clears_fi_data(

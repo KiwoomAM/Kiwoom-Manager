@@ -7,7 +7,7 @@ dedup 범위: files_api 경로만 — leader 가 업로드한 URI 가 Redis 에 
 waiter 가 재사용. inline 경로는 결과 (bytes) 가 Redis 에 캐시되지 않아 dedup
 효익 없음 → N 회 fetch 허용 (의도된 trade-off, 작은 파일 한정).
 
-설계: docs/21.method1-deprecation-lazy-fetch.md §5.4
+설계: docs/18.file-meta-stored-files-history.md
 """
 
 from __future__ import annotations

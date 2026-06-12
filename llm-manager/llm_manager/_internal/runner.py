@@ -360,7 +360,7 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
     files 없으면 llm_input 그대로. 있으면 resolve_files 호출하여
     inline/Files API 경로 처리 후 contents 조합.
 
-    상세: docs/inline-vs-files-api-strategy.md §5, §7.2
+    상세: docs/07.inline-vs-files-api-strategy.md §5, §7.2
     """
     if not prep.files:
         return dict(prep.llm_input)
@@ -379,7 +379,7 @@ async def _build_server_call_input(prep: _Prepared) -> dict:
     return _apply_resolved(prep.llm_input, resolved)
 
 
-# ── agent_llm standby 헬퍼 (cache-stampede-dedup §6) ────────
+# ── agent_llm standby 헬퍼 (08.dedup-design-and-impl §6 모듈 구조) ────────
 
 
 def _recheck_agent_llm_cache(

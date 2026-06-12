@@ -138,7 +138,7 @@ class TestSplitPdf:
 class TestSplitPdfLeakPrevention:
     """예외 / 엣지 케이스에서 임시 파일 leak 이 없는지 검증.
 
-    docs/16.memory-cleanup-plan.md §3.3 / §5.2 참조.
+    docs/11.minor-features-and-backlog.md 참조.
     """
 
     def test_save_failure_cleans_up_temp_files(self, tmp_path, monkeypatch):
