@@ -4,13 +4,13 @@ files + llm_input 받아서 (inline_parts, uri_parts, cached_content)를 반환�
 부분 섞기 흐름. 각 원소는 FileInput (meta + bytes)로, 에이전트가 준 bytes를
 그대로 LLM 호출 payload에 사용한다.
 
-cache stampede dedup (docs/cache-stampede-dedup.md):
+cache stampede dedup (docs/08.dedup-design-and-impl.md):
 - files_api 업로드, context_cache 생성 시점에 Redis standby 선점
 - 다른 요청이 이미 작업 중이면 exponential backoff로 대기
 
-상세 설계: docs/inline-vs-files-api-strategy.md §4, §5, §6, §7
-             docs/cache-stampede-dedup.md §6
-             docs/file-manager-bytes-passthrough.md
+상세 설계: docs/07.inline-vs-files-api-strategy.md §4, §5, §6, §7
+             docs/08.dedup-design-and-impl.md §6 (모듈 구조)
+             docs/09.file-manager-integration.md
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
     """inline 분류 파일을 bytes로 Part.from_bytes 구성. fi.data 비었으면 file-manager 에서 fetch.
 
     Redis 전혀 접근 안 함 (inline은 Files API URI/context_cache 와 무관).
-    상세: docs/inline-vs-files-api-strategy.md §6.1
+    상세: docs/07.inline-vs-files-api-strategy.md §6.1
     """
     fm = FileManagerHandler()
     inline_parts: list[Part] = []
@@ -355,8 +355,8 @@ async def _process_files_api(
 
     context_cache_ttl 지정 시 분기 B/C 마지막에 standby로 보호된 create_context_cache.
 
-    상세: docs/inline-vs-files-api-strategy.md §6.2
-         docs/cache-stampede-dedup.md §6
+    상세: docs/07.inline-vs-files-api-strategy.md §6.2
+         docs/08.dedup-design-and-impl.md §6 (모듈 구조)
     """
     if not files_api_pool:
         return [], None, None
@@ -496,7 +496,7 @@ async def resolve_files_after_404(
     정상 운영에선 Redis TTL(47h) < Gemini TTL(48h)로 거의 발생 안 함. 발생 시
     Phase B 연쇄 삭제 누락·외부 삭제 등의 신호로 봄.
 
-    상세: docs/inline-vs-files-api-strategy.md §9
+    상세: docs/07.inline-vs-files-api-strategy.md §9
     """
     # 영향받는 checksums 계산 — resolve_files의 분류·승급 순서 재현
     inline_pool, files_api_pool = classify_files(files, llm_input)
@@ -579,7 +579,7 @@ async def resolve_files(
     Args:
         standby_ttl_seconds: cache stampede dedup standby TTL + 대기 timeout (기본 600).
 
-    상세: docs/inline-vs-files-api-strategy.md §4, §5, §6
+    상세: docs/07.inline-vs-files-api-strategy.md §4, §5, §6
     """
     # Step 1: 분류
     inline_pool, files_api_pool = classify_files(files, llm_input)

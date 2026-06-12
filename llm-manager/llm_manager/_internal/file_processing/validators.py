@@ -3,7 +3,7 @@
 runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast로
 잘못된 입력을 차단한다 (prepare·MDB 조회 이전).
 
-상세 설계: docs/inline-vs-files-api-strategy.md §2.4, §4.5, §4.6, §7.7
+상세 설계: docs/07.inline-vs-files-api-strategy.md §2.4, §4.5, §4.6, §7.7
 """
 
 from __future__ import annotations

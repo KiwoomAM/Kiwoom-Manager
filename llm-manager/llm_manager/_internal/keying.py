@@ -255,8 +255,8 @@ def make_file_checksum(meta: Any) -> str:
     Returns:
         길이 64의 lowercase hex SHA-256 digest. prefix 없음.
 
-    docs/file-manager-separation.md §3.2,
-    docs/inline-vs-files-api-strategy.md §3 참고.
+    docs/09.file-manager-integration.md,
+    docs/07.inline-vs-files-api-strategy.md §3 참고.
     """
     file_meta = {
         "file_name":  meta.file_name,
