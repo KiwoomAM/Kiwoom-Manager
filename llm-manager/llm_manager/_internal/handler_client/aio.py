@@ -145,7 +145,7 @@ async def call(
     tool_config: str | None = None,
     history: list[dict] | None = None,
     cached_content: str | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
     media_resolution: str | None = None,
 ) -> LLMResponse:
     """통합 LLM 호출 (비동기) — 단일 응답.
@@ -170,7 +170,7 @@ async def call(
         tool_config=tool_config,
         history=history,
         cached_content=cached_content,
-        service_name=service_name,
+        call_type=call_type,
         media_resolution=media_resolution,
     )
 
@@ -191,7 +191,7 @@ async def stream(
     tool_config: str | None = None,
     history: list[dict] | None = None,
     cached_content: str | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
     media_resolution: str | None = None,
 ) -> AsyncGenerator[StreamChunk, None]:
     """통합 스트리밍 LLM 호출 (비동기) — 호출 형태는 call() 과 동일."""
@@ -210,7 +210,7 @@ async def stream(
         tool_config=tool_config,
         history=history,
         cached_content=cached_content,
-        service_name=service_name,
+        call_type=call_type,
         media_resolution=media_resolution,
     ):
         yield chunk
@@ -223,7 +223,7 @@ async def embed(
     task_type: str | None = None,
     title: str | None = None,
     output_dimensionality: int | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
 ) -> EmbedResponse:
     """텍스트 임베딩 생성 (비동기)."""
     return await _get_client().embed(
@@ -232,7 +232,7 @@ async def embed(
         task_type=task_type,
         title=title,
         output_dimensionality=output_dimensionality,
-        service_name=service_name,
+        call_type=call_type,
     )
 
 

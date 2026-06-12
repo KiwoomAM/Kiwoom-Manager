@@ -10,6 +10,7 @@ from typing import Any
 from mdb_manager import MongoDBManager
 
 from llm_manager._internal.handler_client.models import LLMResponse
+from llm_manager._internal.meta import require_service_name_for_save
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,8 @@ def save_result(
     file_metas: FileInput의 meta 필드 dump 리스트 (data 제외). 저장 스키마
     호환을 위해 문서엔 기존 키 이름 "file_meta"로 저장한다.
     """
+    require_service_name_for_save(meta)
+
     result_dict = llm_result.model_dump() if hasattr(llm_result, "model_dump") else llm_result
 
     now = datetime.now(UTC)

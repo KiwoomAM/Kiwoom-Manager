@@ -13,7 +13,7 @@ from llm_manager._internal.handler_client.models import LLMResponse, StreamChunk
 SAMPLE_LLM_INPUT = {
     "contents": "안녕하세요",
     "model": "gemini-2.5-flash",
-    "service_name": "test-service",
+    "call_type": "test-service",
 }
 
 SAMPLE_RESPONSE = LLMResponse(
@@ -32,6 +32,15 @@ SAMPLE_STREAM_CHUNKS = [
         usage=TokenUsage(input_tokens=10, output_tokens=5, total_tokens=15),
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _set_service_name(monkeypatch):
+    """build_meta 가 env SERVICE_NAME 을 요구하므로 테스트 전역에 기본값 주입.
+
+    SERVICE_NAME 미설정을 검증하는 테스트는 개별적으로 monkeypatch.delenv 한다.
+    """
+    monkeypatch.setenv("SERVICE_NAME", "test-service")
 
 
 @pytest.fixture()

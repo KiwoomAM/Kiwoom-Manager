@@ -178,7 +178,7 @@ def call(
     tool_config: str | None = None,
     history: list[dict] | None = None,
     cached_content: str | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
     media_resolution: str | None = None,
 ) -> LLMResponse:
     """통합 LLM 호출 — 단일 응답.
@@ -203,7 +203,7 @@ def call(
         tool_config=tool_config,
         history=history,
         cached_content=cached_content,
-        service_name=service_name,
+        call_type=call_type,
         media_resolution=media_resolution,
     )
 
@@ -224,7 +224,7 @@ def stream(
     tool_config: str | None = None,
     history: list[dict] | None = None,
     cached_content: str | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
     media_resolution: str | None = None,
 ) -> Iterator[StreamChunk]:
     """통합 스트리밍 LLM 호출 — 호출 형태는 call() 과 동일."""
@@ -243,7 +243,7 @@ def stream(
         tool_config=tool_config,
         history=history,
         cached_content=cached_content,
-        service_name=service_name,
+        call_type=call_type,
         media_resolution=media_resolution,
     )
 
@@ -255,7 +255,7 @@ def embed(
     task_type: str | None = None,
     title: str | None = None,
     output_dimensionality: int | None = None,
-    service_name: str | None = None,
+    call_type: str | None = None,
 ) -> EmbedResponse:
     """텍스트 임베딩 생성."""
     return _get_client().embed(
@@ -264,7 +264,7 @@ def embed(
         task_type=task_type,
         title=title,
         output_dimensionality=output_dimensionality,
-        service_name=service_name,
+        call_type=call_type,
     )
 
 

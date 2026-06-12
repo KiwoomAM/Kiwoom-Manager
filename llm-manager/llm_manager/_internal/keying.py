@@ -28,7 +28,7 @@ _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "max_tokens",
     "temperature",
     "cached_content",
-    "service_name",
+    "call_type",
     "seed",
     "output",
     "schema",

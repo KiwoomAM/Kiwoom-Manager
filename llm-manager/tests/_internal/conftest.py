@@ -13,7 +13,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llm_manager._internal.file_processing import dedup
+from llm_manager._internal.file_processing import cache_store, dedup
 from tests.conftest import (  # noqa: F401 — re-export for `from conftest import ...`
     SAMPLE_LLM_INPUT,
     SAMPLE_RESPONSE,
@@ -80,15 +80,55 @@ class FakeRedisHandler:
         return 1 if self.data.pop(key, None) is not None else 0
 
 
+class FakeFileCacheStore:
+    """cache_store._store(FileCacheStore/BaseJsonStore)의 in-memory 대체.
+
+    dedup의 락(standby)과 별개로, files_api/context_cache의 **결과저장** 레이어는
+    BaseJsonStore 경유라 RedisManager 패치만으로는 안 가려진다. 스텁하지 않으면
+    find/save_files_api·context_cache가 진짜 공유 Redis로 새어, 이전 run이 남긴
+    키를 다음 run이 HIT → 업로드/fetch가 skip되며 테스트가 깨진다. TTL 만료 미시뮬.
+    """
+
+    def __init__(self) -> None:
+        self.files_api: dict[str, dict] = {}
+        self.context_cache: dict[str, dict] = {}
+
+    def find_files_api(self, file_checksum: str) -> dict | None:
+        return self.files_api.get(file_checksum)
+
+    def save_files_api(self, file_checksum: str, doc: dict, ttl: int | None = None) -> None:
+        self.files_api[file_checksum] = doc
+
+    def delete_files_api(self, file_checksum: str) -> None:
+        self.files_api.pop(file_checksum, None)
+
+    def find_context_cache(self, hash_key: str) -> dict | None:
+        return self.context_cache.get(hash_key)
+
+    def save_context_cache(self, hash_key: str, doc: dict, ttl: int | None = None) -> None:
+        self.context_cache[hash_key] = doc
+
+    def delete_context_cache(self, hash_key: str) -> None:
+        self.context_cache.pop(hash_key, None)
+
+    def shrink_context_cache_ttl(self, hash_key: str, ttl: int) -> None:
+        pass
+
+
 @pytest.fixture()
 def fake_redis(monkeypatch):
-    """dedup 모듈의 RedisManager를 in-memory fake로 교체.
+    """모든 Redis 접근을 in-memory fake로 교체 (테스트 격리).
 
-    setnx로 박은 키를 get으로 조회 가능. 반환은 fake 인스턴스 —
-    테스트가 `fake_redis.get(key)`로 standby 키 존재 여부를 검증한다.
+    두 레이어를 함께 가린다:
+      - 락(standby): `dedup.RedisManager` → FakeRedisHandler (setnx/get/delete)
+      - 결과저장: `cache_store._store` → FakeFileCacheStore (files_api/context_cache)
+
+    반환은 락 fake 인스턴스 — 테스트가 `fake_redis.get(key)`로 standby 키 존재
+    여부를 검증한다.
     """
     fake = FakeRedisHandler()
     monkeypatch.setattr(dedup, "RedisManager", lambda: fake)
+    monkeypatch.setattr(cache_store, "_store", FakeFileCacheStore())
     return fake
 
 
