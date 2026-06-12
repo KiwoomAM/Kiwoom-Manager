@@ -79,7 +79,7 @@ class TestFlushStaleStandbys:
             "file_cache:files_api:keep",  # 본 캐시 — 보존
         )
         import redis_manager
-        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
+        monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
 
         providers._flush_stale_standbys()
 
@@ -93,7 +93,7 @@ class TestFlushStaleStandbys:
             "agent_llm_standby:ck2",
         )
         import redis_manager
-        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
+        monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
 
         providers._flush_stale_standbys()
 
@@ -103,16 +103,18 @@ class TestFlushStaleStandbys:
         client = FakeRedisClient()
         client.seed("file_cache:files_api:xyz")  # 본 캐시만 존재
         import redis_manager
-        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
+        monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
 
         providers._flush_stale_standbys()  # 아무 것도 삭제 안 함
 
         assert "file_cache:files_api:xyz" in client._store
 
     def test_redis_unavailable_does_not_raise(self, monkeypatch):
-        """get_client()가 None이어도 예외 없이 통과 (방어)."""
+        """handler 미도달 시 메모리 폴백(빈 결과) — scan_iter가 아무것도 yield하지
+        않아도 예외 없이 통과 (방어)."""
+        client = FakeRedisClient()  # seed 없음 → scan_iter 빈 결과
         import redis_manager
-        monkeypatch.setattr(redis_manager, "get_client", lambda: None)
+        monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
 
         providers._flush_stale_standbys()  # no raise
 
@@ -125,7 +127,7 @@ class TestFlushStaleStandbys:
             "file_cache:files_api:keep",  # 본 캐시 보존
         )
         import redis_manager
-        monkeypatch.setattr(redis_manager, "get_client", lambda: client)
+        monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
 
         providers._flush_stale_standbys()
 

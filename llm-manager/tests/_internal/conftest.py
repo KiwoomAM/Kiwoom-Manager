@@ -10,6 +10,7 @@ test_runner_standby.py에서도 공유하므로 conftest로 승격.
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from llm_manager._internal.file_processing import dedup
@@ -21,109 +22,82 @@ from tests.conftest import (  # noqa: F401 — re-export for `from conftest impo
 
 
 @pytest.fixture(autouse=True)
-def _isolate_redis_for_cache_store(monkeypatch):
-    """cache_store 경로의 실제 Redis 연결을 끊고 메모리 폴백으로 격리.
+def _isolate_redis_for_cache_store():
+    """cache_store 경로가 실제 dev redis-handler로 나가지 않게 메모리 폴백으로 격리 (v3).
 
-    redis-handler 기본 REDIS_URL이 실제 dev Redis(192.7.9.45:7617)를 가리키기
-    때문에, 테스트가 실제 Redis에 쓰고 세션 간 상태가 누수되는 문제 방지.
+    v3 redis-manager는 redis-handler HTTP 경유 — 기본 handler(192.7.9.45:8800)로
+    실제 호출이 나가면 테스트가 외부 상태에 의존/누수된다. redis-manager 공식 테스트
+    패턴을 따라 RedisManager Singleton을 리셋하고 'handler 미도달' MockTransport
+    backend를 주입한다(일반 명령은 메모리 폴백, NX/XX는 예외). 세션 간 상태 누수
+    방지를 위해 메모리 백엔드를 테스트 전후로 flush.
 
-    조치:
-    - redis_manager.connection의 client/가용 플래그 강제 False
-    - get_client() → None → BaseJsonStore는 자동으로 메모리 백엔드 사용
-    - RedisManager 싱글톤의 _memory 백엔드를 테스트 전후로 flush
-
-    dedup 쪽의 fake_redis fixture는 이와 별개 — dedup.get_client을 직접 patch.
+    dedup 쪽 fake_redis/no_redis fixture는 이와 별개 — dedup.RedisManager를 직접 patch.
     """
-    import redis_manager.connection as conn_mod
-    import redis_manager.handler as handler_mod
+    from redis_manager.backends.handler_backend import HandlerBackend
     from redis_manager.handler import RedisManager
 
-    monkeypatch.setattr(conn_mod, "_redis_client", None, raising=False)
-    monkeypatch.setattr(conn_mod, "_redis_available", False, raising=False)
-    monkeypatch.setattr(conn_mod, "init_redis", lambda: False)
-    monkeypatch.setattr(handler_mod, "get_client", lambda: None)
+    def _handler_down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("handler down (test default)")
 
-    handler = RedisManager()
-    handler._memory.flush()
+    RedisManager._instance = None
+    manager = RedisManager()
+    manager._backend.close()
+    transport = httpx.MockTransport(_handler_down)
+    manager._backend = HandlerBackend(
+        client=httpx.Client(transport=transport, base_url="http://test")
+    )
+    manager._memory.flush()
 
     yield
 
-    handler._memory.flush()
+    manager._backend.close()
+    manager._memory.flush()
+    RedisManager._instance = None
 
 
-class _SharedStore:
-    """raw client mock 과 RedisManager mock 이 공유하는 in-memory 저장소.
+class FakeRedisHandler:
+    """RedisManager의 setnx / get / delete를 흉내내는 단일 fake (v3).
 
-    dedup 가 hybrid 로 두 API 를 모두 사용하므로 (try_acquire/release 는 handler,
-    wait 는 raw client) 두 fake 가 같은 데이터를 봐야 테스트가 정확하다.
+    v3에서 dedup은 단일 경로 — try_acquire_standby/release_standby(setnx/delete)와
+    wait_for_standby_release(get)가 모두 RedisManager 경유. 따라서 하나의 fake로 커버한다.
+    분산 의미론 시뮬레이션 위해 메모리 폴백 동작 안 함 — 항상 Redis 가용 상태.
+    TTL 만료 시뮬레이션은 안 함 (테스트 scope 밖).
     """
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
 
-
-class FakeRawClient:
-    """raw redis-py client 의 .get / .delete 만 흉내내는 fake.
-
-    dedup.wait_for_standby_release 가 raw `get_client()` 로 호출하는 메서드만 커버.
-    TTL 만료 시뮬레이션은 안 함 (테스트 scope 밖).
-    """
-
-    def __init__(self, store: _SharedStore) -> None:
-        self._store = store
-
-    def get(self, key: str) -> str | None:
-        return self._store.data.get(key)
-
-    def delete(self, *keys: str) -> int:
-        count = 0
-        for k in keys:
-            if k in self._store.data:
-                del self._store.data[k]
-                count += 1
-        return count
-
-
-class FakeRedisHandler:
-    """RedisManager 의 setnx / delete 만 흉내내는 fake.
-
-    dedup.try_acquire_standby / release_standby 가 호출하는 메서드만 커버.
-    분산 의미론 시뮬레이션 위해 메모리 폴백 동작 안 함 — 항상 Redis 가용 상태.
-    """
-
-    def __init__(self, store: _SharedStore) -> None:
-        self._store = store
-
     def setnx(self, key: str, value: str, *, ttl: int | None = None) -> bool:
-        if key in self._store.data:
+        if key in self.data:
             return False
-        self._store.data[key] = value
+        self.data[key] = value
         return True
 
+    def get(self, key: str) -> str | None:
+        return self.data.get(key)
+
     def delete(self, key: str) -> int:
-        return 1 if self._store.data.pop(key, None) is not None else 0
+        return 1 if self.data.pop(key, None) is not None else 0
 
 
 @pytest.fixture()
 def fake_redis(monkeypatch):
-    """dedup 모듈의 raw `get_client` 와 `RedisManager` 를 동시에 fake 로 교체.
+    """dedup 모듈의 RedisManager를 in-memory fake로 교체.
 
-    두 fake 가 같은 _SharedStore 를 보므로 setnx 로 박은 키를 raw get 으로 조회 가능.
-    반환은 raw client fake — 테스트가 `.get(key)` 로 standby 키 존재 여부 검증할 때
-    기존 호출 패턴(`fake_redis.get(...)`) 과 호환.
+    setnx로 박은 키를 get으로 조회 가능. 반환은 fake 인스턴스 —
+    테스트가 `fake_redis.get(key)`로 standby 키 존재 여부를 검증한다.
     """
-    store = _SharedStore()
-    handler_fake = FakeRedisHandler(store)
-    raw_fake = FakeRawClient(store)
-    monkeypatch.setattr(dedup, "RedisManager", lambda: handler_fake)
-    monkeypatch.setattr(dedup, "get_client", lambda: raw_fake)
-    return raw_fake
+    fake = FakeRedisHandler()
+    monkeypatch.setattr(dedup, "RedisManager", lambda: fake)
+    return fake
 
 
 @pytest.fixture()
 def no_redis(monkeypatch):
-    """Redis 전체 미연결 시나리오 — setnx 는 RedisUnavailableError,
-    raw get_client 는 None 반환.
+    """Redis 전체 미연결 시나리오.
+
+    setnx(NX/XX)는 RedisUnavailableError(폴백 차단), get(일반 명령)은 None 반환
+    (v3 메모리 폴백 의미 — strict-read 미지원).
     """
     from redis_manager import RedisUnavailableError
 
@@ -131,11 +105,13 @@ def no_redis(monkeypatch):
         def setnx(self, *a, **kw):
             raise RedisUnavailableError("test: Redis down")
 
+        def get(self, *a, **kw):
+            return None
+
         def delete(self, *a, **kw):
             return 0
 
     monkeypatch.setattr(dedup, "RedisManager", lambda: _DownHandler())
-    monkeypatch.setattr(dedup, "get_client", lambda: None)
 
 
 @pytest.fixture()

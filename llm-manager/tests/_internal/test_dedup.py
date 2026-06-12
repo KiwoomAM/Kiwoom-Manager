@@ -1,9 +1,9 @@
 """file_processing/dedup.py 테스트.
 
-get_client()를 in-memory fake Redis 클라이언트로 mock하여
-실제 Redis 없이 SETNX/GET/DEL 동작을 검증한다.
+RedisManager를 in-memory fake로 mock하여 실제 Redis 없이
+SETNX/GET/DEL 동작을 검증한다.
 
-공유 fixture(fake_redis/no_redis/fast_backoff/FakeRedisClient)는
+공유 fixture(fake_redis/no_redis/fast_backoff)는
 tests/logic/conftest.py 에 정의되어 있다.
 """
 
@@ -147,9 +147,14 @@ class TestWaitForStandbyRelease:
         )
         assert result is None
 
-    async def test_redis_unavailable_raises(self, no_redis):
-        with pytest.raises(RuntimeError, match="Redis 미연결"):
-            await wait_for_standby_release("files_api", "k1", timeout=1)
+    async def test_redis_unavailable_returns_none(self, no_redis, fast_backoff):
+        """대기 중 Redis 미연결 → get이 None 폴백 → None 반환(호출자가 자기 작업).
+
+        v3 graceful degradation: strict-read 미지원이라 단절을 예외로 올리지 않고
+        timeout 폴백과 동일하게 None을 반환한다.
+        """
+        result = await wait_for_standby_release("files_api", "k1", timeout=1)
+        assert result is None
 
 
 # ── release_standby ───────────────────────────────────────────
@@ -177,5 +182,5 @@ class TestReleaseStandby:
             def delete(self, *args, **kwargs):
                 raise ConnectionError("redis down")
 
-        monkeypatch.setattr(dedup, "get_client", lambda: ExplodingClient())
+        monkeypatch.setattr(dedup, "RedisManager", lambda: ExplodingClient())
         await release_standby("files_api", "k1")  # no raise

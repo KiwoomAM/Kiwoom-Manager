@@ -6,7 +6,7 @@ files_api + context_cache 2계층의 standby 경로(선점/대기→HIT/timeout)
 Mock:
 - resolver.upload_file: 카운터 + FileRef 반환
 - resolver.create_context_cache: 카운터 + CacheRef 반환
-- dedup.get_client: FakeRedisClient (conftest fake_redis fixture)
+- dedup.RedisManager: FakeRedisHandler (conftest fake_redis fixture)
 - cache_store: redis-handler의 memory fallback 사용
 
 공유 fixture: tests/logic/conftest.py (fake_redis, fast_backoff)
