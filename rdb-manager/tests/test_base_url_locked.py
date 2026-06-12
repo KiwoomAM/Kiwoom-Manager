@@ -1,0 +1,154 @@
+"""Handler URL이 운영 정책상 192.7.9.45:8700으로 고정되어 있고
+env / configure(base_url=...) 어느 쪽으로도 우회할 수 없음을 검증한다."""
+
+import importlib
+
+import pytest
+
+LOCKED_URL = "http://192.7.9.45:8700"
+
+
+@pytest.fixture(autouse=True)
+def _reset_modules():
+    """매 테스트마다 rdb_manager / rdb_manager.aio 의 _instance를 초기화."""
+    import rdb_manager
+    import rdb_manager.aio as aio
+
+    rdb_manager.close()
+    aio._instance = None
+    yield
+    rdb_manager.close()
+    aio._instance = None
+
+
+def _get_sync_client(env_value, monkeypatch):
+    # RDB_HANDLER_URL: 잠금이 env를 무시함을 검증하기 위한 이름.
+    if env_value is None:
+        monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    else:
+        monkeypatch.setenv("RDB_HANDLER_URL", env_value)
+
+    import rdb_manager
+    importlib.reload(rdb_manager)
+    return rdb_manager._get_client()
+
+
+def test_sync_no_env_uses_locked_url(monkeypatch):
+    client = _get_sync_client(None, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+@pytest.mark.parametrize(
+    "wrong_url",
+    ["http://wrong-host:1234", "http://localhost:8700", "http://rdb-handler:8700", ""],
+)
+def test_sync_env_is_ignored(monkeypatch, wrong_url):
+    client = _get_sync_client(wrong_url, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+def test_sync_configure_base_url_is_ignored(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager
+    importlib.reload(rdb_manager)
+
+    rdb_manager.configure(base_url="http://malicious-host:9999", timeout=10.0)
+    client = rdb_manager._get_client()
+    assert str(client._http.base_url) == LOCKED_URL
+    assert client._http.timeout.connect == 10.0
+
+
+def test_sync_configure_closes_previous_client(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager
+    importlib.reload(rdb_manager)
+
+    first = rdb_manager._get_client()
+    assert first._http.is_closed is False
+    rdb_manager.configure(timeout=5.0)
+    # 이전 클라이언트의 httpx 풀이 닫혀야 한다 (누수 방지)
+    assert first._http.is_closed is True
+    # 새 인스턴스로 교체됨
+    assert rdb_manager._get_client() is not first
+
+
+def test_sync_resolve_base_url_is_constant(monkeypatch):
+    monkeypatch.setenv("RDB_HANDLER_URL", "http://something-else:1")
+    import rdb_manager
+    importlib.reload(rdb_manager)
+    assert rdb_manager._resolve_base_url() == LOCKED_URL
+
+
+# ── 비동기 ────────────────────────────────────────────
+
+
+def _get_async_client(env_value, monkeypatch):
+    if env_value is None:
+        monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    else:
+        monkeypatch.setenv("RDB_HANDLER_URL", env_value)
+
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+    return aio._get_client()
+
+
+def test_async_no_env_uses_locked_url(monkeypatch):
+    client = _get_async_client(None, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+@pytest.mark.parametrize(
+    "wrong_url",
+    ["http://wrong-host:1234", "http://localhost:8700", "http://rdb-handler:8700", ""],
+)
+def test_async_env_is_ignored(monkeypatch, wrong_url):
+    client = _get_async_client(wrong_url, monkeypatch)
+    assert str(client._http.base_url) == LOCKED_URL
+
+
+def test_async_configure_base_url_is_ignored(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    aio.configure(base_url="http://malicious-host:9999", timeout=12.0)
+    client = aio._get_client()
+    assert str(client._http.base_url) == LOCKED_URL
+    assert client._http.timeout.connect == 12.0
+
+
+def test_async_resolve_base_url_is_constant(monkeypatch):
+    monkeypatch.setenv("RDB_HANDLER_URL", "http://something-else:1")
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+    assert aio._resolve_base_url() == LOCKED_URL
+
+
+def test_async_configure_replaces_instance(monkeypatch):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    first = aio._get_client()
+    aio.configure(timeout=7.0)
+    # 새 인스턴스로 교체됨
+    assert aio._get_client() is not first
+    # 동기 configure와 달리 이전 AsyncClient는 닫지 않는다 (await 불가, 수용된 한계)
+    assert first._http.is_closed is False
+
+
+def test_async_configure_warns_when_instance_alive(monkeypatch, caplog):
+    monkeypatch.delenv("RDB_HANDLER_URL", raising=False)
+    import rdb_manager.aio as aio
+    importlib.reload(aio)
+
+    # 살아있는 인스턴스가 없으면 경고 없음
+    with caplog.at_level("WARNING", logger="rdb_manager.aio"):
+        aio.configure(timeout=5.0)
+    assert not caplog.records
+
+    # 살아있는 인스턴스를 두고 재호출하면 풀 누수 경고
+    with caplog.at_level("WARNING", logger="rdb_manager.aio"):
+        aio.configure(timeout=6.0)
+    assert any("await close()" in r.message for r in caplog.records)

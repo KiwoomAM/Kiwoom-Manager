@@ -264,25 +264,31 @@ async def example(conn = Depends(get_pg_connection)):
 
 ## 예외 처리
 
+> **중요:** HTTP SDK 전환 이후 **쿼리·연결 오류는 `HandlerError` / `HandlerConnectionError`로 통일**되었습니다. 클라이언트는 더 이상 `QueryExecutionException` / `ConnectionPoolException` / `DatabaseException`을 raise하지 않습니다. 기존 `except QueryExecutionException` 코드는 오류를 잡지 못하므로 아래 패턴으로 변경하세요.
+
 ```python
-from rdb_handler import QueryExecutionException
-from rdb_manager import query_to_dataframe
+from rdb_manager import query_to_dataframe, HandlerError, HandlerConnectionError
 
 try:
     df = query_to_dataframe("SELECT * FROM no_table")
-except QueryExecutionException as e:
-    print(e.message)   # "SELECT 쿼리 실행 실패"
-    print(e.detail)    # relation "no_table" does not exist
-    print(e.sql)       # "SELECT * FROM no_table"
+except HandlerError as e:
+    print(e.message)       # "[RDB 핸들러] ..."
+    print(e.status_code)   # 핸들러 HTTP 상태 코드 (예: 400, 500)
+    print(e.detail)        # 핸들러가 내려준 상세 (있을 때)
+except HandlerConnectionError as e:
+    print(e.message)       # 핸들러 미응답 / 타임아웃 / 연결 실패
 ```
 
 예외 계층:
 
 ```
-DatabaseException
-├── ConnectionPoolException   # 커넥션 획득/설정 실패
-└── QueryExecutionException   # 쿼리 실행 실패
+SDKError                      # SDK 기본 에러
+├── HandlerConnectionError    # 핸들러 연결 실패·타임아웃 (status_code=0)
+└── HandlerError              # 핸들러가 4xx/5xx 에러 응답 (status_code 보존)
 ```
+
+> 레거시 예외(`DatabaseException` / `ConnectionPoolException` / `QueryExecutionException`)는
+> import 호환을 위해 export만 유지되며, 현재 클라이언트 경로에서는 raise되지 않습니다.
 
 ---
 
