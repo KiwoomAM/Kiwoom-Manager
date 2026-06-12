@@ -8,7 +8,7 @@
 redis-handler v3 의 RedisManager API 사용 — 선점(setnx)/해제(delete)는 NX 폴백 차단으로
 분산 의미론 보호, standby 폴링(get)은 일반 명령 폴백 정책을 따른다(v3 설계상 read 는
 항상 폴백 허용, strict-read 미지원). 대기 중 단절 시 get 이 None 폴백 → 호출자가 자기
-작업 수행(timeout 폴백과 동일 경로). 상세 설계: docs/cache-stampede-dedup.md
+작업 수행(timeout 폴백과 동일 경로). 상세 설계: docs/08.dedup-design-and-impl.md
 """
 
 from __future__ import annotations

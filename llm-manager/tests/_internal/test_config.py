@@ -110,8 +110,10 @@ class TestFlushStaleStandbys:
         assert "file_cache:files_api:xyz" in client._store
 
     def test_redis_unavailable_does_not_raise(self, monkeypatch):
-        """handler 미도달 시 메모리 폴백(빈 결과) — scan_iter가 아무것도 yield하지
-        않아도 예외 없이 통과 (방어)."""
+        """정리할 standby 키가 없으면 삭제 없이 통과 (방어).
+
+        v3 scan_iter/delete는 handler 미도달 시 메모리 폴백이라 별도 예외 경로가
+        없다 — 빈 결과(메모리 폴백 포함)에서도 raise하지 않음을 검증."""
         client = FakeRedisClient()  # seed 없음 → scan_iter 빈 결과
         import redis_manager
         monkeypatch.setattr(redis_manager, "RedisManager", lambda: client)
