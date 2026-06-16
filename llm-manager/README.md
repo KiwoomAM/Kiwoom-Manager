@@ -307,7 +307,7 @@ response, meta = await llm_request_async(
         "system": "시스템 프롬프트",    # 선택
         "temperature": 0,               # 선택
         "max_tokens": 200,              # 선택
-        "service_name": "kiwoom-rm",    # 선택 (meta에 기록). 레포 이름과 동일하게 지정 권장
+        "task_name": "fund_comment",    # 선택 (meta.task_name 에 기록). 한 서비스 내 호출(task) 구분 라벨
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high")
     },
@@ -340,7 +340,7 @@ def call(
     tool_config: str | None = None,      # "auto" | "any" | "none"
     history: list[dict] | None = None,   # 이전 대화 이력
     cached_content: str | None = None,   # Context Cache 이름
-    service_name: str | None = None,     # 서비스 식별자 (로깅용)
+    task_name: str | None = None,        # 호출(task) 단위 라벨 (meta.task_name, 로깅용)
     media_resolution: str | None = None, # "low" | "medium" | "high"
 ) -> LLMResponse
 ```
@@ -405,7 +405,7 @@ response, meta = await llm_request_async(
 | `source` | `str` | `'live'` (LLM 직접 호출) 또는 `'cache'` |
 | `cache_hit` | `bool` | 캐시 히트 여부 |
 | `cache_key` | `str \| None` | SHA-256 캐시 키 (64자) |
-| `metadata` | `dict` | `{"service_name": ..., "model": ...}` |
+| `metadata` | `dict` | `{"service_name": ..., "task_name": ..., "model": ...}` — `service_name`=env `SERVICE_NAME`(실행 주체), `task_name`=`llm_input`의 호출 라벨 |
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
 | `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 각 `StoredFile` 의 6 필드(`file_path` 포함)가 담긴 list. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
@@ -623,7 +623,7 @@ llm_input + files
 | `max_tokens` | 최대 출력 토큰 수 |
 | `temperature` | 온도 |
 | `cached_content` | Context Cache 이름 (파일 있으면 제외) |
-| `service_name` | 서비스 식별자 |
+| `task_name` | 호출(task) 단위 라벨 |
 | `seed` | 재현성 시드값 |
 | `output` | 출력 형식 |
 | `schema` | 출력 스키마 |
@@ -824,7 +824,7 @@ MDB에 해당 입력의 응답이 이미 저장되어 있는지 확인. LLM 호�
 | `_id` | `str` | SHA-256 캐시 키 |
 | `canonical_json` | `str` | 캐시 키 계산에 쓰인 정규화 JSON |
 | `result` | `dict` | `LLMResponse.model_dump()` |
-| `metadata` | `dict` | `{"service_name": ..., "model": ...}` (`llm_input`에서 추출) |
+| `metadata` | `dict` | `{"service_name": ..., "task_name": ..., "model": ...}` — `service_name`=env `SERVICE_NAME`(실행 주체), `task_name`·`model`=`llm_input`에서 추출 |
 | `created_at` | `str` | 저장 시각 (UTC ISO) |
 | `requested_at` | `str` | LLM 요청 시각 (UTC ISO, LLM 호출 시에만) |
 | `expires_at` | `str` | `mdb_ttl` 설정 시에만. **현재 필드만 기록, 자동 삭제 미동작** |

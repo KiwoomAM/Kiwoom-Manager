@@ -13,7 +13,7 @@ from llm_manager._internal.handler_client.models import LLMResponse, StreamChunk
 SAMPLE_LLM_INPUT = {
     "contents": "안녕하세요",
     "model": "gemini-2.5-flash",
-    "call_type": "test-service",
+    "task_name": "test-service",
 }
 
 SAMPLE_RESPONSE = LLMResponse(

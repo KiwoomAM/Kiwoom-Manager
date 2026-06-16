@@ -91,7 +91,7 @@ class SyncClient:
         tool_config: str | None = None,
         history: list[dict] | None = None,
         cached_content: str | None = None,
-        call_type: str | None = None,
+        task_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
         """통합 단일 응답 생성.
@@ -116,7 +116,7 @@ class SyncClient:
             tool_config: Function Calling 모드 ("auto", "any", "none", "validated")
             history: 이전 대화 이력 (contents 와만 결합)
             cached_content: Context Cache 이름
-            call_type: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+            task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
             media_resolution: 미디어 해상도 ("low", "medium", "high")
 
         Returns:
@@ -137,7 +137,7 @@ class SyncClient:
             tool_config=tool_config,
             history=history,
             cached_content=cached_content,
-            call_type=call_type,
+            task_name=task_name,
             media_resolution=media_resolution,
         )
         resp = self._request("POST", "/v1/generate", json=body)
@@ -160,7 +160,7 @@ class SyncClient:
         tool_config: str | None = None,
         history: list[dict] | None = None,
         cached_content: str | None = None,
-        call_type: str | None = None,
+        task_name: str | None = None,
         media_resolution: str | None = None,
     ) -> Iterator[StreamChunk]:
         """통합 스트리밍 응답 (SSE 파싱).
@@ -182,7 +182,7 @@ class SyncClient:
             tool_config: Function Calling 모드 ("auto", "any", "none", "validated")
             history: 이전 대화 이력 (contents 와만 결합)
             cached_content: Context Cache 이름
-            call_type: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+            task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
             media_resolution: 미디어 해상도 ("low", "medium", "high")
 
         Yields:
@@ -203,7 +203,7 @@ class SyncClient:
             tool_config=tool_config,
             history=history,
             cached_content=cached_content,
-            call_type=call_type,
+            task_name=task_name,
             media_resolution=media_resolution,
         )
         try:
@@ -235,7 +235,7 @@ class SyncClient:
         task_type: str | None = None,
         title: str | None = None,
         output_dimensionality: int | None = None,
-        call_type: str | None = None,
+        task_name: str | None = None,
     ) -> EmbedResponse:
         """텍스트 임베딩 생성.
 
@@ -245,7 +245,7 @@ class SyncClient:
             task_type: 임베딩 작업 유형 (예: "RETRIEVAL_QUERY", "RETRIEVAL_DOCUMENT")
             title: 문서 제목 (task_type="RETRIEVAL_DOCUMENT"일 때만)
             output_dimensionality: 출력 벡터 차원 수 (128-3072)
-            call_type: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+            task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
 
         Returns:
             임베딩 응답
@@ -256,7 +256,7 @@ class SyncClient:
             task_type=task_type,
             title=title,
             output_dimensionality=output_dimensionality,
-            call_type=call_type,
+            task_name=task_name,
         )
         resp = self._request("POST", "/v1/embed", json=body)
         return EmbedResponse.model_validate(resp.json())

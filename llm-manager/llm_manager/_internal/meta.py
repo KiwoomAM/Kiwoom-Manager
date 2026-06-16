@@ -26,7 +26,7 @@ def build_meta(llm_input: dict) -> dict:
           미설정 시 여기서는 None 으로 둔다 — 강제는 저장 직전
           ``require_service_name_for_save`` 에서만 한다 (조회 경로는 SERVICE_NAME
           없이도 동작해야 하므로).
-        - call_type: llm_input의 호출(task) 단위 라벨. 한 서비스 안에서
+        - task_name: llm_input의 호출(task) 단위 라벨. 한 서비스 안에서
           어떤 호출이었는지 구분용. (구 ``service_name`` 입력 필드) — optional.
 
     Args:
@@ -37,7 +37,7 @@ def build_meta(llm_input: dict) -> dict:
     """
     return {
         "service_name": os.environ.get("SERVICE_NAME"),
-        "call_type": llm_input.get("call_type"),
+        "task_name": llm_input.get("task_name"),
         "model": llm_input.get("model"),
     }
 
