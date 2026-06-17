@@ -74,6 +74,7 @@ from llm_manager.exceptions import (
     FileTooLargeError,
     FileUploadError,
     LLMManagerError,
+    PdfPageTooLargeError,
     UnsupportedFileTypeError,
     ValidationError,
 )
@@ -114,6 +115,7 @@ __all__ = [
     "ValidationError",
     "UnsupportedFileTypeError",
     "FileTooLargeError",
+    "PdfPageTooLargeError",
     "CacheKeyNotFoundError",
     "FileResolveError",
     # 비동기 표면 (llm_manager.aio)

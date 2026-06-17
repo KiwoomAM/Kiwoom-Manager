@@ -81,3 +81,22 @@ class FileResolveError(LLMManagerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, status_code=502, error_type="file_resolve")
+
+
+class PdfPageTooLargeError(LLMManagerError):
+    """단일 PDF 페이지가 Gemini 한도(50MB)를 초과해 분할로도 전송 불가.
+
+    페이지는 분할의 최소 단위라, 한 페이지가 50MB를 넘으면 어떤 분할로도 한도
+    이하 파트를 만들 수 없다(모든 페이지가 ~50MB 공유 객체 풀을 참조하는 병리적
+    PDF — 이슈 #21). docs/25.pdf-split-shared-pool-and-unsplittable-reject.md 참고.
+    """
+
+    def __init__(self, page: int, size_mb: float) -> None:
+        self.page = page
+        self.size_mb = size_mb
+        super().__init__(
+            f"이 PDF는 처리할 수 없습니다 — 단일 페이지가 Gemini 한도(50MB)를 "
+            f"초과합니다 (p.{page}, {size_mb:.1f}MB).",
+            status_code=422,
+            error_type="pdf_page_too_large",
+        )
