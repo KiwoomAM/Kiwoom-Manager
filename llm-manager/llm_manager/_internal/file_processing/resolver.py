@@ -33,7 +33,7 @@ from llm_manager._internal.handler_client.exceptions import HandlerConnectionErr
 from llm_manager._internal.handler_client.models import FileRef, Part
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.stored_file_resolver import fetch_with_fallback
-from llm_manager.exceptions import CacheError, FileUploadError
+from llm_manager.exceptions import CacheError, FileUploadError, PdfPageTooLargeError
 from llm_manager.models import FileInput
 
 logger = logging.getLogger(__name__)
@@ -201,8 +201,8 @@ async def _upload_and_cache_file(
                 refs = await upload_pdf_parts(tmp.name)
             else:
                 refs = [await upload_file(tmp.name, mime_type=fi.mime_type)]
-        except (HandlerError, HandlerConnectionError):
-            # llm-handler 가 분류한 에러는 묶지 말고 그대로 전파 — caller 가
+        except (HandlerError, HandlerConnectionError, PdfPageTooLargeError):
+            # llm-handler 에러 + 분할 불가 PDF(422)는 묶지 말고 그대로 전파 — caller 가
             # status_code/error_type 으로 분기할 수 있게 (전역 핸들러가 relay).
             raise
         except Exception as e:

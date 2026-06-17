@@ -526,6 +526,25 @@ class TestUploadErrorPassthrough:
         with pytest.raises(FileUploadError):
             await _upload_and_cache_file(fi, "checksum-x", [], [])
 
+    async def test_pdf_page_too_large_passes_through(self, monkeypatch):
+        """분할 불가 PDF(PdfPageTooLargeError)는 FileUploadError(502)로 뭉개지 말고
+        422 그대로 전파 — 사용자에게 '처리 불가'가 명확히 닿아야 한다."""
+        from llm_manager.exceptions import PdfPageTooLargeError
+
+        async def fake_upload_parts(path, target_mb=50):
+            raise PdfPageTooLargeError(page=1, size_mb=52.9)
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts",
+            fake_upload_parts,
+        )
+
+        fi = _file(file_size=60 * 1024 * 1024)  # PDF split 경로 진입
+        with pytest.raises(PdfPageTooLargeError) as exc_info:
+            await _upload_and_cache_file(fi, "checksum-x", [], [])
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.error_type == "pdf_page_too_large"
+
 
 class TestContextCacheTooSmallFailSoft:
     """캐시 생성이 min_total_token_count 미달(400)이면 None 반환(fail-soft),
