@@ -14,7 +14,7 @@ llm-handler 서버로의 HTTP 클라이언트 SDK. llm_manager 가 흡수해 내
 
 from collections.abc import Iterator
 
-from ._common import ContentsType, _done_payload_var
+from ._common import ContentsType, _done_payload_var, _resolve_task_name
 from ._config import get_settings
 from ._session import Session
 from ._sync_client import SyncClient
@@ -179,6 +179,7 @@ def call(
     history: list[dict] | None = None,
     cached_content: str | None = None,
     task_name: str | None = None,
+    service_name: str | None = None,  # deprecated — task_name 으로 교체
     media_resolution: str | None = None,
 ) -> LLMResponse:
     """통합 LLM 호출 — 단일 응답.
@@ -188,6 +189,7 @@ def call(
         2. call(contents=..., history=...)  — user 발화 + 이전 dict 형식 history
         3. call(messages=[Content, ...])    — 전체 대화 명시 (advanced, type-safe)
     """
+    task_name = _resolve_task_name(task_name, service_name)
     return _get_client().call(
         contents,
         messages=messages,
@@ -225,9 +227,11 @@ def stream(
     history: list[dict] | None = None,
     cached_content: str | None = None,
     task_name: str | None = None,
+    service_name: str | None = None,  # deprecated — task_name 으로 교체
     media_resolution: str | None = None,
 ) -> Iterator[StreamChunk]:
     """통합 스트리밍 LLM 호출 — 호출 형태는 call() 과 동일."""
+    task_name = _resolve_task_name(task_name, service_name)
     return _get_client().stream(
         contents,
         messages=messages,
@@ -256,8 +260,10 @@ def embed(
     title: str | None = None,
     output_dimensionality: int | None = None,
     task_name: str | None = None,
+    service_name: str | None = None,  # deprecated — task_name 으로 교체
 ) -> EmbedResponse:
     """텍스트 임베딩 생성."""
+    task_name = _resolve_task_name(task_name, service_name)
     return _get_client().embed(
         contents,
         model=model,

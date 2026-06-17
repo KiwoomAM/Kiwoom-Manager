@@ -23,6 +23,26 @@ from .models import Content, FileRef, LLMResponse, Part, StreamChunk
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_task_name(task_name: str | None, service_name: str | None) -> str | None:
+    """task_name 우선. (구) ``service_name`` 이 오면 deprecated 경고 후 흡수한다.
+
+    호출 라벨이 ``service_name`` → ``task_name`` 으로 rename됐다. 마이그레이션 기간 동안
+    옛 인자(``service_name``)도 받아주되 경고를 남긴다. 둘 다 오면 ``task_name`` 을 쓴다.
+    """
+    if service_name is None:
+        return task_name
+    if task_name is None:
+        logger.warning(
+            "'service_name' 인자는 deprecated 입니다 — 'task_name' 으로 교체하세요. "
+            "(이번에는 service_name 값을 task_name 으로 사용합니다)"
+        )
+        return service_name
+    logger.warning(
+        "'service_name'(deprecated)와 'task_name' 이 함께 전달됨 — 'task_name' 을 사용합니다."
+    )
+    return task_name
+
 # stream() done event payload — task/thread 단위 격리.
 # AsyncClient/SyncClient 의 stream() 이 set, Session/AsyncSession 이 `client._last_done_payload`
 # property (호환 layer) 또는 직접 get 으로 read. 동일 client 인스턴스 위 동시 stream 호출이
