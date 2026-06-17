@@ -1,9 +1,12 @@
 """PDF 분할 유틸리티.
 
-50MB를 초과하는 PDF를 Gemini Files API 제한(PDF 50MB) 이하의
-파트로 분할한다.
+50MB를 초과하는 PDF를 Gemini Files API 제한(PDF 50MB) 이하의 파트로 분할한다.
 
-페이지별 바이트 기여도를 추정하여 누적 크기 기반으로 그룹핑.
+페이지별 바이트 기여도를 추정해 그룹핑하고, 저장 후 실제 크기가 한도를 넘는 그룹은
+페이지를 이등분해 재귀적으로 더 쪼갠다. 단일 페이지가 한도를 넘으면(모든 페이지가
+~50MB 공유 객체 풀을 참조하는 병리적 PDF) 더 쪼갤 수 없으므로
+PdfPageTooLargeError로 거부한다.
+docs/25.pdf-split-shared-pool-and-unsplittable-reject.md 참고.
 (Kiwoom-ESG file_manager.split_by_size 로직 기반)
 """
 
@@ -15,11 +18,15 @@ import tempfile
 
 import fitz  # PyMuPDF
 
+from llm_manager.exceptions import PdfPageTooLargeError
+
 logger = logging.getLogger(__name__)
 
 _SAFETY_MARGIN = 0.95  # 5% 안전 마진
 _MERGE_LIMIT_MB = 45  # 병합 시 상한 (insert_pdf 후 크기 증가 가능성 대비)
-_MAX_DEPTH = 3  # 재분할 최대 깊이
+# garbage=2: unused 객체 제거 + xref 압축 (빠름, ~0.4s). garbage>=3 의 객체/스트림
+# 중복 대조는 객체 수가 많은 PDF에서 분 단위로 폭발하므로 쓰지 않는다 (docs/25 §2-1).
+_GARBAGE = 2
 
 
 def _estimate_page_sizes(doc: fitz.Document, file_size: int) -> list[float]:
@@ -51,48 +58,13 @@ def _estimate_page_sizes(doc: fitz.Document, file_size: int) -> list[float]:
     return [s * scale for s in page_sizes]
 
 
-def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
-    """PDF를 target_mb 이하 파트로 분할한다.
-
-    페이지별 바이트 기여도를 추정하여 누적 크기가 target_mb를
-    초과하지 않도록 그룹핑한 후 분할한다.
-    초과하는 파트는 재귀적으로 재분할 (최대 _MAX_DEPTH회).
-
-    Args:
-        path: PDF 파일 경로.
-        target_mb: 파트당 최대 크기 (MB). 기본 50.
-
-    Returns:
-        파트 파일 경로 리스트. 분할 불필요 시 [원본 경로] 반환.
-        분할된 임시 파일은 호출자(uploader)가 삭제 책임.
-    """
-    file_size = os.path.getsize(path)
-    target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
-
-    if file_size <= target_bytes:
-        return [path]
-
-    if _depth >= _MAX_DEPTH:
-        logger.warning(
-            "재분할 한도(%d) 초과: %s (%.1fMB) — 현재 크기로 진행",
-            _MAX_DEPTH,
-            os.path.basename(path),
-            file_size / (1024 * 1024),
-        )
-        return [path]
-
-    doc = fitz.open(path)
-    try:  # Bug A — _estimate_page_sizes raise 시에도 doc.close 보장 (docs/16 §3.3)
-        # 페이지별 바이트 추정
-        page_sizes = _estimate_page_sizes(doc, file_size)
-    finally:
-        doc.close()
-
-    # 누적 크기 기반 그룹핑
+def _group_pages(
+    page_sizes: list[float], target_bytes: float, target_mb: int
+) -> list[list[int]]:
+    """누적 추정 크기가 target_bytes를 넘지 않도록 페이지를 그룹으로 묶는다."""
     groups: list[list[int]] = []
     current_group: list[int] = []
     current_size = 0.0
-
     for i, size in enumerate(page_sizes):
         if current_size + size > target_bytes and current_group:
             groups.append(current_group)
@@ -112,94 +84,159 @@ def split_pdf(path: str, target_mb: int = 50, *, _depth: int = 0) -> list[str]:
 
     if current_group:
         groups.append(current_group)
+    return groups
 
-    # 그룹별 PDF 저장 + 초과 시 재분할
+
+def _save_pages(src_path: str, group: list[int], created_temps: list[str]) -> str:
+    """src_path에서 group 페이지만 골라 임시 PDF로 저장하고 경로를 반환.
+
+    tempfile은 save 이전에 created_temps에 등록해, save가 도중 실패해도 호출자의
+    정리 루프가 회수하게 한다(leak 방지, docs/16 §3.3).
+    """
+    part_doc = fitz.open(src_path)
+    try:
+        part_doc.select(group)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)  # 분할 pdf 임시 생성
+        tmp.close()
+        created_temps.append(tmp.name)
+        part_doc.save(tmp.name, garbage=_GARBAGE, deflate=True)
+    finally:
+        part_doc.close()
+    return tmp.name
+
+
+def _split_group(
+    src_path: str,
+    group: list[int],
+    limit_bytes: int,
+    created_temps: list[str],
+    result: list[str],
+) -> None:
+    """group 페이지를 저장한다. 실제 크기가 한도를 넘으면 페이지를 이등분해 재귀.
+
+    단일 페이지인데도 한도를 넘으면 더 쪼갤 수 없으므로 PdfPageTooLargeError.
+    원본 페이지 인덱스를 이등분하므로 재귀는 단일 페이지에서 반드시 종료된다.
+    """
+    part = _save_pages(src_path, group, created_temps)
+    part_size = os.path.getsize(part)
+    logger.info(
+        "분할: p.%d-%d (%.1fMB)",
+        group[0] + 1,
+        group[-1] + 1,
+        part_size / (1024 * 1024),
+    )
+
+    if part_size <= limit_bytes:
+        result.append(part)
+        return
+
+    # 한도 초과 — 방금 만든 파트는 버리고 더 쪼갠다
+    os.unlink(part)
+    created_temps.remove(part)
+
+    if len(group) == 1:
+        size_mb = part_size / (1024 * 1024)
+        logger.warning(
+            "분할 불가 PDF: 단일 페이지 p.%d 가 %.1fMB로 한도 초과",
+            group[0] + 1,
+            size_mb,
+        )
+        raise PdfPageTooLargeError(page=group[0] + 1, size_mb=size_mb)
+
+    logger.warning(
+        "파트(p.%d-%d) %.1fMB 초과 → 페이지 이등분 재분할",
+        group[0] + 1,
+        group[-1] + 1,
+        part_size / (1024 * 1024),
+    )
+    mid = len(group) // 2
+    _split_group(src_path, group[:mid], limit_bytes, created_temps, result)
+    _split_group(src_path, group[mid:], limit_bytes, created_temps, result)
+
+
+def _merge_adjacent(result: list[str], created_temps: list[str]) -> list[str]:
+    """인접 파트를 실제 크기 기준 _MERGE_LIMIT_MB 상한으로 병합한다."""
+    if len(result) <= 1:
+        return result
+
+    merge_limit_bytes = _MERGE_LIMIT_MB * 1024 * 1024
+    merged: list[str] = [result[0]]
+    for i in range(1, len(result)):
+        prev_size = os.path.getsize(merged[-1])
+        curr_size = os.path.getsize(result[i])
+        if prev_size + curr_size <= merge_limit_bytes:
+            doc_m = fitz.open(merged[-1])
+            try:
+                doc_c = fitz.open(result[i])
+                try:
+                    doc_m.insert_pdf(doc_c)
+                finally:
+                    doc_c.close()
+                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+                tmp.close()
+                created_temps.append(tmp.name)
+                doc_m.save(tmp.name, garbage=_GARBAGE, deflate=True)
+            finally:
+                doc_m.close()
+            os.unlink(merged[-1])
+            os.unlink(result[i])
+            merged[-1] = tmp.name
+            logger.info("병합 → %.1fMB", os.path.getsize(tmp.name) / (1024 * 1024))
+        else:
+            merged.append(result[i])
+    return merged
+
+
+def split_pdf(path: str, target_mb: int = 50) -> list[str]:
+    """PDF를 target_mb 이하 파트로 분할한다.
+
+    페이지별 바이트 기여도를 추정해 그룹핑하고, 저장 후 실제 크기가 한도를 넘는
+    그룹은 페이지를 이등분해 재귀적으로 더 쪼갠다.
+
+    Args:
+        path: PDF 파일 경로.
+        target_mb: 파트당 최대 크기 (MB). 기본 50.
+
+    Returns:
+        파트 파일 경로 리스트. 분할 불필요 시 [원본 경로] 반환.
+        분할된 임시 파일은 호출자(uploader)가 삭제 책임.
+
+    Raises:
+        PdfPageTooLargeError: 단일 페이지가 target_mb를 초과해 분할로도 처리 불가.
+    """
+    file_size = os.path.getsize(path)
+    target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
+
+    if file_size <= target_bytes:
+        return [path]
+
+    doc = fitz.open(path)
+    try:  # _estimate_page_sizes raise 시에도 doc.close 보장 (docs/16 §3.3)
+        page_sizes = _estimate_page_sizes(doc, file_size)
+    finally:
+        doc.close()
+
+    groups = _group_pages(page_sizes, target_bytes, target_mb)
+
     limit_bytes = target_mb * 1024 * 1024
     created_temps: list[str] = []  # 만든 임시 파일 추적 — except 시 정리용 (docs/16 §3.3)
     result: list[str] = []
     try:
-        for idx, group in enumerate(groups):
-            part_doc = fitz.open(path)
-            try:
-                part_doc.select(group)
-                tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) # 분할 pdf 임시 생성
-                tmp.close()
-                created_temps.append(tmp.name)
-                part_doc.save(tmp.name, garbage=4, deflate=True)
-            finally:
-                part_doc.close()
-
-            part_size = os.path.getsize(tmp.name)
-            part_mb = part_size / (1024 * 1024)
-            logger.info(
-                "분할 %d/%d: p.%d-%d (%.1fMB)",
-                idx + 1,
-                len(groups),
-                group[0] + 1,
-                group[-1] + 1,
-                part_mb,
-            )
-
-            if part_size > limit_bytes:
-                logger.warning("파트 %d이 %.1fMB로 초과 → 재분할", idx + 1, part_mb)
-                sub_paths = split_pdf(tmp.name, target_mb, _depth=_depth + 1)
-                if sub_paths == [tmp.name]:
-                    # Bug B — 재귀가 _MAX_DEPTH 초과로 [path] 그대로 반환 시 unlink 금지
-                    result.append(tmp.name)
-                else:
-                    # 시나리오 ③ — 재귀 결과도 추적 후 tmp.name 정리
-                    created_temps.extend(sub_paths)
-                    os.unlink(tmp.name)
-                    result.extend(sub_paths)
-            else:
-                result.append(tmp.name)
-
-        # 후처리: 인접 파트 병합 (실제 크기 기준, 45MB 상한)
-        merge_limit_bytes = _MERGE_LIMIT_MB * 1024 * 1024
-        if len(result) > 1:
-            merged: list[str] = [result[0]]
-            for i in range(1, len(result)):
-                prev_size = os.path.getsize(merged[-1])
-                curr_size = os.path.getsize(result[i])
-                if prev_size + curr_size <= merge_limit_bytes:
-                    doc_m = fitz.open(merged[-1])
-                    try:
-                        doc_c = fitz.open(result[i])
-                        try:
-                            doc_m.insert_pdf(doc_c)
-                        finally:
-                            doc_c.close()
-                        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-                        tmp.close()
-                        created_temps.append(tmp.name)
-                        doc_m.save(tmp.name, garbage=4, deflate=True)
-                    finally:
-                        doc_m.close()
-                    os.unlink(merged[-1])
-                    os.unlink(result[i])
-                    merged[-1] = tmp.name
-                    logger.info(
-                        "병합: 파트 %d+%d → %.1fMB",
-                        len(merged),
-                        len(merged) + 1,
-                        os.path.getsize(tmp.name) / (1024 * 1024),
-                    )
-                else:
-                    merged.append(result[i])
-            result = merged
-
-        return result
+        for group in groups:
+            _split_group(path, group, limit_bytes, created_temps, result)
+        return _merge_adjacent(result, created_temps)
     except Exception:
-        # raise → 호출자가 result 못 받음 → 만든 임시 파일 모두 정리 (docs/16 §3.3)
+        # raise(예: PdfPageTooLargeError, save 실패) → 만든 임시 파일 모두 정리
         logger.exception(
             "split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)",
-            len(created_temps), len(result),
+            len(created_temps),
+            len(result),
         )
         for t in set(created_temps) | set(result):
             try:
                 os.unlink(t)
             except FileNotFoundError:
-                pass  # set 합집합 특성상 정상 (이미 unlink 된 항목 포함)
+                pass  # 이미 unlink 된 항목 (재분할/병합 중 제거) — 정상
             except OSError:
                 logger.warning("임시 파일 정리 실패: %s", t, exc_info=True)
         raise
