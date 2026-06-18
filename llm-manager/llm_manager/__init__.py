@@ -35,6 +35,7 @@ from typing import Any, TypedDict
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
 from llm_manager._internal import runner
 from llm_manager._internal._config import ensure_configured
+from llm_manager._internal.file_processing import preprocess
 from llm_manager._internal.context_cache_lifecycle import expire_caches
 from llm_manager._internal.done_check import done_check as _done_check
 
@@ -94,6 +95,8 @@ __all__ = [
     "llm_request",
     "llm_request_stream_async",
     "llm_request_stream",
+    "file_preprocessing",
+    "file_preprocessing_async",
     "done_check",
     "fetch_by_cache_key",
     "delete_cache",
@@ -325,6 +328,52 @@ def llm_request_stream(
 
     events, meta = asyncio.run(_collect())
     return iter(events), meta
+
+
+async def file_preprocessing_async(
+    llm_input: dict,
+    *,
+    stored_files: list[StoredFile] | None = None,
+    timings: Timings | None = None,
+) -> dict[str, str] | list[list[str]]:
+    """파일 전처리만 실행 (async) — 업로드/Context Cache 생성, LLM 호출 없음.
+
+    `llm_request` 와 달리 LLM 응답 캐시 조회·LLM 호출을 하지 않고, stored_files 를
+    files_api 로 업로드(+ opt-in Context Cache 생성)만 한다.
+
+    Args:
+        llm_input: `model`/`system`/`tools`/`tool_config` 만 사용(context cache 재료).
+            LLM 을 부르지 않으므로 `contents` 는 보지 않는다.
+        stored_files: file-manager 에 등록된 파일 참조. 여러 개 허용.
+        timings: `context_cache_ttl`(opt-in) + `standby_ttl` 만 의미 있음.
+
+    Returns:
+        - context cache 모드(`context_cache_ttl` 지정 + 생성 성공)
+          → ``{"context_cache_id": <hash_key>, "cached_content_name": <gemini cache id>}``
+        - files_api-only / too-small fail-soft → ``(n, ?)`` 파일별 URI 리스트
+    """
+    await asyncio.to_thread(ensure_configured)
+    t = _resolve_timings(timings)
+    return await preprocess.file_preprocessing_async(
+        llm_input,
+        stored_files=stored_files,
+        context_cache_ttl=t["context_cache_ttl"],
+        standby_ttl_seconds=t["standby_ttl"],
+    )
+
+
+def file_preprocessing(
+    llm_input: dict,
+    *,
+    stored_files: list[StoredFile] | None = None,
+    timings: Timings | None = None,
+) -> dict[str, str] | list[list[str]]:
+    """파일 전처리만 실행 (sync). file_preprocessing_async 의 동기 래퍼."""
+    return asyncio.run(file_preprocessing_async(
+        llm_input,
+        stored_files=stored_files,
+        timings=timings,
+    ))
 
 
 async def done_check(
