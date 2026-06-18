@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator
 
 from ._async_session import AsyncSession
 from ._client import AsyncClient
-from ._common import ContentsType, _done_payload_var, _resolve_task_name
+from ._common import ContentsType, _done_payload_var
 from ._config import get_settings
 from .exceptions import HandlerConnectionError, HandlerError, SDKError
 from .models import (
@@ -146,7 +146,7 @@ async def call(
     history: list[dict] | None = None,
     cached_content: str | None = None,
     task_name: str | None = None,
-    service_name: str | None = None,  # deprecated — task_name 으로 교체
+    service_name: str | None = None,  # 실행 서비스 (env SERVICE_NAME). 호출 측에서 주입
     media_resolution: str | None = None,
 ) -> LLMResponse:
     """통합 LLM 호출 (비동기) — 단일 응답.
@@ -156,7 +156,6 @@ async def call(
         2. call(contents=..., history=...)  — user 발화 + 이전 dict 형식 history
         3. call(messages=[Content, ...])    — 전체 대화 명시 (advanced, type-safe)
     """
-    task_name = _resolve_task_name(task_name, service_name)
     return await _get_client().call(
         contents,
         messages=messages,
@@ -173,6 +172,7 @@ async def call(
         history=history,
         cached_content=cached_content,
         task_name=task_name,
+        service_name=service_name,
         media_resolution=media_resolution,
     )
 
@@ -194,11 +194,10 @@ async def stream(
     history: list[dict] | None = None,
     cached_content: str | None = None,
     task_name: str | None = None,
-    service_name: str | None = None,  # deprecated — task_name 으로 교체
+    service_name: str | None = None,  # 실행 서비스 (env SERVICE_NAME). 호출 측에서 주입
     media_resolution: str | None = None,
 ) -> AsyncGenerator[StreamChunk, None]:
     """통합 스트리밍 LLM 호출 (비동기) — 호출 형태는 call() 과 동일."""
-    task_name = _resolve_task_name(task_name, service_name)
     async for chunk in _get_client().stream(
         contents,
         messages=messages,
@@ -215,6 +214,7 @@ async def stream(
         history=history,
         cached_content=cached_content,
         task_name=task_name,
+        service_name=service_name,
         media_resolution=media_resolution,
     ):
         yield chunk
@@ -228,10 +228,9 @@ async def embed(
     title: str | None = None,
     output_dimensionality: int | None = None,
     task_name: str | None = None,
-    service_name: str | None = None,  # deprecated — task_name 으로 교체
+    service_name: str | None = None,  # 실행 서비스 (env SERVICE_NAME). 호출 측에서 주입
 ) -> EmbedResponse:
     """텍스트 임베딩 생성 (비동기)."""
-    task_name = _resolve_task_name(task_name, service_name)
     return await _get_client().embed(
         contents,
         model=model,
@@ -239,6 +238,7 @@ async def embed(
         title=title,
         output_dimensionality=output_dimensionality,
         task_name=task_name,
+        service_name=service_name,
     )
 
 

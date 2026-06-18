@@ -1,10 +1,10 @@
-"""meta.py 테스트 — 메타정보 추출 + 저장 직전 가드."""
+"""meta.py 테스트 — 메타정보 추출 + 요청 앞단 env 가드."""
 
 from __future__ import annotations
 
 import pytest
 
-from llm_manager._internal.meta import build_meta, require_service_name_for_save
+from llm_manager._internal.meta import build_meta, require_service_name
 from llm_manager.exceptions import ValidationError
 
 
@@ -22,7 +22,7 @@ class TestBuildMeta:
         }
 
     def test_service_name_none_when_env_missing(self, monkeypatch):
-        """build_meta 자체는 강제하지 않는다 — 미설정 시 None (조회 경로 허용)."""
+        """build_meta 자체는 강제하지 않는다 — env 미설정 시 None (강제는 require_service_name)."""
         monkeypatch.delenv("SERVICE_NAME", raising=False)
         result = build_meta({"task_name": "summary", "model": "flash"})
         assert result == {
@@ -41,21 +41,19 @@ class TestBuildMeta:
         }
 
 
-class TestRequireServiceNameForSave:
+class TestRequireServiceName:
+    """요청 앞단(runner.prepare) fail-fast — env SERVICE_NAME 강제."""
 
-    def test_passes_when_service_name_present(self):
-        require_service_name_for_save(
-            {"service_name": "esg-evaluator", "task_name": "summary"}
-        )  # raise 없으면 통과
+    def test_returns_env_value(self, monkeypatch):
+        monkeypatch.setenv("SERVICE_NAME", "kiwoom-rm")
+        assert require_service_name() == "kiwoom-rm"
 
-    def test_raises_when_service_name_none(self):
+    def test_raises_when_env_missing(self, monkeypatch):
+        monkeypatch.delenv("SERVICE_NAME", raising=False)
         with pytest.raises(ValidationError):
-            require_service_name_for_save({"service_name": None, "task_name": "x"})
+            require_service_name()
 
-    def test_raises_when_service_name_missing_key(self):
+    def test_raises_when_env_empty(self, monkeypatch):
+        monkeypatch.setenv("SERVICE_NAME", "")
         with pytest.raises(ValidationError):
-            require_service_name_for_save({"task_name": "x"})
-
-    def test_raises_when_service_name_empty(self):
-        with pytest.raises(ValidationError):
-            require_service_name_for_save({"service_name": ""})
+            require_service_name()

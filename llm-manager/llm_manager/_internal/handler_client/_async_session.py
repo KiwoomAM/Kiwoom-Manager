@@ -74,6 +74,7 @@ class AsyncSession:
         tool_config: str | None = None,
         cached_content: str | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
         """세션 내 호출 -- 이력 자동 관리."""
@@ -92,6 +93,7 @@ class AsyncSession:
             history=self._curated_history if self._curated_history else None,
             cached_content=cached_content,
             task_name=task_name,
+            service_name=service_name,
             media_resolution=media_resolution,
         )
         self._record_history(contents, response)
@@ -111,6 +113,7 @@ class AsyncSession:
         tool_config: str | None = None,
         cached_content: str | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """세션 내 스트리밍 -- 이력 자동 관리."""
@@ -137,6 +140,7 @@ class AsyncSession:
             history=self._curated_history if self._curated_history else None,
             cached_content=cached_content,
             task_name=task_name,
+            service_name=service_name,
             media_resolution=media_resolution,
         ):
             collected_text += chunk.text or ""
@@ -191,6 +195,7 @@ class AsyncSession:
         tool_config: str | None = None,
         cached_content: str | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
         """function 실행 결과를 role='tool' 메시지로 history 에 추가하고 다음 응답 받기.
@@ -241,6 +246,7 @@ class AsyncSession:
                 tool_config=tool_config,
                 cached_content=cached_content,
                 task_name=task_name,
+                service_name=service_name,
                 media_resolution=media_resolution,
             )
         except BaseException:

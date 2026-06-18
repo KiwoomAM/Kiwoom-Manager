@@ -23,26 +23,6 @@ from .models import Content, FileRef, LLMResponse, Part, StreamChunk
 
 logger = logging.getLogger(__name__)
 
-
-def _resolve_task_name(task_name: str | None, service_name: str | None) -> str | None:
-    """task_name 우선. (구) ``service_name`` 이 오면 deprecated 경고 후 흡수한다.
-
-    호출 라벨이 ``service_name`` → ``task_name`` 으로 rename됐다. 마이그레이션 기간 동안
-    옛 인자(``service_name``)도 받아주되 경고를 남긴다. 둘 다 오면 ``task_name`` 을 쓴다.
-    """
-    if service_name is None:
-        return task_name
-    if task_name is None:
-        logger.warning(
-            "'service_name' 인자는 deprecated 입니다 — 'task_name' 으로 교체하세요. "
-            "(이번에는 service_name 값을 task_name 으로 사용합니다)"
-        )
-        return service_name
-    logger.warning(
-        "'service_name'(deprecated)와 'task_name' 이 함께 전달됨 — 'task_name' 을 사용합니다."
-    )
-    return task_name
-
 # stream() done event payload — task/thread 단위 격리.
 # AsyncClient/SyncClient 의 stream() 이 set, Session/AsyncSession 이 `client._last_done_payload`
 # property (호환 layer) 또는 직접 get 으로 read. 동일 client 인스턴스 위 동시 stream 호출이
@@ -267,6 +247,7 @@ def build_body(
     history: list[dict] | None = None,
     cached_content: str | None = None,
     task_name: str | None = None,
+    service_name: str | None = None,
     media_resolution: str | None = None,
 ) -> dict:
     """SDK 파라미터 → Handler HTTP body 변환.
@@ -292,6 +273,7 @@ def build_body(
         history: 이전 대화 이력 (contents 와만 결합)
         cached_content: Context Cache 이름
         task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+        service_name: 실행 서비스 식별자 (env SERVICE_NAME). 호출 측에서 주입.
         media_resolution: 미디어 해상도 ("low", "medium", "high")
 
     Returns:
@@ -333,6 +315,8 @@ def build_body(
         body["cached_content"] = cached_content
     if task_name is not None:
         body["task_name"] = task_name
+    if service_name is not None:
+        body["service_name"] = service_name
     if tools is not None:
         body["tools"] = tools
     if tool_config is not None:
@@ -412,6 +396,7 @@ def build_embed_body(
     title: str | None = None,
     output_dimensionality: int | None = None,
     task_name: str | None = None,
+    service_name: str | None = None,
 ) -> dict:
     """SDK embed 파라미터 → Handler HTTP body 변환.
 
@@ -422,6 +407,7 @@ def build_embed_body(
         title: 문서 제목 (RETRIEVAL_DOCUMENT 전용)
         output_dimensionality: 출력 벡터 차원 수
         task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+        service_name: 실행 서비스 식별자 (env SERVICE_NAME). 호출 측에서 주입.
 
     Returns:
         Handler HTTP body dict
@@ -438,5 +424,7 @@ def build_embed_body(
         body["output_dimensionality"] = output_dimensionality
     if task_name is not None:
         body["task_name"] = task_name
+    if service_name is not None:
+        body["service_name"] = service_name
 
     return body

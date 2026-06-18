@@ -78,6 +78,7 @@ class AsyncClient:
         history: list[dict] | None = None,
         cached_content: str | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
         """통합 단일 응답 생성.
@@ -103,6 +104,7 @@ class AsyncClient:
             history=history,
             cached_content=cached_content,
             task_name=task_name,
+            service_name=service_name,
             media_resolution=media_resolution,
         )
         resp = await self._request("POST", "/v1/generate", json=body)
@@ -126,6 +128,7 @@ class AsyncClient:
         history: list[dict] | None = None,
         cached_content: str | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """통합 스트리밍 응답 (SSE 파싱).
@@ -148,6 +151,7 @@ class AsyncClient:
             history=history,
             cached_content=cached_content,
             task_name=task_name,
+            service_name=service_name,
             media_resolution=media_resolution,
         )
         _done_payload_var.set(None)
@@ -190,6 +194,7 @@ class AsyncClient:
         title: str | None = None,
         output_dimensionality: int | None = None,
         task_name: str | None = None,
+        service_name: str | None = None,
     ) -> EmbedResponse:
         """텍스트 임베딩 생성 (비동기).
 
@@ -200,6 +205,7 @@ class AsyncClient:
             title: 문서 제목 (task_type="RETRIEVAL_DOCUMENT"일 때만)
             output_dimensionality: 출력 벡터 차원 수 (128-3072)
             task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+            service_name: 실행 서비스 식별자 (env SERVICE_NAME)
 
         Returns:
             임베딩 응답
@@ -211,6 +217,7 @@ class AsyncClient:
             title=title,
             output_dimensionality=output_dimensionality,
             task_name=task_name,
+            service_name=service_name,
         )
         resp = await self._request("POST", "/v1/embed", json=body)
         return EmbedResponse.model_validate(resp.json())
