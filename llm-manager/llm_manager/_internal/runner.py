@@ -21,7 +21,7 @@ from llm_manager._internal.handler_client.aio import last_assistant_message
 from llm_manager._internal.handler_client.aio import stream as aio_stream
 from llm_manager._internal.handler_client.models import Content, LLMResponse, StreamChunk
 from llm_manager._internal.keying import make_file_checksum
-from llm_manager._internal.meta import build_meta
+from llm_manager._internal.meta import build_meta, require_service_name
 from llm_manager._internal.store import cache_get, save_result
 from llm_manager._internal.stored_file_resolver import resolve_stored_files
 from llm_manager.models import FileInput, StoredFile
@@ -75,14 +75,16 @@ def prepare(
     """
     # service_name = 실행 서비스 식별자. env SERVICE_NAME 에서 주입한다
     # (메타 저장 + handler 전송 양쪽). 모든 서비스가 env 에 SERVICE_NAME 을 갖는다는 전제.
-    # (구) llm_input 의 'service_name' 입력은 deprecated — 경고 후 env 값으로 덮어쓴다.
+    # llm_input 에 service_name 이 와도 받아준다(handler 입력 인자 구조와 통일 — 장기 유지).
+    # 다만 값은 항상 env 로 처리하므로, 입력이 있으면 "env 로 처리됨" 경고만 남긴다.
     if llm_input.get("service_name") is not None:
         logger.warning(
-            "llm_input 의 'service_name' 입력은 deprecated 입니다 — 실행 서비스는 env "
-            "SERVICE_NAME 로 자동 주입되며 입력 service_name 은 무시됩니다. "
-            "호출 단위 라벨은 'task_name' 을 사용하세요."
+            "llm_input 의 'service_name' 은 env SERVICE_NAME 으로 처리됩니다 "
+            "(입력값이 아니라 env 값 사용). 실행 서비스는 env 로 관리하세요."
         )
-    llm_input = {**llm_input, "service_name": os.environ.get("SERVICE_NAME")}
+    # env SERVICE_NAME 미설정이면 요청 앞단에서 fail-fast (저장뿐 아니라 handler 전송에 필요).
+    service_name = require_service_name()
+    llm_input = {**llm_input, "service_name": service_name}
 
     meta = build_meta(llm_input)
     requested_at = datetime.now(UTC)
