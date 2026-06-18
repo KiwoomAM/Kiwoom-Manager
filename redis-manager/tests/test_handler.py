@@ -123,6 +123,48 @@ class TestNXFallbackBlocking:
         assert handler.setnx("lock", "owner", ttl=30) is False
 
 
+class TestCompareAndSwapFallbackBlocking:
+    """CAS는 분산 락 정합성 명령 — NX/XX처럼 메모리 폴백을 차단한다."""
+
+    def test_compare_and_delete_raises_when_redis_unavailable(self, offline_manager):
+        with pytest.raises(RedisUnavailableError):
+            offline_manager.compare_and_delete("lock", "token-A")
+
+    def test_compare_and_set_raises_when_redis_unavailable(self, offline_manager):
+        with pytest.raises(RedisUnavailableError):
+            offline_manager.compare_and_set("lock", "token-A", "token-A", ex=30)
+
+    def test_compare_and_delete_propagates_retry_exhausted_no_fallback(self, set_backend):
+        handler = set_backend(_retry_exhausted)
+        with pytest.raises(RedisRetryExhausted):
+            handler.compare_and_delete("lock", "token-A")
+
+    def test_compare_and_delete_returns_true_when_owner_matches(self, set_backend):
+        handler = set_backend(_ok_set(True))
+        assert handler.compare_and_delete("lock", "token-A") is True
+
+    def test_compare_and_delete_returns_false_when_owner_mismatches(self, set_backend):
+        handler = set_backend(_ok_set(False))
+        assert handler.compare_and_delete("lock", "token-A") is False
+
+    def test_compare_and_set_returns_true_when_owner_matches(self, set_backend):
+        handler = set_backend(_ok_set(True))
+        assert handler.compare_and_set("lock", "token-A", "token-A", ex=60) is True
+
+    def test_compare_and_set_sends_expected_value_ex(self, set_backend):
+        captured = {}
+
+        def handler(request):
+            captured["body"] = json.loads(request.content)
+            captured["path"] = request.url.path
+            return httpx.Response(200, json={"ok": True})
+
+        rm = set_backend(handler)
+        rm.compare_and_set("lock:r", "token-A", "token-B", ex=45)
+        assert captured["body"] == {"expected": "token-A", "value": "token-B", "ex": 45}
+        assert captured["path"].endswith("/compare-and-set")
+
+
 class TestSetSet:
     def test_sadd_falls_back_to_memory(self, offline_manager):
         offline_manager.sadd("s", "a", "b")

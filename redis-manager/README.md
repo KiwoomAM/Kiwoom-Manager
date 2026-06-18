@@ -60,15 +60,19 @@ rh.set("key", "value", ttl=3600)
 val = rh.get("key")
 rh.delete("key")
 
-# 분산 잠금 / 캐시 스탬피드 방지 (Redis 필수)
-acquired = rh.setnx("lock:job", "owner-A", ttl=60)
+# 분산 잠금 (Redis 필수) — owner 토큰 기반 acquire/renew/release
+import uuid
+token = uuid.uuid4().hex                       # 이 워커만 아는 불투명 소유자 토큰
+acquired = rh.setnx("lock:job", token, ttl=60)  # acquire
 if acquired:
     try:
         do_work()
+        rh.compare_and_set("lock:job", token, token, ex=60)  # renew (내 락일 때만 TTL 연장)
     finally:
-        rh.delete("lock:job")
+        rh.compare_and_delete("lock:job", token)  # release (내 락일 때만 해제)
 else:
     wait_or_skip()
+# 주의: 단순 rh.delete("lock:job")는 만료 후 남이 잡은 락도 지운다 — 락 해제엔 compare_and_delete 사용
 
 # 토큰 갱신 (값만, 만료시각 유지)
 rh.set("session:abc", new_token, keepttl=True)
@@ -104,8 +108,10 @@ rh.health_check()  # {"connected": True, "storage": "redis", "config": {...}}
 | `get(key)` | `Optional[str]` | 값 조회 |
 | `set(key, value, ttl=None, *, ex=None, nx=False, xx=False, keepttl=False)` | `bool` | 값 저장 |
 | `setex(key, ttl, value)` | `bool` | TTL과 함께 저장 |
-| `setnx(key, value, *, ttl=None)` | `bool` | 키 없을 때만 저장 (분산 잠금) |
+| `setnx(key, value, *, ttl=None)` | `bool` | 키 없을 때만 저장 (분산 잠금 acquire) |
 | `delete(key)` | `int` | 키 삭제 |
+| `compare_and_delete(key, expected)` | `bool` | 값이 `expected`와 일치할 때만 atomic 삭제 (락 release). 폴백 없음 |
+| `compare_and_set(key, expected, value, *, ex)` | `bool` | 값이 `expected`와 일치할 때만 atomic 교체 + TTL 갱신 (락 renew). `ex` 필수, 폴백 없음 |
 | `exists(key)` | `bool` | 키 존재 여부 |
 | `ttl(key)` | `int` | 남은 TTL. -1=영구, -2=없음 |
 | `expire(key, seconds)` | `bool` | TTL 설정 |

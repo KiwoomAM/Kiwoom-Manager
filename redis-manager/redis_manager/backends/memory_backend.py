@@ -83,6 +83,27 @@ class MemoryBackend:
             self._remove_key(key)
             return 1 if existed else 0
 
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        """값이 expected와 일치할 때만 삭제. Lock 안에서 GET·DEL 원자 실행."""
+        with self._lock:
+            if self._is_expired(key):
+                return False
+            if self._strings.get(key) != expected:
+                return False
+            self._remove_key(key)
+            return True
+
+    def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        """값이 expected와 일치할 때만 교체 + TTL 갱신. Lock 안에서 원자 실행."""
+        with self._lock:
+            if self._is_expired(key):
+                return False
+            if self._strings.get(key) != expected:
+                return False
+            self._strings[key] = value
+            self._expiry[key] = time.time() + ex
+            return True
+
     # ── Key ───────────────────────────────────────────
     def exists(self, key: str) -> bool:
         with self._lock:
