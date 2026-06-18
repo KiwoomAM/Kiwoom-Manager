@@ -36,7 +36,7 @@ from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모�
 from llm_manager._internal import runner
 from llm_manager._internal._config import ensure_configured
 from llm_manager._internal.file_processing import preprocess
-from llm_manager._internal.context_cache_lifecycle import expire_caches
+from llm_manager._internal.context_cache_lifecycle import expire_caches, extend_caches
 from llm_manager._internal.done_check import done_check as _done_check
 
 # handler_client(흡수한 HTTP 클라이언트)는 llm_manager 내부. 공개 표면은 매니저가 큐레이션한다:
@@ -101,6 +101,8 @@ __all__ = [
     "fetch_by_cache_key",
     "delete_cache",
     "delete_cache_async",
+    "update_context_cache",
+    "update_context_cache_async",
     "close",
     "Timings",
     # 공개 타입
@@ -418,6 +420,20 @@ async def fetch_by_cache_key(
     return response, ResponseMeta(**meta)
 
 
+def _reject_cached_content_name(ids: list[str]) -> None:
+    """Gemini cache id(`cachedContents/...`)를 hash_key 자리에 넣은 실수를 fail-fast.
+
+    delete/update_context_cache 는 `context_cache_id`(hash_key)만 받는다. Gemini 이름은
+    Redis 키 매칭이 안 돼 조용한 no-op(만료/연장 안 됐는데 success)이 되므로 즉시 막는다.
+    file_preprocessing 이 dict 로 두 id 를 노출하므로 혼동 가능 → 가드 필요 (docs/26 §4.5).
+    """
+    bad = [i for i in ids if i.startswith("cachedContents/")]
+    if bad:
+        raise ValueError(
+            f"context_cache_id(hash_key)를 넣으세요 — cached_content_name 은 받지 않습니다: {bad}"
+        )
+
+
 async def delete_cache_async(
     cache_ids: str | list[str],
     *,
@@ -473,4 +489,62 @@ def delete_cache(
     """Context Cache 를 grace_seconds 후 만료시킨다 (sync). delete_cache_async 동기 래퍼."""
     return asyncio.run(
         delete_cache_async(cache_ids, grace_seconds=grace_seconds)
+    )
+
+
+async def update_context_cache_async(
+    cache_ids: str | list[str],
+    *,
+    ttl: int,
+) -> ExpireResult:
+    """Context Cache 수명을 ttl 로 연장한다 (async).
+
+    Gemini `caches.update(ttl=ttl)` + Redis TTL 연장. delete 와 달리 **연장 대상이
+    없으면**(Redis 부재·Gemini 404) 해당 id 는 `failed`. (docs/26 §3.3)
+
+    Args:
+        cache_ids: `file_preprocessing`/`llm_request` 가 준 `context_cache_id`(hash_key).
+            단건이면 문자열, 여러 개면 리스트. (Gemini `cached_content_name` 은 받지 않음.)
+        ttl: 새 TTL (초, 1~3600).
+
+    Returns:
+        ExpireResult — `expired`(연장 성공), `failed`(부재·404·Gemini 5xx 등).
+
+    Raises:
+        ValueError: cache_ids 가 비었거나, ttl 이 범위(1~3600) 밖이거나,
+            `cachedContents/...`(Gemini cache id)를 넣었을 때.
+
+    Note:
+        개별 cache 의 연장 실패는 raise 되지 않고 `result.failed` 에 담긴다.
+    """
+    if isinstance(cache_ids, str):
+        ids = [cache_ids]
+    else:
+        ids = list(cache_ids) if cache_ids else []
+    if not ids:
+        raise ValueError(
+            "연장할 cache_id 가 없습니다. cache_id 를 1개 이상 넣어주세요."
+        )
+    if not all(ids):
+        raise ValueError(
+            "빈 cache_id 가 포함되어 있습니다. 유효한 cache_id 만 넣어주세요."
+        )
+    if not 1 <= ttl <= 3600:
+        raise ValueError(
+            f"ttl 은 1~3600초 사이여야 합니다 (받은 값: {ttl})."
+        )
+    _reject_cached_content_name(ids)
+
+    await asyncio.to_thread(ensure_configured)
+    return await extend_caches(ids, ttl)
+
+
+def update_context_cache(
+    cache_ids: str | list[str],
+    *,
+    ttl: int,
+) -> ExpireResult:
+    """Context Cache 수명을 ttl 로 연장한다 (sync). update_context_cache_async 동기 래퍼."""
+    return asyncio.run(
+        update_context_cache_async(cache_ids, ttl=ttl)
     )
