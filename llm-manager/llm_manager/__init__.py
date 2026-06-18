@@ -99,8 +99,8 @@ __all__ = [
     "file_preprocessing_async",
     "done_check",
     "fetch_by_cache_key",
-    "delete_cache",
-    "delete_cache_async",
+    "delete_context_cache",
+    "delete_context_cache_async",
     "update_context_cache",
     "update_context_cache_async",
     "close",
@@ -434,28 +434,29 @@ def _reject_cached_content_name(ids: list[str]) -> None:
         )
 
 
-async def delete_cache_async(
-    cache_ids: str | list[str],
-    *,
-    grace_seconds: int = 5,
-) -> ExpireResult:
-    """Context Cache 를 grace_seconds 후 만료시킨다 (async).
+_DELETE_GRACE_SECONDS = 5
+"""delete_context_cache 의 고정 grace period (초). in-flight 요청 보호용. 사용자 지정 불가."""
 
-    이름은 delete 지만 내부적으로는 Gemini `caches.update(ttl=grace_seconds)` 로
-    TTL 을 단축한다 — `caches.delete` 는 원래 TTL 그대로 청구되는 반면 update 는
-    새 TTL 로 prorate 청구되기 때문 (storage 비용 절감). grace_seconds 동안
-    in-flight 요청을 보호한 뒤 Gemini cache + Redis 가 만료된다.
+
+async def delete_context_cache_async(
+    cache_ids: str | list[str],
+) -> ExpireResult:
+    """Context Cache 를 **무조건 5초 뒤** 만료시킨다 (async).
+
+    이름은 delete 지만 내부적으로는 Gemini `caches.update(ttl=5)` 로 TTL 을 단축한다 —
+    `caches.delete` 는 원래 TTL 그대로 청구되는 반면 update 는 새 TTL 로 prorate 청구되기
+    때문 (storage 비용 절감). 5초 동안 in-flight 요청을 보호한 뒤 Gemini cache + Redis 가
+    만료된다. (수명을 **연장**하려면 `update_context_cache` 를 쓴다.)
 
     Args:
-        cache_ids: 응답 `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열
-            하나, 여러 개면 리스트로. (단건도 결과는 리스트로 돌아온다.)
-        grace_seconds: in-flight 요청 보호 grace period (1~3600, 기본 5).
+        cache_ids: `file_preprocessing`/`llm_request` 가 준 `context_cache_id`(hash_key).
+            단건이면 문자열, 여러 개면 리스트. (Gemini `cached_content_name` 은 받지 않음.)
 
     Returns:
-        ExpireResult — `expired`(성공/idempotent), `failed`(Gemini 5xx·Redis 오류 등).
+        ExpireResult — `expired`(성공/idempotent — 부재도 성공), `failed`(Gemini 5xx·Redis 오류 등).
 
     Raises:
-        ValueError: cache_ids 가 비어있거나 grace_seconds 가 범위(1~3600) 밖일 때.
+        ValueError: cache_ids 가 비었거나 `cachedContents/...`(Gemini cache id)를 넣었을 때.
 
     Note:
         개별 cache 의 만료 실패는 raise 되지 않고 `result.failed` 에 담긴다.
@@ -472,23 +473,18 @@ async def delete_cache_async(
         raise ValueError(
             "빈 cache_id 가 포함되어 있습니다. 유효한 cache_id 만 넣어주세요."
         )
-    if not 1 <= grace_seconds <= 3600:
-        raise ValueError(
-            f"grace_seconds 는 1~3600초 사이여야 합니다 (받은 값: {grace_seconds})."
-        )
+    _reject_cached_content_name(ids)
 
     await asyncio.to_thread(ensure_configured)
-    return await expire_caches(ids, grace_seconds)
+    return await expire_caches(ids, _DELETE_GRACE_SECONDS)
 
 
-def delete_cache(
+def delete_context_cache(
     cache_ids: str | list[str],
-    *,
-    grace_seconds: int = 5,
 ) -> ExpireResult:
-    """Context Cache 를 grace_seconds 후 만료시킨다 (sync). delete_cache_async 동기 래퍼."""
+    """Context Cache 를 무조건 5초 뒤 만료시킨다 (sync). delete_context_cache_async 동기 래퍼."""
     return asyncio.run(
-        delete_cache_async(cache_ids, grace_seconds=grace_seconds)
+        delete_context_cache_async(cache_ids)
     )
 
 
