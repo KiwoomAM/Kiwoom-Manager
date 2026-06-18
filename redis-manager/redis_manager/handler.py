@@ -160,8 +160,13 @@ class RedisManager:
         handler 미도달 시 RedisUnavailableError, 재시도 소진 시 RedisRetryExhausted를
         raise한다 (메모리 폴백 없음).
 
+        재시도 계약(중요): handler retry가 "첫 EVAL이 키를 삭제한 뒤 응답 전 연결
+        끊김"을 재시도하면, 재시도 시점엔 키가 이미 없어 False를 돌려줄 수 있다.
+        즉 False는 "해제 실패"가 아니라 "현재 내 소유가 아님(이미 해제 포함)"을 뜻하므로
+        호출자는 이를 에러로 다루지 말 것. (상태는 멱등, 반환값은 비멱등)
+
         Returns:
-            True: 내 토큰이라 삭제됨, False: 불일치/부재
+            True: 내 토큰이라 삭제됨, False: 불일치/부재(또는 위 재시도 케이스)
 
         Raises:
             RedisUnavailableError: Redis 미연결

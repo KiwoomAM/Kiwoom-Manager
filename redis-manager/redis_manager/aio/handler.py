@@ -131,6 +131,10 @@ class AsyncRedisManager:
 
         NX/XX와 동일하게 폴백 차단 — handler 미도달 시 RedisUnavailableError,
         재시도 소진 시 RedisRetryExhausted를 raise한다 (메모리 폴백 없음).
+
+        재시도 계약(중요): "첫 EVAL이 키를 삭제한 뒤 응답 전 연결 끊김"을 handler가
+        재시도하면 False를 돌려줄 수 있다. False는 "해제 실패"가 아니라 "현재 내
+        소유가 아님(이미 해제 포함)"을 뜻하므로 에러로 다루지 말 것 (상태 멱등, 반환값 비멱등).
         """
         self._ensure_open()
         return await self._backend.compare_and_delete(key, expected)
