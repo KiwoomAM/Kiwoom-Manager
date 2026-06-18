@@ -79,6 +79,7 @@ class Session:
         tools: list[dict] | None = None,
         tool_config: str | None = None,
         cached_content: str | None = None,
+        task_name: str | None = None,
         service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
@@ -97,6 +98,7 @@ class Session:
             tool_config=tool_config,
             history=self._curated_history if self._curated_history else None,
             cached_content=cached_content,
+            task_name=task_name,
             service_name=service_name,
             media_resolution=media_resolution,
         )
@@ -116,6 +118,7 @@ class Session:
         tools: list[dict] | None = None,
         tool_config: str | None = None,
         cached_content: str | None = None,
+        task_name: str | None = None,
         service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> Iterator[StreamChunk]:
@@ -142,6 +145,7 @@ class Session:
             tool_config=tool_config,
             history=self._curated_history if self._curated_history else None,
             cached_content=cached_content,
+            task_name=task_name,
             service_name=service_name,
             media_resolution=media_resolution,
         ):
@@ -197,6 +201,7 @@ class Session:
         tools: list[dict] | None = None,
         tool_config: str | None = None,
         cached_content: str | None = None,
+        task_name: str | None = None,
         service_name: str | None = None,
         media_resolution: str | None = None,
     ) -> LLMResponse:
@@ -249,6 +254,7 @@ class Session:
                 tools=tools,
                 tool_config=tool_config,
                 cached_content=cached_content,
+                task_name=task_name,
                 service_name=service_name,
                 media_resolution=media_resolution,
             )

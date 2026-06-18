@@ -73,6 +73,17 @@ def prepare(
 
     files의 hashing 3필드로 checksum을 자체 계산하여 cache_key 구성에 주입한다.
     """
+    # service_name = 실행 서비스 식별자. env SERVICE_NAME 에서 주입한다
+    # (메타 저장 + handler 전송 양쪽). 모든 서비스가 env 에 SERVICE_NAME 을 갖는다는 전제.
+    # (구) llm_input 의 'service_name' 입력은 deprecated — 경고 후 env 값으로 덮어쓴다.
+    if llm_input.get("service_name") is not None:
+        logger.warning(
+            "llm_input 의 'service_name' 입력은 deprecated 입니다 — 실행 서비스는 env "
+            "SERVICE_NAME 로 자동 주입되며 입력 service_name 은 무시됩니다. "
+            "호출 단위 라벨은 'task_name' 을 사용하세요."
+        )
+    llm_input = {**llm_input, "service_name": os.environ.get("SERVICE_NAME")}
+
     meta = build_meta(llm_input)
     requested_at = datetime.now(UTC)
 
