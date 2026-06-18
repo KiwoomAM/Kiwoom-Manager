@@ -126,6 +126,23 @@ class AsyncRedisManager:
             logger.warning("Redis DELETE 폴백 → 메모리 (%s): %s", key, e)
         return self._memory.delete(key)
 
+    async def compare_and_delete(self, key: str, expected: str) -> bool:
+        """소유자 토큰 일치 시에만 atomic 삭제 (분산 락 release).
+
+        NX/XX와 동일하게 폴백 차단 — handler 미도달 시 RedisUnavailableError,
+        재시도 소진 시 RedisRetryExhausted를 raise한다 (메모리 폴백 없음).
+        """
+        self._ensure_open()
+        return await self._backend.compare_and_delete(key, expected)
+
+    async def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        """소유자 토큰 일치 시에만 atomic 값 교체 + TTL 갱신 (분산 락 renew).
+
+        ``ex``는 필수 (TTL 없는 renew = 영구 락). 폴백 차단은 compare_and_delete와 동일.
+        """
+        self._ensure_open()
+        return await self._backend.compare_and_set(key, expected, value, ex=ex)
+
     # ── Key 연산 ─────────────────────────────────────
     async def exists(self, key: str) -> bool:
         self._ensure_open()

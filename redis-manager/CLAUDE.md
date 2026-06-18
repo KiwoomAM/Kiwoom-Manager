@@ -38,6 +38,7 @@ retry는 handler 서버 담당. 가용성 캐시 플래그 없음 — 모든 판
 
 - **신규 코드는 RedisManager API만 사용.** `get_client()`는 v3에서 항상 None (deprecated shim)
 - **분산 의미론 필요한 명령(NX/XX)은 `setnx()` 등 Handler 메서드 사용.** handler 미도달 시 `RedisUnavailableError`, handler가 재시도 소진 보고 시 `RedisRetryExhausted` — 메모리 폴백 없음
+- **분산 락 release/renew는 `compare_and_delete()`/`compare_and_set()` 사용.** 소유자 토큰 일치 시에만 atomic 실행 (handler에서 Lua `EVAL`). NX/XX와 동일하게 **폴백 차단** — 단순 `delete`/`set`은 silent 메모리 폴백(TOCTOU)도 막지 못하고 owner 검증도 안 한다. `compare_and_set`의 `ex`는 필수 (TTL 없는 renew = 영구 락)
 - **일반 명령(get/set 등)은 폴백 자동.** 호출자가 try/except로 메모리 백업 구현 금지
 - **새 명령 추가 시** handler 서버 엔드포인트 → `KeyValueBackend` Protocol → `HandlerBackend` → `MemoryBackend` → `RedisManager` 순으로 갱신. **async 표면도 함께 갱신**: `AsyncHandlerBackend` → `AsyncRedisManager` (→ 필요 시 `AsyncBaseJsonStore`). sync/async 두 표면을 같은 동작으로 유지
 - 환경변수는 `os.getenv`에서 직접 읽는다. `.env` 자동 로드는 호출 애플리케이션 책임 (`RedisConfig.configure(handler_url=...)`로 코드 설정도 가능)

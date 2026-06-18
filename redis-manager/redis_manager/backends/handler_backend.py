@@ -109,6 +109,20 @@ class HandlerBackend:
     def delete(self, key: str) -> int:
         return self._request("DELETE", f"/v1/keys/{_http.key_path(key)}")["deleted"]
 
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        data = self._request(
+            "POST", f"/v1/keys/{_http.key_path(key)}/compare-and-delete",
+            json={"expected": expected},
+        )
+        return bool(data["ok"])
+
+    def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        data = self._request(
+            "POST", f"/v1/keys/{_http.key_path(key)}/compare-and-set",
+            json={"expected": expected, "value": value, "ex": ex},
+        )
+        return bool(data["ok"])
+
     # ── Key ───────────────────────────────────────────
     def exists(self, key: str) -> bool:
         return bool(self._request("GET", f"/v1/keys/{_http.key_path(key)}/exists")["exists"])

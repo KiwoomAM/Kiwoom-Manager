@@ -99,6 +99,20 @@ class AsyncHandlerBackend:
     async def delete(self, key: str) -> int:
         return (await self._request("DELETE", f"/v1/keys/{_http.key_path(key)}"))["deleted"]
 
+    async def compare_and_delete(self, key: str, expected: str) -> bool:
+        data = await self._request(
+            "POST", f"/v1/keys/{_http.key_path(key)}/compare-and-delete",
+            json={"expected": expected},
+        )
+        return bool(data["ok"])
+
+    async def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        data = await self._request(
+            "POST", f"/v1/keys/{_http.key_path(key)}/compare-and-set",
+            json={"expected": expected, "value": value, "ex": ex},
+        )
+        return bool(data["ok"])
+
     # ── Key ───────────────────────────────────────────
     async def exists(self, key: str) -> bool:
         data = await self._request("GET", f"/v1/keys/{_http.key_path(key)}/exists")

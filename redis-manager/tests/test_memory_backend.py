@@ -209,6 +209,38 @@ class TestMemoryBackendScanIter:
         assert sorted(b.scan_iter("p:*")) == ["p:set", "p:string"]
 
 
+class TestMemoryBackendCompareAndSwap:
+    def test_compare_and_delete_removes_when_value_matches(self):
+        b = MemoryBackend()
+        b.set("lock", "token-A")
+        assert b.compare_and_delete("lock", "token-A") is True
+        assert b.get("lock") is None
+
+    def test_compare_and_delete_keeps_when_value_mismatches(self):
+        b = MemoryBackend()
+        b.set("lock", "token-A")
+        assert b.compare_and_delete("lock", "token-B") is False
+        assert b.get("lock") == "token-A"
+
+    def test_compare_and_delete_false_when_missing(self):
+        assert MemoryBackend().compare_and_delete("absent", "token-A") is False
+
+    def test_compare_and_set_updates_and_refreshes_ttl_when_matches(self):
+        b = MemoryBackend()
+        b.set("lock", "token-A", ex=5)
+        assert b.compare_and_set("lock", "token-A", "token-A", ex=60) is True
+        assert 5 < b.ttl("lock") <= 60
+
+    def test_compare_and_set_no_change_when_mismatches(self):
+        b = MemoryBackend()
+        b.set("lock", "token-A", ex=60)
+        assert b.compare_and_set("lock", "token-B", "token-B", ex=60) is False
+        assert b.get("lock") == "token-A"
+
+    def test_compare_and_set_false_when_missing(self):
+        assert MemoryBackend().compare_and_set("absent", "token-A", "token-A", ex=60) is False
+
+
 class TestMemoryBackendCleanup:
     def test_cleanup_expired_removes_only_expired(self):
         b = MemoryBackend()
