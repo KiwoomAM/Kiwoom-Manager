@@ -250,6 +250,57 @@ async def _upload_and_cache_file(
     fi.data = b""  # Files API 경로 — bytes 가 디스크/URI 로 옮겨졌으니 메모리 회수 (docs/16 §3.2)
 
 
+async def _resolve_one_files_api(
+    fi: FileInput,
+    checksum: str,
+    *,
+    standby_ttl_seconds: int,
+) -> tuple[list[Part], list[FileRef]]:
+    """파일 1개를 files_api 경로로 처리 → (uri_parts, file_refs).
+
+    `_process_files_api` 의 파일별 루프 몸통을 추출한 것으로 동작은 동일하다:
+    Redis HIT 재사용 / MISS standby 선점 업로드 / waiter 대기 / timeout Y' Hybrid.
+    호출자마다 새 리스트를 반환하므로, 파일 단위 그룹핑(file_preprocessing)이 가능하다.
+    """
+    uri_parts: list[Part] = []
+    file_refs: list[FileRef] = []
+    try:
+        existing = cache_store.find_files_api(checksum)
+    except Exception as e:
+        logger.exception("Redis files_api 조회 실패: checksum=%s", checksum[:16])
+        raise CacheError(f"Redis files_api 조회 실패: {e}") from e
+
+    if existing:
+        _reuse_files_api_uris(fi, existing, uri_parts, file_refs)
+        return uri_parts, file_refs
+
+    # MISS — standby 선점 시도
+    acquired = await dedup.try_acquire_standby(
+        "files_api", checksum, standby_ttl_seconds,
+    )
+    if acquired:
+        try:
+            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+        finally:
+            await dedup.release_standby("files_api", checksum)
+    else:
+        # 다른 요청이 업로드 중 → 대기
+        cached_file = await dedup.wait_for_standby_release(
+            "files_api", checksum, standby_ttl_seconds,
+            find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
+        )
+        if cached_file:
+            _reuse_files_api_uris(fi, cached_file, uri_parts, file_refs)
+        else:
+            # timeout → 자기가 업로드 (Y' Hybrid)
+            logger.warning(
+                "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
+                checksum[:16],
+            )
+            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+    return uri_parts, file_refs
+
+
 # ── context_cache 헬퍼 ───────────────────────────────────────
 
 
@@ -332,6 +383,67 @@ async def _create_and_save_context_cache(
 # ── Files API 분류 처리 — A/B/C miss 3단계 분기 (§6.2) ──────
 
 
+async def _resolve_or_create_context_cache(
+    hash_key: str,
+    checksums: list[str],
+    file_refs: list[FileRef],
+    *,
+    model: str | None,
+    system_instruction: str | None,
+    context_cache_ttl: int,
+    standby_ttl_seconds: int,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
+) -> str | None:
+    """context_cache 를 standby dedup 으로 보호하며 조회/생성 → cached_content_name (or None).
+
+    `_process_files_api` 분기 ④의 dedup 블록을 추출한 것으로 동작 동일:
+    선점→생성 / 대기→HIT / timeout→자기생성(Y' Hybrid). too-small fail-soft 면 None.
+    호출 전제: ctx cache 활성 + file_refs 존재. file_preprocessing(context cache 모드)과 공유(SSOT).
+    """
+    if model is None:
+        raise ValueError(
+            "context cache 생성에는 model이 필요합니다 — "
+            "llm_input에 'model' 키를 포함하세요"
+        )
+    acquired_cc = await dedup.try_acquire_standby(
+        "context_cache", hash_key, standby_ttl_seconds,
+    )
+    if acquired_cc:
+        try:
+            return await _create_and_save_context_cache(
+                hash_key, checksums, file_refs,
+                model=model,
+                system_instruction=system_instruction,
+                ttl=context_cache_ttl,
+                tools=tools,
+                tool_config=tool_config,
+            )
+        finally:
+            await dedup.release_standby("context_cache", hash_key)
+    # 다른 요청이 생성 중 → 대기
+    cached_cc = await dedup.wait_for_standby_release(
+        "context_cache", hash_key, standby_ttl_seconds,
+        find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
+    )
+    if cached_cc:
+        logger.info("[route] mode=context_cache source=cached name=%s", cached_cc["cached_content_name"])
+        return cached_cc["cached_content_name"]
+    # timeout → 자기가 생성 (Y' Hybrid)
+    logger.warning(
+        "context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s",
+        hash_key[:16],
+    )
+    return await _create_and_save_context_cache(
+        hash_key, checksums, file_refs,
+        model=model,
+        system_instruction=system_instruction,
+        ttl=context_cache_ttl,
+        tools=tools,
+        tool_config=tool_config,
+    )
+
+
 async def _process_files_api(
     files_api_pool: list[FileInput],
     *,
@@ -384,40 +496,11 @@ async def _process_files_api(
     file_refs: list[FileRef] = []  # context_cache 생성용
 
     for fi, checksum in zip(files_api_pool, checksums):
-        try:
-            existing = cache_store.find_files_api(checksum)
-        except Exception as e:
-            logger.exception("Redis files_api 조회 실패: checksum=%s", checksum[:16])
-            raise CacheError(f"Redis files_api 조회 실패: {e}") from e
-
-        if existing:
-            _reuse_files_api_uris(fi, existing, uri_parts, file_refs)
-            continue
-
-        # MISS — standby 선점 시도
-        acquired = await dedup.try_acquire_standby(
-            "files_api", checksum, standby_ttl_seconds,
+        parts, refs = await _resolve_one_files_api(
+            fi, checksum, standby_ttl_seconds=standby_ttl_seconds,
         )
-        if acquired:
-            try:
-                await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
-            finally:
-                await dedup.release_standby("files_api", checksum)
-        else:
-            # 다른 요청이 업로드 중 → 대기
-            cached_file = await dedup.wait_for_standby_release(
-                "files_api", checksum, standby_ttl_seconds,
-                find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
-            )
-            if cached_file:
-                _reuse_files_api_uris(fi, cached_file, uri_parts, file_refs)
-            else:
-                # timeout → 자기가 업로드 (Y' Hybrid)
-                logger.warning(
-                    "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
-                    checksum[:16],
-                )
-                await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+        uri_parts.extend(parts)
+        file_refs.extend(refs)
 
     # ── ④ context_cache_ttl 지정 시 standby로 보호된 create_cache + Redis 저장 ──
     cached_content: str | None = None
@@ -426,49 +509,15 @@ async def _process_files_api(
     if ctx_cache_active and not file_refs:
         logger.info("[route] mode=context_cache source=none reason=no_files_api_files")
     if ctx_cache_active and file_refs:
-        if model is None:
-            raise ValueError(
-                "context cache 생성에는 model이 필요합니다 — "
-                "llm_input에 'model' 키를 포함하세요"
-            )
-        acquired_cc = await dedup.try_acquire_standby(
-            "context_cache", hash_key, standby_ttl_seconds,
+        cached_content = await _resolve_or_create_context_cache(
+            hash_key, checksums, file_refs,
+            model=model,
+            system_instruction=system_instruction,
+            context_cache_ttl=context_cache_ttl,
+            standby_ttl_seconds=standby_ttl_seconds,
+            tools=tools,
+            tool_config=tool_config,
         )
-        if acquired_cc:
-            try:
-                cached_content = await _create_and_save_context_cache(
-                    hash_key, checksums, file_refs,
-                    model=model,
-                    system_instruction=system_instruction,
-                    ttl=context_cache_ttl,
-                    tools=tools,
-                    tool_config=tool_config,
-                )
-            finally:
-                await dedup.release_standby("context_cache", hash_key)
-        else:
-            # 다른 요청이 생성 중 → 대기
-            cached_cc = await dedup.wait_for_standby_release(
-                "context_cache", hash_key, standby_ttl_seconds,
-                find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
-            )
-            if cached_cc:
-                cached_content = cached_cc["cached_content_name"]
-                logger.info("[route] mode=context_cache source=cached name=%s", cached_content)
-            else:
-                # timeout → 자기가 생성 (Y' Hybrid)
-                logger.warning(
-                    "context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s",
-                    hash_key[:16],
-                )
-                cached_content = await _create_and_save_context_cache(
-                    hash_key, checksums, file_refs,
-                    model=model,
-                    system_instruction=system_instruction,
-                    ttl=context_cache_ttl,
-                    tools=tools,
-                    tool_config=tool_config,
-                )
 
     return uri_parts, cached_content, hash_key
 
