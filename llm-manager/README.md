@@ -660,7 +660,7 @@ llm_input + files
 
 ### 2. subset 추출
 
-아래 15개 필드만 캐시 키 계산에 사용된다. 목록에 없는 필드는 무시된다. (호출 라벨 `task_name`·`service_name` 은 키에서 제외 — 출력에 영향 없음, metadata 로만 저장)
+아래 16개 필드만 캐시 키 계산에 사용된다. 목록에 없는 필드는 무시된다. (호출 라벨 `task_name` 은 키에서 제외 — 출력에 영향 없는 라벨이라 metadata 로만 저장. 반면 `service_name`=실행 서비스는 키에 포함.)
 
 | 필드 | 설명 |
 |------|------|
@@ -671,6 +671,7 @@ llm_input + files
 | `max_tokens` | 최대 출력 토큰 수 |
 | `temperature` | 온도 |
 | `cached_content` | Context Cache 이름 (파일 있으면 제외) |
+| `service_name` | 실행 서비스 식별자 (env SERVICE_NAME) |
 | `seed` | 재현성 시드값 |
 | `output` | 출력 형식 |
 | `schema` | 출력 스키마 |
