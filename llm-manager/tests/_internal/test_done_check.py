@@ -59,3 +59,15 @@ class TestDoneCheck:
         r1 = done_check({"contents": "hello"}, lookup_cache=False)
         r2 = done_check({"contents": "world"}, lookup_cache=False)
         assert r1.cache_key != r2.cache_key
+
+    def test_service_name_in_cache_key(self):
+        """service_name 은 캐시 키에 포함된다 (값 다르면 키 다름)."""
+        r1 = done_check({"contents": "hi", "service_name": "rm"}, lookup_cache=False)
+        r2 = done_check({"contents": "hi", "service_name": "esg"}, lookup_cache=False)
+        assert r1.cache_key != r2.cache_key
+
+    def test_task_name_not_in_cache_key(self):
+        """task_name 은 캐시 키에서 제외된다 (값 달라도 키 동일)."""
+        r1 = done_check({"contents": "hi", "task_name": "a"}, lookup_cache=False)
+        r2 = done_check({"contents": "hi", "task_name": "b"}, lookup_cache=False)
+        assert r1.cache_key == r2.cache_key

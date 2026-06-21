@@ -42,6 +42,22 @@ class KeyValueBackend(Protocol):
 
     def delete(self, key: str) -> int: ...
 
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        """저장된 값이 ``expected``와 정확히 일치할 때만 삭제 (atomic).
+
+        분산 락 release의 정통 패턴 — 소유자 토큰이 맞을 때만 푼다.
+        Returns: 삭제 시 True, 불일치/부재 시 False.
+        """
+        ...
+
+    def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        """저장된 값이 ``expected``와 일치할 때만 값 교체 + TTL(``ex``) 갱신 (atomic).
+
+        분산 락 renew의 정통 패턴. ``ex``는 필수 (TTL 없는 renew = 영구 락 footgun).
+        Returns: 교체 시 True, 불일치/부재 시 False.
+        """
+        ...
+
     # ── Key ───────────────────────────────────────────
     def exists(self, key: str) -> bool: ...
     def ttl(self, key: str) -> int: ...

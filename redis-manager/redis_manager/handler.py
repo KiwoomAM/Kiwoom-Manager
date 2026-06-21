@@ -153,6 +153,42 @@ class RedisManager:
                 logger.warning("Redis DELETE 폴백 → 메모리 (%s): %s", key, e)
         return self._memory.delete(key)
 
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        """소유자 토큰 일치 시에만 atomic 삭제 (분산 락 release).
+
+        NX/XX와 동일하게 폴백 차단 — silent 메모리 폴백은 락 정합성을 깨므로
+        handler 미도달 시 RedisUnavailableError, 재시도 소진 시 RedisRetryExhausted를
+        raise한다 (메모리 폴백 없음).
+
+        재시도 계약(중요): handler retry가 "첫 EVAL이 키를 삭제한 뒤 응답 전 연결
+        끊김"을 재시도하면, 재시도 시점엔 키가 이미 없어 False를 돌려줄 수 있다.
+        즉 False는 "해제 실패"가 아니라 "현재 내 소유가 아님(이미 해제 포함)"을 뜻하므로
+        호출자는 이를 에러로 다루지 말 것. (상태는 멱등, 반환값은 비멱등)
+
+        Returns:
+            True: 내 토큰이라 삭제됨, False: 불일치/부재(또는 위 재시도 케이스)
+
+        Raises:
+            RedisUnavailableError: Redis 미연결
+            RedisRetryExhausted: retry 소진
+        """
+        return self._redis().compare_and_delete(key, expected)
+
+    def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
+        """소유자 토큰 일치 시에만 atomic 값 교체 + TTL 갱신 (분산 락 renew).
+
+        ``ex``는 필수 — TTL 없는 renew는 영구 락이 된다. 폴백 차단은
+        compare_and_delete와 동일.
+
+        Returns:
+            True: 내 토큰이라 갱신됨, False: 불일치/부재
+
+        Raises:
+            RedisUnavailableError: Redis 미연결
+            RedisRetryExhausted: retry 소진
+        """
+        return self._redis().compare_and_set(key, expected, value, ex=ex)
+
     # ── Key 연산 ─────────────────────────────────────
     def exists(self, key: str) -> bool:
         rb = self._redis()

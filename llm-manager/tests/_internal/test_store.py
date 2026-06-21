@@ -17,7 +17,7 @@ class TestSaveResult:
     """save_result: 문서 저장 검증."""
 
     def test_saved_doc_has_result(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service", "model": "flash"}, COLLECTION)
 
         doc = mock_collection[CACHE_KEY]
         assert doc["result"]["text"] == "응답입니다"
@@ -28,7 +28,7 @@ class TestSaveResult:
 
         requested_at = datetime.now(UTC)
         save_result(
-            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION,
+            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service"}, COLLECTION,
             requested_at=requested_at,
         )
         doc = mock_collection[CACHE_KEY]
@@ -40,14 +40,14 @@ class TestSaveResult:
         file_metas = [
             {"checksum": "sha256:abc", "filename": "report.pdf", "size": 12345, "mime_type": "application/pdf"}
         ]
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION, file_metas=file_metas)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service"}, COLLECTION, file_metas=file_metas)
 
         doc = mock_collection[CACHE_KEY]
         # 저장 스키마 호환을 위해 doc 키는 기존 "file_meta" 유지 (store.py 주석 참조)
         assert doc["file_meta"] == file_metas
 
     def test_saved_doc_without_file_meta(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service"}, COLLECTION)
 
         doc = mock_collection[CACHE_KEY]
         assert "file_meta" not in doc
@@ -57,7 +57,7 @@ class TestCacheGet:
     """cache_get: 문서 조회 확인."""
 
     def test_returns_saved_doc(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {}, COLLECTION)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service"}, COLLECTION)
         assert cache_get(CACHE_KEY, COLLECTION) is not None
 
     def test_returns_none_when_missing(self, mock_collection):
@@ -68,7 +68,7 @@ class TestFetchByCacheKey:
     """fetch_by_cache_key: cache_key로 직접 조회."""
 
     def test_returns_llm_response(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service", "model": "flash"}, COLLECTION)
         response, meta = fetch_by_cache_key(CACHE_KEY)
 
         assert isinstance(response, LLMResponse)
@@ -83,7 +83,7 @@ class TestFetchByCacheKey:
             fetch_by_cache_key("nonexistent-key")
 
     def test_meta_contains_metadata(self, mock_collection):
-        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"}, COLLECTION)
+        save_result(CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service", "model": "flash"}, COLLECTION)
         _, meta = fetch_by_cache_key(CACHE_KEY)
 
         assert "metadata" in meta
@@ -100,7 +100,7 @@ class TestFetchByCacheKeyFileMeta:
             "file_path": "abc-uuid.pdf",
         }]
         save_result(
-            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"},
+            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service", "model": "flash"},
             COLLECTION, file_metas=file_metas,
         )
 
@@ -112,7 +112,7 @@ class TestFetchByCacheKeyFileMeta:
     def test_omits_file_meta_for_legacy_doc(self, mock_collection):
         """file_meta 키 없는 옛 doc → 응답에도 키 없음."""
         save_result(
-            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"model": "flash"},
+            CACHE_KEY, CANONICAL, SAMPLE_RESPONSE, {"service_name": "test-service", "model": "flash"},
             COLLECTION,
             # file_metas 인자 생략 → doc 에 file_meta 키 없음
         )

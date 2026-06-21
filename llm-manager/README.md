@@ -291,11 +291,16 @@ except FileResolveError:
 | `llm_request_stream` | `tuple[Iterator[dict], dict]` | 동기 스트리밍 — `(stream, meta)` 튜플 |
 | `done_check` | `DoneCheckResult` | 캐시 존재 여부만 확인 (LLM 호출 없음) |
 | `fetch_by_cache_key` | `tuple[LLMResponse, ResponseMeta]` | 캐시 키로 직접 조회 |
-| `delete_cache_async` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (비동기) |
-| `delete_cache` | `ExpireResult` | Context Cache 를 grace_seconds 후 삭제 (`asyncio.run` 래퍼) |
+| `file_preprocessing_async` / `file_preprocessing` | `dict[str, str] \| list[list[str]]` | 파일 전처리만 (Files API 업로드 + opt-in Context Cache 생성, LLM 호출 없음) |
+| `delete_context_cache_async` / `delete_context_cache` | `ExpireResult` | Context Cache 를 **무조건 5초 뒤** 만료 (시간 인자 없음) |
+| `update_context_cache_async` / `update_context_cache` | `ExpireResult` | Context Cache 수명을 `ttl`(1~3600초)로 **연장** |
 | `close` | `None` (async) | 하위호환 no-op (httpx 클라이언트 제거됨). 호출해도 안전 |
 
-## llm_input 구조
+## llm_request — 단건/스트리밍 LLM 호출
+
+주력 함수. `llm_request_async`(비동기) / `llm_request`(동기 래퍼)는 단건 호출, `llm_request_stream_async` / `llm_request_stream`은 스트리밍이다. 모두 `(llm_input, *, stored_files, cache_mode, save_mode, database, timings, debug)` 시그니처를 공유하며 `(result, meta)` 를 반환한다. 아래는 입력·플래그·반환의 상세.
+
+### llm_input 구조
 
 `llm_request_async`의 첫 번째 인자. **handler 생성 호출(`call()`)의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 내부에서 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
 
@@ -307,7 +312,7 @@ response, meta = await llm_request_async(
         "system": "시스템 프롬프트",    # 선택
         "temperature": 0,               # 선택
         "max_tokens": 200,              # 선택
-        "service_name": "kiwoom-rm",    # 선택 (meta에 기록). 레포 이름과 동일하게 지정 권장
+        "task_name": "fund_comment",    # 선택 (meta.task_name 에 기록). 한 서비스 내 호출(task) 구분 라벨
         "tool_config": "auto",          # 선택 ("auto" | "any" | "none")
         "media_resolution": "high",     # 선택 ("low" | "medium" | "high")
     },
@@ -340,18 +345,18 @@ def call(
     tool_config: str | None = None,      # "auto" | "any" | "none"
     history: list[dict] | None = None,   # 이전 대화 이력
     cached_content: str | None = None,   # Context Cache 이름
-    service_name: str | None = None,     # 서비스 식별자 (로깅용)
+    task_name: str | None = None,        # 호출(task) 단위 라벨 (meta.task_name, 로깅용)
     media_resolution: str | None = None, # "low" | "medium" | "high"
 ) -> LLMResponse
 ```
 
 스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_manager.aio.stream()`.
 
-## cache_mode / save_mode
+### cache_mode / save_mode
 
 조합별 흐름은 [8. Runner — 캐시 조회 및 LLM 호출 흐름](#8-runner) 참고.
 
-## Timings TypedDict
+### Timings TypedDict
 
 시간 관련 설정을 하나의 TypedDict로 묶어서 전달한다. 일부 키만 지정하면 나머지는 기본값으로 채워진다.
 
@@ -371,7 +376,7 @@ response, meta = await llm_request_async(
 )
 ```
 
-## debug
+### debug
 
 `debug=True` 설정 시 `meta.route_reason`에 해당 요청이 어떤 경로로 처리됐는지가 기록된다(기본 `False`). 값의 의미는 다음과 같다.
 
@@ -385,7 +390,7 @@ response, meta = await llm_request_async(
 "cache_off_save_on"      # cache_mode=False, save_mode=True
 ```
 
-## 반환 타입
+### 반환 타입
 
 ### LLMResponse
 
@@ -405,11 +410,11 @@ response, meta = await llm_request_async(
 | `source` | `str` | `'live'` (LLM 직접 호출) 또는 `'cache'` |
 | `cache_hit` | `bool` | 캐시 히트 여부 |
 | `cache_key` | `str \| None` | SHA-256 캐시 키 (64자) |
-| `metadata` | `dict` | `{"service_name": ..., "model": ...}` |
+| `metadata` | `dict` | `{"service_name": ..., "task_name": ..., "model": ...}` — `service_name`=env `SERVICE_NAME`(실행 주체), `task_name`=`llm_input`의 호출 라벨 |
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
 | `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 각 `StoredFile` 의 6 필드(`file_path` 포함)가 담긴 list. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
-| `context_cache_id` | `str \| None` | Context Cache 생성/HIT 시 노출되는 식별자 (opaque). `delete_cache_async` 호출에 사용. live 호출일 때만 노출되며, MDB cache HIT 응답에는 키 자체 부재. **영구 식별자가 아니다** — Gemini 측 TTL 이 만료되면 자동 파괴되고, 같은 입력으로 재호출 시 새 cache (새 id) 가 생성된다 |
+| `context_cache_id` | `str \| None` | Context Cache 생성/HIT 시 노출되는 식별자 (= hash_key). `delete_context_cache_async` / `update_context_cache_async` 호출에 사용. live 호출일 때만 노출되며, MDB cache HIT 응답에는 키 자체 부재. **영구 식별자가 아니다** — Gemini 측 TTL 이 만료되면 자동 파괴되고, 같은 입력으로 재호출 시 새 cache (새 id) 가 생성된다 |
 
 #### `file_meta` 활용 예시
 
@@ -532,12 +537,14 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 
 > **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
 
-### Context Cache 수명 단축 — `delete_cache_async` / `delete_cache`
+### Context Cache 수명 관리 — `delete_context_cache` (만료) / `update_context_cache` (연장)
 
-`context_cache_ttl` 을 길게 잡아두고, agent task 가 끝났을 때 즉시 단축할 수 있다. storage 비용은 새 TTL 기준으로 분 단위 prorate 청구되므로, "넉넉히 잡고 끝나면 줄이기" 패턴이 비용 효율적이다.
+`context_cache_ttl` 을 길게 잡아두고, agent task 가 끝났을 때 즉시 만료시킬 수 있다. storage 비용은 새 TTL 기준으로 분 단위 prorate 청구되므로, "넉넉히 잡고 끝나면 줄이기" 패턴이 비용 효율적이다. 반대로 더 오래 살려야 하면 `update_context_cache` 로 TTL 을 연장한다.
+
+두 함수 모두 **`context_cache_id`(= hash_key)** 를 받는다 — `meta.context_cache_id` 또는 `file_preprocessing`(context cache 모드) 반환의 `context_cache_id`. (Gemini 의 `cached_content_name`(`cachedContents/...`)은 받지 않는다 — 넣으면 `ValueError`. Redis 키 매칭이 안 돼 조용한 no-op 이 되기 때문.)
 
 ```python
-from llm_manager import llm_request_async, delete_cache_async, StoredFile
+from llm_manager import llm_request_async, delete_context_cache_async, StoredFile
 
 cache_ids: set[str] = set()
 for q in questions:
@@ -549,24 +556,65 @@ for q in questions:
     if meta.context_cache_id:
         cache_ids.add(meta.context_cache_id)
 
-# task 끝나면 일괄 삭제 (sync 래퍼 delete_cache 도 있음)
-result = await delete_cache_async(list(cache_ids))
+# task 끝나면 일괄 만료 — 무조건 5초 뒤 (sync 래퍼 delete_context_cache 도 있음)
+result = await delete_context_cache_async(list(cache_ids))
 print(result.expired)   # ["..."]
 print(result.failed)    # []
 ```
 
-| 인자 | 기본값 | 설명 |
-| --- | --- | --- |
-| `cache_ids` | — | `meta.context_cache_id` 로 받은 식별자. 단건이면 문자열, 여러 개면 리스트 |
-| `grace_seconds` | `5` | in-flight 요청 보호 grace (1~3600). 이 시간 후 Gemini cache + Redis 동시 만료 |
+**`delete_context_cache(cache_ids)`** — **무조건 5초 뒤** 만료. 시간 인자 없음(5초는 in-flight 요청 보호용 고정 grace). Redis/Gemini 부재는 `expired` 로 idempotent 성공 처리.
 
-> ⚠️ 기본 `5`초는 **task 종료 직후 호출**을 가정한다. 같은 cache 를 쓰는 LLM 호출이 아직 진행 중일 수 있으면(대용량 컨텍스트 등 느린 호출) `grace_seconds` 를 넉넉히(예: 30~60) 올려 잡아 호출 완료 전에 만료되지 않게 한다.
+**`update_context_cache(cache_ids, *, ttl)`** — 수명을 `ttl`(1~3600초)로 **연장**. delete 와 반대로, 연장 대상이 없으면(Redis 부재·Gemini 404) 해당 id 는 `failed` 로 분류된다.
+
+```python
+from llm_manager import update_context_cache_async
+
+res = await update_context_cache_async(cache_id, ttl=3600)   # 1시간 더 살림
+print(res.expired)   # 연장 성공한 id
+print(res.failed)    # 부재/404 등 실패한 id
+```
 
 > ⚠️ `meta.context_cache_id` 는 **live 호출일 때만** 응답에 들어간다. MDB cache HIT 응답에는 키 자체 부재. 첫 호출이 cache HIT 이면 그 task 의 cache_id 는 받지 못하지만, Gemini 측 cache 는 자연 만료되므로 큰 문제 없음.
 
-> ⚠️ `context_cache_id` 는 **영구 식별자가 아니다.** Gemini 측 TTL 이 만료되면 cache 가 자동 파괴되고, 같은 입력으로 다시 호출하면 새 cache (새 id) 가 생성된다. agent 가 옛 id 를 DB 에 저장해두고 나중에 `delete_cache_async` 로 호출해도 이미 만료된 cache 라면 `expired` 분류로 idempotent 처리되니 안전 — 다만 옛 id 가 살아있다고 가정한 동작은 만들지 말 것.
+> ⚠️ `context_cache_id` 는 **영구 식별자가 아니다.** Gemini 측 TTL 이 만료되면 cache 가 자동 파괴되고, 같은 입력으로 다시 호출하면 새 cache (새 id) 가 생성된다. agent 가 옛 id 를 DB 에 저장해두고 나중에 `delete_context_cache_async` 로 호출해도 이미 만료된 cache 라면 `expired` idempotent 처리되니 안전 — 다만 옛 id 가 살아있다고 가정한 동작은 만들지 말 것.
 
 > ⚠️ **expire 가 필요한 워크플로는 live 호출 직후의 `meta.context_cache_id` 를 보관할 것.** MDB cache HIT 응답에서는 노출되지 않으므로, 같은 입력으로 재호출하면 ID 를 받을 수 없어 그 시점에 expire 가 불가능하다 (옛 cache 가 살아있어도 호출자 측에서 ID 모르는 상태).
+
+### 파일 전처리만 — `file_preprocessing`
+
+LLM 호출 없이 **파일 처리(Files API 업로드 + opt-in Context Cache 생성)만** 미리 돌리고 싶을 때 쓴다. `llm_request` 의 LLM 캐시 조회·LLM 호출 조립은 빼고, stored_files 를 받아 업로드 핸들만 돌려준다 (pre-warming).
+
+- 입력: `llm_input`(`model`/`system`/`tools`/`tool_config` 만 사용 — `contents` 는 안 봄), `stored_files`, `timings`(`context_cache_ttl` opt-in).
+- **classify 를 건너뛰고 전 파일을 Files API 로 강제 업로드**한다 (작은 파일도 URI 보장).
+
+```python
+from llm_manager import file_preprocessing_async, StoredFile
+
+# files_api 모드 (context_cache_ttl 미지정) → 파일별 (n, ?) URI 리스트
+uris = await file_preprocessing_async(
+    {"model": "gemini-2.5-flash"},
+    stored_files=[StoredFile(**sf_a), StoredFile(**sf_b)],
+)
+# uris == [["files/aaa"], ["files/bbb1", "files/bbb2"]]   # b 는 분할되어 2개
+
+# context cache 모드 (context_cache_ttl 지정) → dict 두 키
+res = await file_preprocessing_async(
+    {"model": "gemini-2.5-flash", "system": "..."},
+    stored_files=[StoredFile(**sf_a)],
+    timings={"context_cache_ttl": 1800},
+)
+# res == {"context_cache_id": "<hash_key>",          # update/delete_context_cache 에 사용
+#         "cached_content_name": "cachedContents/.."} # Gemini 직접 호출용
+# (토큰 미달 too-small 이면 캐시 skip → (n, ?) URI 리스트로 폴백)
+```
+
+| 모드 | 조건 | 반환 |
+| --- | --- | --- |
+| files_api-only | `context_cache_ttl` 미지정 | `(n, ?)` 파일별 URI 리스트 |
+| context cache | `context_cache_ttl` 양수 + 생성 성공 | `{"context_cache_id", "cached_content_name"}` |
+| too-small 폴백 | context cache 모드인데 토큰 미달 | `(n, ?)` URI 리스트 |
+
+> 이후 같은 `stored_files` 로 `llm_request` 를 호출하면 매니저가 Redis 에서 업로드/캐시를 자동 재사용하므로, `file_preprocessing` 반환값을 직접 들고 다닐 필요는 없다 — 단 Context Cache 를 수동 만료/연장하려면 `context_cache_id` 를 보관한다.
 
 ## Cache Stampede Dedup
 
@@ -612,7 +660,7 @@ llm_input + files
 
 ### 2. subset 추출
 
-아래 16개 필드만 캐시 키 계산에 사용된다. 목록에 없는 필드는 무시된다.
+아래 16개 필드만 캐시 키 계산에 사용된다. 목록에 없는 필드는 무시된다. (호출 라벨 `task_name` 은 키에서 제외 — 출력에 영향 없는 라벨이라 metadata 로만 저장. 반면 `service_name`=실행 서비스는 키에 포함.)
 
 | 필드 | 설명 |
 |------|------|
@@ -623,7 +671,7 @@ llm_input + files
 | `max_tokens` | 최대 출력 토큰 수 |
 | `temperature` | 온도 |
 | `cached_content` | Context Cache 이름 (파일 있으면 제외) |
-| `service_name` | 서비스 식별자 |
+| `service_name` | 실행 서비스 식별자 (env SERVICE_NAME) |
 | `seed` | 재현성 시드값 |
 | `output` | 출력 형식 |
 | `schema` | 출력 스키마 |
@@ -824,7 +872,7 @@ MDB에 해당 입력의 응답이 이미 저장되어 있는지 확인. LLM 호�
 | `_id` | `str` | SHA-256 캐시 키 |
 | `canonical_json` | `str` | 캐시 키 계산에 쓰인 정규화 JSON |
 | `result` | `dict` | `LLMResponse.model_dump()` |
-| `metadata` | `dict` | `{"service_name": ..., "model": ...}` (`llm_input`에서 추출) |
+| `metadata` | `dict` | `{"service_name": ..., "task_name": ..., "model": ...}` — `service_name`=env `SERVICE_NAME`(실행 주체), `task_name`·`model`=`llm_input`에서 추출 |
 | `created_at` | `str` | 저장 시각 (UTC ISO) |
 | `requested_at` | `str` | LLM 요청 시각 (UTC ISO, LLM 호출 시에만) |
 | `expires_at` | `str` | `mdb_ttl` 설정 시에만. **현재 필드만 기록, 자동 삭제 미동작** |
@@ -1000,7 +1048,7 @@ Gemini Files API는 계정당 20GB 저장 한도가 있다.
 
 ---
 
-handler 클라이언트는 `llm_manager._internal.handler_client` 로 **내부화**되어 있고, `llm_manager` 는 그중 **생성 primitive 만 큐레이션해 노출**한다. 캐시/파일 생명주기 ops(`create_cache`/`upload_file`/`configure`/...)는 **매니저의 결정 역할**이라 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 되기 때문. (캐시 생성은 `llm_request_async(timings={"context_cache_ttl": ...})`, 만료는 `delete_cache(grace_seconds=...)` 같은 매니저 API 로.) handler URL 주입 등 설정은 첫 호출 시 `_internal/_config.py` 가 자동(lazy) 처리한다.
+handler 클라이언트는 `llm_manager._internal.handler_client` 로 **내부화**되어 있고, `llm_manager` 는 그중 **생성 primitive 만 큐레이션해 노출**한다. 캐시/파일 생명주기 ops(`create_cache`/`upload_file`/`configure`/...)는 **매니저의 결정 역할**이라 공개하지 않는다 — raw 노출 시 매니저의 Redis 추적·keying·grace 만료와 desync 되기 때문. (캐시 생성은 `llm_request_async(timings={"context_cache_ttl": ...})`, 만료/연장은 `delete_context_cache(...)` / `update_context_cache(..., ttl=...)` 같은 매니저 API 로.) handler URL 주입 등 설정은 첫 호출 시 `_internal/_config.py` 가 자동(lazy) 처리한다.
 
 ## sync — flat import
 

@@ -9,6 +9,7 @@ import fitz  # PyMuPDF
 import pytest
 
 from llm_manager._internal.file_processing.splitter import split_pdf
+from llm_manager.exceptions import PdfPageTooLargeError
 
 # ── 헬퍼: 테스트용 PDF 생성 ─────────────────────────────────────
 
@@ -121,15 +122,63 @@ class TestSplitPdf:
         result = split_pdf(pdf_path, target_mb=50)
         assert result == [pdf_path]
 
-    def test_max_depth_prevents_infinite_recursion(self, tmp_path):
-        """_MAX_DEPTH 초과 시 재분할을 중단하고 현재 크기로 반환."""
-        pdf_path = str(tmp_path / "depth.pdf")
-        _create_pdf(pdf_path, num_pages=10)
+    def test_single_page_exceeding_limit_raises(self, tmp_path):
+        """단일 페이지가 한도(50MB)를 초과하면 더 쪼갤 수 없으니 거부한다.
 
-        # _depth를 MAX 이상으로 설정 → 즉시 반환
-        result = split_pdf(pdf_path, target_mb=0.0001, _depth=3)
+        공유 객체 풀로 1페이지가 50MB를 넘는 병리적 PDF(이슈 #21) 대응. 여기서는
+        target_mb를 아주 작게 줘서 '1페이지가 한도 초과' 상황을 재현한다.
+        """
+        pdf_path = str(tmp_path / "unsplittable.pdf")
+        _create_pdf(pdf_path, num_pages=1)
 
-        assert result == [pdf_path]
+        with pytest.raises(PdfPageTooLargeError):
+            split_pdf(pdf_path, target_mb=0.00001)
+
+    def test_oversized_group_bisects_to_fit(self, tmp_path, monkeypatch):
+        """추정이 실제보다 작아 여러 페이지가 한 그룹으로 묶여도, 저장 후 한도를 넘으면
+        페이지를 이등분해 모든 파트를 한도 이하로 맞춘다 (단일 페이지가 종료 floor).
+
+        (구 _MAX_DEPTH 무한재귀 방지 테스트 대체 — 이제 재귀는 단일 페이지에서 종료.)
+        """
+        pdf_path = str(tmp_path / "bisect.pdf")
+        _create_pdf(pdf_path, num_pages=8, text="data " * 200)
+
+        # 단일 페이지 실제 크기 측정 → limit을 그 위로 잡아 reject 없이 bisect만 유도
+        d = fitz.open(pdf_path)
+        d.select([0])
+        t = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        t.close()
+        d.save(t.name, garbage=2, deflate=True)
+        d.close()
+        single_bytes = os.path.getsize(t.name)
+        os.unlink(t.name)
+        target_mb = (single_bytes * 1.5) / (1024 * 1024)
+        limit_bytes = target_mb * 1024 * 1024
+
+        # 추정을 균일·미세하게 → 8페이지가 한 그룹으로 묶임 → 저장 후 초과 → 이등분 재귀
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.splitter._estimate_page_sizes",
+            lambda doc, fs: [1.0] * len(doc),
+        )
+        # 병합이 한도 위로 되돌리지 않게 끔
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.splitter._MERGE_LIMIT_MB", 0
+        )
+
+        result = split_pdf(pdf_path, target_mb=target_mb)
+
+        total = 0
+        for part_path in result:
+            assert os.path.getsize(part_path) <= limit_bytes
+            doc = fitz.open(part_path)
+            total += len(doc)
+            doc.close()
+        assert total == 8
+        assert len(result) > 1  # 실제로 이등분됐는지
+
+        for part_path in result:
+            if part_path != pdf_path:
+                os.unlink(part_path)
 
 
 # ── #3 Phase 2 — leak 방지 검증 ────────────────────────────────
@@ -184,18 +233,21 @@ class TestSplitPdfLeakPrevention:
         for p in created_paths:
             assert not os.path.exists(p), f"임시 파일 leak: {p}"
 
-    def test_max_depth_recursion_no_unlinked_path_in_result(self, tmp_path):
-        """Bug B 회귀 — _MAX_DEPTH 초과 재귀가 [tmp.name] 반환 시 result 의 파일이 실제 존재."""
-        pdf_path = str(tmp_path / "deep.pdf")
-        _create_pdf(pdf_path, num_pages=10)
+    def test_returned_parts_all_exist(self, tmp_path):
+        """Bug B 회귀 — 분할 결과의 모든 경로가 실제 파일로 존재한다
+        (재분할/병합 중 unlink 된 임시 경로가 result 에 남으면 안 됨)."""
+        from unittest.mock import patch
+
+        pdf_path = str(tmp_path / "exist.pdf")
+        _create_pdf(pdf_path, num_pages=20)
 
         file_size = os.path.getsize(pdf_path)
-        # 매우 작은 target + _depth=2 시작 → 첫 재귀가 _MAX_DEPTH(3) 초과
-        target_mb = max((file_size / (1024 * 1024)) / 4, 0.001)
+        target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
 
-        result = split_pdf(pdf_path, target_mb=target_mb, _depth=2)
+        with patch("llm_manager._internal.file_processing.splitter._MERGE_LIMIT_MB", 0):
+            result = split_pdf(pdf_path, target_mb=target_mb)
 
-        # result 의 모든 파일이 실제 존재해야 (unlink 된 채 result 에 들어가면 안 됨)
+        assert len(result) >= 2
         for part_path in result:
             assert os.path.isfile(part_path), f"result 의 파일이 존재하지 않음: {part_path}"
 

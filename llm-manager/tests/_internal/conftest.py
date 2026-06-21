@@ -13,7 +13,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llm_manager._internal.file_processing import dedup
+from llm_manager._internal.file_processing import cache_store, dedup
 from tests.conftest import (  # noqa: F401 — re-export for `from conftest import ...`
     SAMPLE_LLM_INPUT,
     SAMPLE_RESPONSE,
@@ -48,8 +48,16 @@ def _isolate_redis_for_cache_store():
     )
     manager._memory.flush()
 
+    # cache_store._store 는 import 시점에 RedisManager 를 박제(BaseJsonStore.__init__:
+    # `self._handler = handler or RedisManager()`)하므로, 위 싱글톤 교체가 닿지 않는다.
+    # 메모리 매니저 기준으로 _store 를 재생성해 결과저장(files_api/context_cache)도 같은
+    # 격리에 포함시킨다 (teardown 에서 원복).
+    _orig_store = cache_store._store
+    cache_store._store = cache_store.FileCacheStore()
+
     yield
 
+    cache_store._store = _orig_store
     manager._backend.close()
     manager._memory.flush()
     RedisManager._instance = None
@@ -82,10 +90,16 @@ class FakeRedisHandler:
 
 @pytest.fixture()
 def fake_redis(monkeypatch):
-    """dedup 모듈의 RedisManager를 in-memory fake로 교체.
+    """dedup의 락(standby) 레이어를 in-memory fake로 교체.
 
-    setnx로 박은 키를 get으로 조회 가능. 반환은 fake 인스턴스 —
-    테스트가 `fake_redis.get(key)`로 standby 키 존재 여부를 검증한다.
+    `dedup.RedisManager` → FakeRedisHandler (setnx/get/delete). standby 선점/해제는
+    NX/XX 가 필요한데 autouse `_isolate_redis_for_cache_store` 의 메모리 폴백은 NX/XX 를
+    지원하지 않으므로 dedup 만 별도 fake 로 가린다.
+
+    결과저장(cache_store/files_api·context_cache) 격리는 autouse fixture 가 담당한다
+    (메모리 매니저 기준으로 `cache_store._store` 재생성).
+
+    반환은 fake 인스턴스 — 테스트가 `fake_redis.get(key)`로 standby 키 존재를 확인.
     """
     fake = FakeRedisHandler()
     monkeypatch.setattr(dedup, "RedisManager", lambda: fake)

@@ -20,7 +20,7 @@ from file_manager import FileManagerHandler
 
 from llm_manager import (
     StoredFile,
-    delete_cache_async,
+    delete_context_cache_async,
     llm_request_async,
 )
 from llm_manager._internal.file_processing import cache_store
@@ -75,8 +75,8 @@ async def test_expire_e2e_shortens_gemini_cache_ttl():
     expire_before = cache_before.expire_time
     print(f"\n[before] cache={name} expire_time={expire_before}")
 
-    # 4. expire 호출 (grace 60s)
-    result = await delete_cache_async([cache_id], grace_seconds=60)
+    # 4. expire 호출 (무조건 5초 고정)
+    result = await delete_context_cache_async([cache_id])
     assert result.expired == [cache_id]
     assert result.failed == []
 
@@ -95,6 +95,6 @@ async def test_expire_e2e_shortens_gemini_cache_ttl():
 async def test_expire_e2e_idempotent_for_unknown_id():
     """존재하지 않는 cache_id → expired 분류 (idempotent)."""
     fake_id = "a" * 64
-    result = await delete_cache_async([fake_id], grace_seconds=60)
+    result = await delete_context_cache_async([fake_id])
     assert result.expired == [fake_id]
     assert result.failed == []

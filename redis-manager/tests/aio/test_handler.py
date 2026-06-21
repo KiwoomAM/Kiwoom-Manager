@@ -52,6 +52,34 @@ async def test_setnx_raises_retry_exhausted_on_503(set_backend):
         await mgr.setnx("lock", "owner", ttl=30)
 
 
+async def test_compare_and_delete_does_not_fall_back_when_handler_down(offline_manager):
+    """CAS는 분산 락 정합성 명령 — 폴백 안 하고 RedisUnavailableError 전파."""
+    with pytest.raises(RedisUnavailableError):
+        await offline_manager.compare_and_delete("lock", "token-A")
+
+
+async def test_compare_and_set_does_not_fall_back_when_handler_down(offline_manager):
+    with pytest.raises(RedisUnavailableError):
+        await offline_manager.compare_and_set("lock", "token-A", "token-A", ex=30)
+
+
+async def test_compare_and_delete_raises_retry_exhausted_on_503(set_backend):
+    def handler(req):
+        return httpx.Response(503, json={"error": "재시도 소진"})
+
+    mgr = await set_backend(handler)
+    with pytest.raises(RedisRetryExhausted):
+        await mgr.compare_and_delete("lock", "token-A")
+
+
+async def test_compare_and_delete_returns_ok_from_handler(set_backend):
+    def handler(req):
+        return httpx.Response(200, json={"ok": True})
+
+    mgr = await set_backend(handler)
+    assert await mgr.compare_and_delete("lock", "token-A") is True
+
+
 async def test_scan_iter_yields_keys(set_backend):
     pages = [{"cursor": 3, "keys": ["scan:1"]}, {"cursor": 0, "keys": ["scan:2"]}]
 

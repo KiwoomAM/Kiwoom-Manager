@@ -246,6 +246,7 @@ def build_body(
     tool_config: str | None = None,
     history: list[dict] | None = None,
     cached_content: str | None = None,
+    task_name: str | None = None,
     service_name: str | None = None,
     media_resolution: str | None = None,
 ) -> dict:
@@ -271,7 +272,8 @@ def build_body(
         tool_config: function calling 모드 ("auto", "any", "none", "validated")
         history: 이전 대화 이력 (contents 와만 결합)
         cached_content: Context Cache 이름
-        service_name: 서비스 이름
+        task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+        service_name: 실행 서비스 식별자 (env SERVICE_NAME). 호출 측에서 주입.
         media_resolution: 미디어 해상도 ("low", "medium", "high")
 
     Returns:
@@ -311,6 +313,8 @@ def build_body(
         body["seed"] = seed
     if cached_content is not None:
         body["cached_content"] = cached_content
+    if task_name is not None:
+        body["task_name"] = task_name
     if service_name is not None:
         body["service_name"] = service_name
     if tools is not None:
@@ -391,6 +395,7 @@ def build_embed_body(
     task_type: str | None = None,
     title: str | None = None,
     output_dimensionality: int | None = None,
+    task_name: str | None = None,
     service_name: str | None = None,
 ) -> dict:
     """SDK embed 파라미터 → Handler HTTP body 변환.
@@ -401,7 +406,8 @@ def build_embed_body(
         task_type: 임베딩 작업 유형
         title: 문서 제목 (RETRIEVAL_DOCUMENT 전용)
         output_dimensionality: 출력 벡터 차원 수
-        service_name: 서비스 이름
+        task_name: 호출(task) 단위 라벨 (한 서비스 안에서 어떤 호출인지 구분)
+        service_name: 실행 서비스 식별자 (env SERVICE_NAME). 호출 측에서 주입.
 
     Returns:
         Handler HTTP body dict
@@ -416,6 +422,8 @@ def build_embed_body(
         body["title"] = title
     if output_dimensionality is not None:
         body["output_dimensionality"] = output_dimensionality
+    if task_name is not None:
+        body["task_name"] = task_name
     if service_name is not None:
         body["service_name"] = service_name
 

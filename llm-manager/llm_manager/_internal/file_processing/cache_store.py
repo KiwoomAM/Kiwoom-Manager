@@ -81,6 +81,16 @@ class FileCacheStore(BaseJsonStore):
         if not self._expire(self._make_key("context_cache", hash_key), ttl):
             logger.debug("shrink no-op (key absent): hash=%s", hash_key[:16])
 
+    def set_context_cache_ttl(self, hash_key: str, ttl: int) -> None:
+        """update 시 Context Cache Redis 키 TTL 을 ttl 로 설정/연장 (Redis EXPIRE wrapper).
+
+        `shrink_context_cache_ttl` 과 같은 EXPIRE 래퍼지만 **의도가 연장**이라 이름을
+        분리(EXPLICIT). EXPIRE 는 ttl 로 TTL 을 새로 세팅하므로 늘리기/줄이기 모두 가능.
+        호출 전제: `_extend_one` 이 Redis 부재를 먼저 failed 로 걸러서 키가 존재함.
+        """
+        if not self._expire(self._make_key("context_cache", hash_key), ttl):
+            logger.debug("set ttl no-op (key absent): hash=%s", hash_key[:16])
+
 
 # 모듈 레벨 싱글톤
 _store = FileCacheStore()
@@ -217,3 +227,8 @@ def delete_context_cache(hash_key: str) -> None:
 def shrink_context_cache_ttl(hash_key: str, ttl: int) -> None:
     """hash_key 의 Redis 키 TTL 단축."""
     _store.shrink_context_cache_ttl(hash_key, ttl)
+
+
+def set_context_cache_ttl(hash_key: str, ttl: int) -> None:
+    """hash_key 의 Redis 키 TTL 을 ttl 로 설정/연장 (update_context_cache 용)."""
+    _store.set_context_cache_ttl(hash_key, ttl)

@@ -28,6 +28,10 @@ _LLM_INPUT_FIELDS: tuple[str, ...] = (
     "max_tokens",
     "temperature",
     "cached_content",
+    # service_name(실행 서비스, runner 가 env SERVICE_NAME 으로 주입)은 캐시 키에 포함한다 —
+    # 과거부터 키에 포함돼 왔으므로 기존 캐시와 호환되고, llm-handler 도 계속 service_name 을
+    # 받으므로 키에서 뺄 이유가 없다. (env 값 == 옛 입력 service_name 값일 때 기존 키와 일치)
+    # 반면 task_name(호출 라벨)은 키에서 제외하고 metadata 로만 저장한다.
     "service_name",
     "seed",
     "output",

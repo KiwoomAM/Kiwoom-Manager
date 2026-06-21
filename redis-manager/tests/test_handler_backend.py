@@ -51,6 +51,39 @@ def test_set_nx_condition_unmet_returns_false():
     assert backend.set("k", "v", nx=True) is False
 
 
+def test_compare_and_delete_sends_expected_and_returns_ok():
+    captured = {}
+
+    def handler(request):
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    backend = make_backend(handler)
+    assert backend.compare_and_delete("lock", "token-A") is True
+    assert captured["path"] == "/v1/keys/lock/compare-and-delete"
+    assert captured["body"] == {"expected": "token-A"}
+
+
+def test_compare_and_delete_returns_false_on_mismatch():
+    backend = make_backend(lambda r: httpx.Response(200, json={"ok": False}))
+    assert backend.compare_and_delete("lock", "token-A") is False
+
+
+def test_compare_and_set_sends_expected_value_ex_and_returns_ok():
+    captured = {}
+
+    def handler(request):
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    backend = make_backend(handler)
+    assert backend.compare_and_set("lock", "token-A", "token-B", ex=60) is True
+    assert captured["path"] == "/v1/keys/lock/compare-and-set"
+    assert captured["body"] == {"expected": "token-A", "value": "token-B", "ex": 60}
+
+
 def test_key_with_special_chars_is_quoted():
     def handler(request):
         # httpx decodes path for .path; raw_path holds the wire-level bytes

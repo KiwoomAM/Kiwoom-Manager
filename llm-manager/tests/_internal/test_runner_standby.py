@@ -59,7 +59,7 @@ class TestAgentLlmStandby:
         llm_input = {
             "contents": "같은 질문",
             "model": "gemini-2.5-flash",
-            "service_name": "test",
+            "task_name": "test",
         }
 
         async def _run():
@@ -98,7 +98,7 @@ class TestAgentLlmStandby:
         llm_input = {
             "contents": "timeout test",
             "model": "gemini-2.5-flash",
-            "service_name": "test",
+            "task_name": "test",
         }
 
         async def _run():
@@ -129,7 +129,7 @@ class TestAgentLlmStandby:
         llm_input = {
             "contents": "skip standby",
             "model": "gemini-2.5-flash",
-            "service_name": "test",
+            "task_name": "test",
         }
 
         async def _run():
@@ -178,7 +178,7 @@ class TestAgentLlmStreamStandby:
         llm_input = {
             "contents": "stream dedup test",
             "model": "gemini-2.5-flash",
-            "service_name": "test",
+            "task_name": "test",
         }
 
         async def _run() -> list[StreamChunk]:
@@ -236,7 +236,7 @@ class TestStreamAssistantMessageSave:
             "content": [{"type": "text", "text": "안녕하세요"}],
         }))
 
-        llm_input = {"contents": "x", "model": "gemini-2.5-flash", "service_name": "test"}
+        llm_input = {"contents": "x", "model": "gemini-2.5-flash", "task_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
             llm_input, cache_mode=True, save_mode=True,
             standby_ttl_seconds=10, database="test_db",
@@ -268,7 +268,7 @@ class TestStreamAssistantMessageSave:
             ],
         }))
 
-        llm_input = {"contents": "y", "model": "gemini-2.5-flash", "service_name": "test"}
+        llm_input = {"contents": "y", "model": "gemini-2.5-flash", "task_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
             llm_input, cache_mode=True, save_mode=True,
             standby_ttl_seconds=10, database="test_db",
@@ -290,7 +290,7 @@ class TestStreamAssistantMessageSave:
         monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
         monkeypatch.setattr(runner, "last_assistant_message", lambda: None)
 
-        llm_input = {"contents": "z", "model": "gemini-2.5-flash", "service_name": "test"}
+        llm_input = {"contents": "z", "model": "gemini-2.5-flash", "task_name": "test"}
         stream, _meta = await runner.llm_request_stream_async(
             llm_input, cache_mode=True, save_mode=True,
             standby_ttl_seconds=10, database="test_db",

@@ -46,6 +46,41 @@ async def test_set_posts_body_and_returns_ok():
     assert '"value": "v"' in seen["json"] or '"value":"v"' in seen["json"]
 
 
+async def test_compare_and_delete_sends_expected_and_returns_ok():
+    seen = {}
+
+    def handler(req):
+        seen["path"] = req.url.path
+        seen["json"] = req.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    backend = _backend(handler)
+    try:
+        assert await backend.compare_and_delete("lock", "token-A") is True
+    finally:
+        await backend.aclose()
+    assert seen["path"] == "/v1/keys/lock/compare-and-delete"
+    assert '"expected"' in seen["json"] and "token-A" in seen["json"]
+
+
+async def test_compare_and_set_sends_expected_value_ex_and_returns_ok():
+    seen = {}
+
+    def handler(req):
+        seen["path"] = req.url.path
+        seen["json"] = req.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    backend = _backend(handler)
+    try:
+        assert await backend.compare_and_set("lock", "token-A", "token-B", ex=60) is True
+    finally:
+        await backend.aclose()
+    assert seen["path"] == "/v1/keys/lock/compare-and-set"
+    for token in ('"expected"', '"value"', '"ex"', "token-A", "token-B", "60"):
+        assert token in seen["json"]
+
+
 async def test_scan_iter_paginates():
     pages = [{"cursor": 7, "keys": ["a", "b"]}, {"cursor": 0, "keys": ["c"]}]
 
