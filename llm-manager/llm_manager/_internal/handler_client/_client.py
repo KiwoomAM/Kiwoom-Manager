@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from ._common import (
+    KEEPALIVE_EXPIRY,
     ContentsType,
     _done_payload_var,
     _resolve_mime_type,
@@ -23,7 +24,13 @@ class AsyncClient:
     """Handler 서비스와 통신하는 비동기 클라이언트."""
 
     def __init__(self, base_url: str, timeout: float = 120.0) -> None:
-        self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+        # keepalive_expiry 를 서버(uvicorn timeout-keep-alive 기본 5s) 보다 짧게 두어
+        # idle 소켓을 서버 마감 전에 폐기 → stale 소켓 재사용(RemoteProtocolError) race 차단.
+        self._http = httpx.AsyncClient(
+            base_url=base_url,
+            timeout=timeout,
+            limits=httpx.Limits(keepalive_expiry=KEEPALIVE_EXPIRY),
+        )
 
     @property
     def _last_done_payload(self) -> dict[str, object] | None:
@@ -43,6 +50,15 @@ class AsyncClient:
         """공통 HTTP 요청 처리."""
         try:
             response = await self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
+        except httpx.RemoteProtocolError as e:
+            # stale keep-alive 소켓: 서버가 응답 없이 끊음 = 요청 미처리 → 새 소켓으로 1회 재시도.
+            # 단, multipart 파일 업로드는 파일 핸들이 소진되어 재전송 불가 → 재시도 제외.
+            if "files" in kwargs:
+                raise HandlerConnectionError(f"Handler 연결 실패: {e}") from e
+            try:
+                response = await self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
+            except (httpx.RemoteProtocolError, httpx.ConnectError) as e2:
+                raise HandlerConnectionError(f"Handler 연결 실패 (재시도 후): {e2}") from e2
         except httpx.ConnectError as e:
             raise HandlerConnectionError(f"Handler 연결 실패: {e}") from e
 
@@ -182,7 +198,8 @@ class AsyncClient:
                         break
                     if chunk is not None:
                         yield chunk
-        except httpx.ConnectError as e:
+        except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
+            # 스트림은 중간까지 받다 끊기면 부분 출력이 생겨 재시도가 위험 → wrap 만.
             raise HandlerConnectionError(f"Handler 연결 실패: {e}") from e
 
     async def embed(
