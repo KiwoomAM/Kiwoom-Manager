@@ -23,6 +23,12 @@ from .models import Content, FileRef, LLMResponse, Part, StreamChunk
 
 logger = logging.getLogger(__name__)
 
+# httpx keep-alive idle 소켓 만료 (초). 서버(llm-handler) uvicorn 의
+# timeout-keep-alive(기본 5s) 보다 짧게 두어, 클라이언트가 서버 마감 전에 idle 소켓을
+# 폐기하도록 한다 → 서버가 닫은 소켓을 재사용해 RemoteProtocolError 가 나는 race 차단.
+# (SyncClient/AsyncClient 양쪽이 import — 값의 SSOT)
+KEEPALIVE_EXPIRY = 2.0
+
 # stream() done event payload — task/thread 단위 격리.
 # AsyncClient/SyncClient 의 stream() 이 set, Session/AsyncSession 이 `client._last_done_payload`
 # property (호환 layer) 또는 직접 get 으로 read. 동일 client 인스턴스 위 동시 stream 호출이
