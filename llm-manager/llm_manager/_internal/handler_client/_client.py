@@ -53,6 +53,12 @@ class AsyncClient:
         except httpx.RemoteProtocolError as e:
             # stale keep-alive 소켓: 서버가 응답 없이 끊음 = 요청 미처리 → 새 소켓으로 1회 재시도.
             # 단, multipart 파일 업로드는 파일 핸들이 소진되어 재전송 불가 → 재시도 제외.
+            #
+            # [알려진 한계] 이 except 는 본문 수신 도중 disconnect("peer closed connection
+            # without sending complete message body") 도 함께 잡는다. 이 변종은 서버가 이미
+            # 요청을 처리·응답을 시작한 상태라 "미처리" 전제가 깨진다 → generate/embed 는
+            # 중복 생성(응답 1개라 비용만 낭비), create_cache(POST /v1/caches)는 중복 캐시
+            # 생성 가능성. 빈도·영향이 낮아 재시도 분기는 단순 유지하고 한계로만 남긴다. (docs/24 §3)
             if "files" in kwargs:
                 raise HandlerConnectionError(f"Handler 연결 실패: {e}") from e
             try:
