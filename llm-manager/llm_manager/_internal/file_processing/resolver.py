@@ -47,6 +47,10 @@ _INLINE_LIMIT_PDF_OR_TEXT_ONLY = 50 * 1024 * 1024  # 50 MB
 # Files API 경로 — Gemini PDF 공식 한도, 초과 시 splitter.split_pdf로 분할
 _PDF_SPLIT_LIMIT = 50 * 1024 * 1024  # 50 MB
 
+# context cache too-small 선제 게이트 (§4.4.1) — 캐시 최소 토큰 + 모달리티 환산
+_CACHE_MIN_TOKENS = 1024  # Gemini Context Cache 최소 합계 토큰
+_PDF_TOKENS_PER_PAGE = 258  # Gemini 문서: PDF 페이지당 258 토큰 (flat)
+
 
 def _inline_total_limit(pool: list[FileInput]) -> int:
     """inline 후보 합계 한도 — image/audio 포함 여부에 따라 결정.
@@ -154,6 +158,21 @@ async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
 # ── files_api 헬퍼 ───────────────────────────────────────────
 
 
+def _count_pdf_pages(data: bytes) -> int | None:
+    """PDF 바이트의 페이지 수 (fitz/PyMuPDF). 깨진/비-PDF 면 None.
+
+    too-small 선제 게이트(§4.4.1)의 토큰 어림에 쓰인다. None 은 '추정 불가'로,
+    게이트는 skip하지 않고 create 를 시도한다 (fail-soft backstop).
+    """
+    try:
+        import fitz
+
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            return doc.page_count
+    except Exception:
+        return None
+
+
 def _reuse_files_api_uris(
     fi: FileInput,
     existing: dict,
@@ -170,6 +189,8 @@ def _reuse_files_api_uris(
         "[route] file=%s mode=files_api source=cached uris=%d",
         fi.file_name, len(existing["uris"]),
     )
+    # Redis 에 stash 된 PDF 페이지 수 복원 → too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작
+    fi.page_count = existing.get("page_count")
     fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
@@ -185,6 +206,9 @@ async def _upload_and_cache_file(
         fi.data = await fetch_with_fallback(fm, fi)
         if fi.resolved_via is None:
             fi.resolved_via = "primary"  # fetch 검증 완료
+    # PDF 페이지 수 stash (bytes 보유 시점 — 곧 비워짐) → too-small 게이트(§4.4.1)
+    if fi.mime_type == "application/pdf" and fi.page_count is None:
+        fi.page_count = _count_pdf_pages(fi.data)
     if not fi.extension:
         logger.warning(
             "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",
@@ -233,6 +257,7 @@ async def _upload_and_cache_file(
                 "mime_type": fi.mime_type,
                 "uris": uris,
                 "split": len(refs) > 1,
+                "page_count": fi.page_count,
             },
             ttl=dynamic_ttl,
         )
@@ -302,6 +327,32 @@ async def _resolve_one_files_api(
 
 
 # ── context_cache 헬퍼 ───────────────────────────────────────
+
+
+def _estimate_cache_tokens(
+    files: list[FileInput], system_instruction: str | None,
+) -> int | None:
+    """캐시될 콘텐츠(system + 파일들)의 합계 토큰을 로컬로 과대평가 (§4.4.1).
+
+    too-small 선제 게이트용 — 반환값이 `_CACHE_MIN_TOKENS` 미만이면 create 를 skip한다.
+    과대평가 방향이라 "캐시 가능한 콘텐츠를 잘못 skip"하지 않는다. 추정 불가(스코프 외
+    모달리티 / PDF page_count 미상)면 `None` → 게이트는 skip하지 않고 create 를 시도한다
+    (fail-soft 가 backstop).
+
+    환산 (Gemini 공식): PDF=`258×page_count`, 텍스트=`file_size//3`(바이트 기반 보수),
+    system=`len//3`. 이미지/오디오/비디오는 스코프 외(§4.4.1) → None.
+    """
+    total = len(system_instruction) // 3 if system_instruction else 0
+    for fi in files:
+        if fi.mime_type == "application/pdf":
+            if fi.page_count is None:
+                return None
+            total += _PDF_TOKENS_PER_PAGE * fi.page_count
+        elif fi.mime_type.startswith("text/"):
+            total += fi.file_size // 3
+        else:
+            return None
+    return total
 
 
 async def _create_and_save_context_cache(
@@ -509,15 +560,27 @@ async def _process_files_api(
     if ctx_cache_active and not file_refs:
         logger.info("[route] mode=context_cache source=none reason=no_files_api_files")
     if ctx_cache_active and file_refs:
-        cached_content = await _resolve_or_create_context_cache(
-            hash_key, checksums, file_refs,
-            model=model,
-            system_instruction=system_instruction,
-            context_cache_ttl=context_cache_ttl,
-            standby_ttl_seconds=standby_ttl_seconds,
-            tools=tools,
-            tool_config=tool_config,
-        )
+        # ctx_cache_active(중간 변수)가 not-None 을 보장하나 pyright 는 추적 못 함 → 명시.
+        # 불변식이 깨지면 None 이 조용히 흘러가는 대신 즉시 터진다 (FAIL-LOUD).
+        assert context_cache_ttl is not None
+        # too-small 선제 게이트 (§4.4.1) — 추정 합계가 최소치 미만이면 create 시도 자체를
+        # skip (doomed 400 + 왕복 회피). 추정 불가(None)면 통과 → create 시도(fail-soft backstop).
+        est_tokens = _estimate_cache_tokens(files_api_pool, system_instruction)
+        if est_tokens is not None and est_tokens < _CACHE_MIN_TOKENS:
+            logger.info(
+                "[route] mode=context_cache source=skipped reason=below_min_token_estimate "
+                "est=%d hash_key=%s", est_tokens, hash_key[:16],
+            )
+        else:
+            cached_content = await _resolve_or_create_context_cache(
+                hash_key, checksums, file_refs,
+                model=model,
+                system_instruction=system_instruction,
+                context_cache_ttl=context_cache_ttl,
+                standby_ttl_seconds=standby_ttl_seconds,
+                tools=tools,
+                tool_config=tool_config,
+            )
 
     return uri_parts, cached_content, hash_key
 

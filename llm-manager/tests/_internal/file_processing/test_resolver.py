@@ -34,6 +34,7 @@ def _file(
     mime_type: str = "application/pdf",
     file_size: int = 1024,
     extension: str = "pdf",
+    page_count: int | None = None,
 ) -> FileInput:
     """data 는 메모리 부담 줄이려고 항상 1KB 이하 placeholder 사용."""
     return FileInput(
@@ -43,7 +44,66 @@ def _file(
         mime_type=mime_type,
         extension=extension,
         data=b"x",
+        page_count=page_count,
     )
+
+
+class TestEstimateCacheTokens:
+    """_estimate_cache_tokens — 모달리티별 합산 토큰 어림 (§4.4.1).
+
+    PDF=258×페이지, 텍스트=file_size//3, system=len(system)//3.
+    스코프 외(이미지/오디오 등)·PDF page_count 미상 → None (= skip 안 함).
+    """
+
+    def test_pdf_uses_258_per_page(self):
+        pdf = _file(mime_type="application/pdf", page_count=2)
+        assert resolver._estimate_cache_tokens([pdf], None) == 516
+
+    def test_text_uses_file_size_over_3(self):
+        txt = _file(file_name="a.txt", mime_type="text/plain", file_size=900, extension="txt")
+        assert resolver._estimate_cache_tokens([txt], None) == 300
+
+    def test_system_instruction_added(self):
+        pdf = _file(mime_type="application/pdf", page_count=2)  # 516
+        # system 600자 → 600 // 3 = 200
+        assert resolver._estimate_cache_tokens([pdf], "x" * 600) == 716
+
+    def test_out_of_scope_modality_returns_none(self):
+        img = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        assert resolver._estimate_cache_tokens([img], None) is None
+
+    def test_pdf_without_page_count_returns_none(self):
+        pdf = _file(mime_type="application/pdf", page_count=None)
+        assert resolver._estimate_cache_tokens([pdf], None) is None
+
+    def test_sums_multiple_files(self):
+        """여러 파일 합산 — 2장 PDF 2개 = 258×2×2 = 1032 (루프 누적 가드)."""
+        pdf_a = _file(mime_type="application/pdf", page_count=2)
+        pdf_b = _file(mime_type="application/pdf", page_count=2)
+        assert resolver._estimate_cache_tokens([pdf_a, pdf_b], None) == 1032
+
+    def test_any_out_of_scope_returns_none(self):
+        """유효 PDF가 섞여 있어도 스코프 외(이미지) 하나면 전체 None (조기 return 가드)."""
+        pdf = _file(mime_type="application/pdf", page_count=2)
+        img = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        assert resolver._estimate_cache_tokens([pdf, img], None) is None
+
+
+class TestCountPdfPages:
+    """_count_pdf_pages — PDF 바이트에서 페이지 수 (fitz). 깨진 입력은 None."""
+
+    def test_counts_real_pdf_pages(self):
+        import fitz
+
+        doc = fitz.open()
+        for _ in range(3):
+            doc.new_page()
+        data = doc.tobytes()
+        doc.close()
+        assert resolver._count_pdf_pages(data) == 3
+
+    def test_invalid_bytes_returns_none(self):
+        assert resolver._count_pdf_pages(b"not a pdf at all") is None
 
 
 # ── classify_files ────────────────────────────────────────────
@@ -236,6 +296,178 @@ class TestResolveFiles:
         assert upload_count == 1
 
 
+class TestTooSmallGate:
+    """too-small 선제 게이트 (§4.4.1) — create 시도 전 모달리티 토큰 어림.
+
+    page_count 기준 추정이 _CACHE_MIN_TOKENS 미만이면 create_context_cache 를
+    호출하지 않고 Files API URI 로 폴백한다. 추정 ≥ 최소치면 기존 경로(create 시도).
+    """
+
+    @staticmethod
+    def _patch_upload_and_cache(monkeypatch):
+        """upload_file 모킹 + create_context_cache 호출 여부 추적기 반환."""
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        calls = {"create": 0}
+
+        async def fake_create_cache(
+            file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None,
+        ):
+            calls["create"] += 1
+            return CacheRef(name="cachedContents/x", model=model)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+        return calls
+
+    async def test_small_pdf_skips_cache_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """2장 PDF → 258×2=516 < 1024 → create 미호출, URI 폴백."""
+        fi = _file(file_name="small.pdf", file_size=1 * 1024 * 1024, page_count=2)
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 0  # create 시도 자체를 안 함
+        assert result.cached_content is None  # 캐시 없음
+        assert result.context_cache_id is None
+        assert len(result.uri_parts) == 1  # 그래도 Files API URI 로 전송
+
+    async def test_large_pdf_attempts_cache_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """5장 PDF → 258×5=1290 ≥ 1024 → 기존 경로(create 시도)."""
+        fi = _file(file_name="big.pdf", file_size=1 * 1024 * 1024, page_count=5)
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 1
+        assert result.cached_content == "cachedContents/x"
+
+    async def test_unknown_page_count_attempts_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """page_count 미상(None) → 추정 불가 → 게이트 통과(create 시도, fail-soft 가 backstop)."""
+        fi = _file(file_name="unknown.pdf", file_size=1 * 1024 * 1024, page_count=None)
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 1
+        assert result.cached_content == "cachedContents/x"
+
+    async def test_real_pdf_stash_then_gate_skips(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """E2E: 실제 2장 PDF → 업로드가 page_count stash → 게이트가 추정(258×2=516<1024)으로 create skip.
+
+        preset 없이 '업로드 stash → 게이트' 사슬 전체를 검증 (단위 테스트의 인위적 preset 보완).
+        """
+        import fitz
+
+        doc = fitz.open()
+        for _ in range(2):
+            doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        # page_count 은 preset 하지 않음 — 업로드 경로가 계산해 stash 해야 한다
+        fi = _file(
+            file_name="real.pdf", mime_type="application/pdf", file_size=len(pdf_bytes)
+        )
+        fi.data = pdf_bytes
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert fi.page_count == 2          # 업로드가 stash 했는지
+        assert calls["create"] == 0        # 게이트가 그 값으로 skip
+        assert result.cached_content is None
+        assert len(result.uri_parts) == 1
+
+    async def test_gate_passes_then_failsoft_absorbs_too_small(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """추정 ≥ 1024 로 게이트 통과 → 그러나 실제 create 가 too-small 400 → fail-soft(§6.2)가 흡수.
+
+        게이트는 과대평가라 '통과시켰지만 실제론 미달'이 가능 → fail-soft 가 backstop 임을 e2e 로 확인.
+        """
+        from llm_manager._internal.handler_client.exceptions import HandlerError
+
+        fi = _file(file_name="big.pdf", file_size=1 * 1024 * 1024, page_count=5)  # 1290 ≥ 1024 → 통과
+
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        created = {"called": False}
+
+        async def fake_create_cache(
+            file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None,
+        ):
+            created["called"] = True
+            raise HandlerError(
+                "Gemini 캐시 생성 에러: 400 INVALID_ARGUMENT. Cached content is too small. "
+                "total_token_count=561, min_total_token_count=1024",
+                status_code=400, error_type="provider",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert created["called"] is True      # 게이트 통과 → create 시도함
+        assert result.cached_content is None   # fail-soft 가 흡수 (예외 전파 안 됨)
+        assert len(result.uri_parts) == 1      # URI 폴백
+
+    async def test_image_out_of_scope_attempts_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """이미지(스코프 외) → 추정 None → 게이트 무영향(통과) → create 시도."""
+        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 1
+        assert result.cached_content == "cachedContents/x"
+
+
 # ── #2 Phase 1 — Files API 경로 fi.data 회수 ──────────────────
 
 
@@ -280,6 +512,46 @@ class TestFilesApiBytesRelease:
 
         assert fi.data == b""
         assert len(uri_parts) == 1
+
+    async def test_upload_stashes_pdf_page_count(self, fake_redis, monkeypatch):
+        """PDF 업로드 시 fi.page_count 가 실제 페이지 수로 채워진다 (게이트용, §4.4.1)."""
+        import fitz
+
+        from llm_manager._internal.file_processing import cache_store
+
+        doc = fitz.open()
+        for _ in range(2):
+            doc.new_page()
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        fi = _file(
+            file_name="p.pdf", mime_type="application/pdf", file_size=len(pdf_bytes)
+        )
+        fi.data = pdf_bytes
+
+        async def fake_upload(path, mime_type):
+            return FileRef(
+                name="files/x", uri="https://example.com/x",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        await _upload_and_cache_file(fi, "checksum-pages", [], [])
+
+        assert fi.page_count == 2
+        # Redis 에도 저장돼야 HIT/병렬 재호출에서 복원 가능
+        saved = cache_store.find_files_api("checksum-pages")
+        assert saved is not None and saved.get("page_count") == 2
+
+    def test_reuse_restores_page_count_from_redis(self):
+        """HIT 재사용 시 Redis 의 page_count 를 fi 에 복원 (병렬/재호출 게이트용)."""
+        fi = _file(file_name="c.pdf", file_size=1024)
+        existing = {"uris": ["https://example.com/c"], "page_count": 2}
+        _reuse_files_api_uris(fi, existing, [], [])
+        assert fi.page_count == 2
 
     # NOTE: test_upload_with_empty_data_raises (Phase 1 가드) — Phase 3 에서 삭제.
     # Phase 3 의 lazy fetch 가 fi.data 비어있을 때 fetch_with_fallback 으로 채움 → raise 안 함.
