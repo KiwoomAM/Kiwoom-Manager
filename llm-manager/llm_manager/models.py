@@ -42,6 +42,8 @@ class FileInput(BaseModel):
     `data` 는 진입 시 빈 bytes(`b""`) 로 두고, 실제 내용은 resolver 에서 lazy fetch.
     `file_path`: stored_files 의 ref.file_path (stale 시 check_cache 로 갱신).
     `resolved_via`: "primary"(1차 fetch) | "fallback"(check_cache 경유).
+    `page_count`: PDF 페이지 수 — 업로드 시(bytes 보유 시점) 계산해 stash. context cache
+        too-small 선제 게이트(§4.4.1)의 토큰 어림에 사용. PDF 외/미상이면 None.
     """
 
     file_name: str
@@ -52,6 +54,7 @@ class FileInput(BaseModel):
     data: Base64Field = b""
     file_path: str | None = None
     resolved_via: str | None = None
+    page_count: int | None = None
 
 
 class FileKeyingMeta(BaseModel):
