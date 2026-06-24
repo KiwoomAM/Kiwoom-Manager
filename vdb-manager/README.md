@@ -129,8 +129,11 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `rerank(query, documents, top_k, text_key)` | `List[Dict]` | ColBERT v2 리랭킹 |
-| `is_ready` (property) | `bool` | 모델 준비 상태 |
+| `rerank(query, documents, top_k, text_key, method, model, max_docs, timeout, max_doc_length)` | `List[Dict]` | 문서 리랭킹 (`method`: `"colbert"` 서버 위임 \| `"gemini"` LLM) |
+| `is_ready` (property) | `bool` | ColBERT 모델 준비 상태 (gemini는 미반영) |
+
+- **`method="colbert"`** (기본): VDB Handler의 `/v1/search/rerank`에 위임. ColBERT v2 추론은 서버측.
+- **`method="gemini"`**: `llm_manager`를 통한 Gemini LLM 리랭킹. `llm_manager`는 **선택적 의존성**이라 이 경로 호출 시점에 lazy import한다(미설치 시 `ImportError`). 타임아웃·실패 시 원본 상위 `top_k` 반환. `model`/`max_docs`/`timeout`/`max_doc_length`는 gemini 전용 (colbert에서는 무시).
 
 #### 바로가기 메서드
 
