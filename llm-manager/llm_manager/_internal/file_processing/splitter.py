@@ -13,6 +13,7 @@ docs/25.pdf-split-shared-pool-and-unsplittable-reject.md 참고.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 
@@ -187,15 +188,53 @@ def _merge_adjacent(result: list[str], created_temps: list[str]) -> list[str]:
     return merged
 
 
-def split_pdf(path: str, target_mb: int = 50) -> list[str]:
-    """PDF를 target_mb 이하 파트로 분할한다.
+def _cap_pages(
+    parts: list[str],
+    src_path: str,
+    max_pages: int,
+    limit_bytes: int,
+    created_temps: list[str],
+) -> list[str]:
+    """각 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡.
 
-    페이지별 바이트 기여도를 추정해 그룹핑하고, 저장 후 실제 크기가 한도를 넘는
-    그룹은 페이지를 이등분해 재귀적으로 더 쪼갠다.
+    각 등분은 _split_group으로 저장해 크기(limit_bytes)도 함께 보장한다(공유 풀 복제로
+    페이지 파트가 50MB를 넘으면 크기로 더 쪼갬). src_path(원본)는 호출자 소유라
+    unlink 하지 않는다.
+    """
+    out: list[str] = []
+    for p in parts:
+        d = fitz.open(p)
+        try:
+            n = d.page_count
+        finally:
+            d.close()
+        if n <= max_pages:
+            out.append(p)
+            continue
+        k = math.ceil(n / max_pages)
+        for j in range(k):
+            group = list(range(j * n // k, (j + 1) * n // k))
+            _split_group(p, group, limit_bytes, created_temps, out)
+        if p != src_path:  # 페이지 분할로 대체된 임시 파트는 정리
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+            if p in created_temps:
+                created_temps.remove(p)
+    return out
+
+
+def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str]:
+    """PDF를 target_mb 이하 AND max_pages 이하 파트로 분할한다.
+
+    크기 분할(페이지별 바이트 기여도 추정 → 그룹핑 → 초과 시 이등분 재귀)을 먼저 하고,
+    결과 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡을 적용한다.
 
     Args:
         path: PDF 파일 경로.
         target_mb: 파트당 최대 크기 (MB). 기본 50.
+        max_pages: 파트당 최대 페이지 수. 기본 1000 (Gemini 한도).
 
     Returns:
         파트 파일 경로 리스트. 분할 불필요 시 [원본 경로] 반환.
@@ -206,33 +245,40 @@ def split_pdf(path: str, target_mb: int = 50) -> list[str]:
     """
     file_size = os.path.getsize(path)
     target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
+    limit_bytes = target_mb * 1024 * 1024
 
-    if file_size <= target_bytes:
-        return [path]
-
+    size_over = file_size > target_bytes
     doc = fitz.open(path)
     try:  # _estimate_page_sizes raise 시에도 doc.close 보장 (docs/16 §3.3)
-        page_sizes = _estimate_page_sizes(doc, file_size)
+        n_pages = doc.page_count
+        page_sizes = _estimate_page_sizes(doc, file_size) if size_over else None
     finally:
         doc.close()
 
-    groups = _group_pages(page_sizes, target_bytes, target_mb)
+    if not size_over and n_pages <= max_pages:
+        return [path]
 
-    limit_bytes = target_mb * 1024 * 1024
     created_temps: list[str] = []  # 만든 임시 파일 추적 — except 시 정리용 (docs/16 §3.3)
     result: list[str] = []
     try:
-        for group in groups:
-            _split_group(path, group, limit_bytes, created_temps, result)
-        return _merge_adjacent(result, created_temps)
+        if size_over:
+            groups = _group_pages(page_sizes, target_bytes, target_mb)
+            for group in groups:
+                _split_group(path, group, limit_bytes, created_temps, result)
+            result = _merge_adjacent(result, created_temps)
+        else:
+            result = [path]  # 크기 OK, 페이지만 초과 → 페이지 캡만
+        return _cap_pages(result, path, max_pages, limit_bytes, created_temps)
     except Exception:
-        # raise(예: PdfPageTooLargeError, save 실패) → 만든 임시 파일 모두 정리
+        # raise(예: PdfPageTooLargeError, save 실패) → 만든 임시 파일 모두 정리 (원본 제외)
         logger.exception(
             "split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)",
             len(created_temps),
             len(result),
         )
         for t in set(created_temps) | set(result):
+            if t == path:
+                continue  # 원본은 호출자 소유
             try:
                 os.unlink(t)
             except FileNotFoundError:

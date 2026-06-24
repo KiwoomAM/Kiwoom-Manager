@@ -23,7 +23,9 @@ _RETRY_DELAY = 5  # 초
 _RETRYABLE_KEYWORDS = ("500", "503", "429", "RESOURCE_EXHAUSTED")
 
 
-async def upload_pdf_parts(path: str, target_mb: int = 50) -> list[FileRef]:
+async def upload_pdf_parts(
+    path: str, target_mb: int = 50, max_pages: int = 1000
+) -> list[FileRef]:
     """PDF를 split 후 각 파트를 Files API에 업로드.
 
     split된 임시 파일은 업로드 완료/실패 후 삭제 보장.
@@ -31,11 +33,12 @@ async def upload_pdf_parts(path: str, target_mb: int = 50) -> list[FileRef]:
     Args:
         path: PDF 파일 경로.
         target_mb: 파트당 최대 크기 (MB).
+        max_pages: 파트당 최대 페이지 수 (Gemini 한도).
 
     Returns:
         업로드된 FileRef 리스트.
     """
-    parts = split_pdf(path, target_mb)
+    parts = split_pdf(path, target_mb, max_pages)
 
     # 원본 그대로 반환된 경우 (분할 불필요)
     if len(parts) == 1 and parts[0] == path:
