@@ -131,10 +131,17 @@ class VDBManager:
         documents: List[Dict[str, Any]],
         top_k: int = 10,
         text_key: str = "text",
+        method: str = "colbert",
+        **gemini_kwargs: Any,
     ) -> List[Dict[str, Any]]:
-        """ColBERT v2 기반 문서 리랭킹"""
+        """문서 리랭킹 (method: "colbert" 서버 위임 | "gemini" LLM 리랭킹)"""
         return self.reranker.rerank(
-            query=query, documents=documents, top_k=top_k, text_key=text_key
+            query=query,
+            documents=documents,
+            top_k=top_k,
+            text_key=text_key,
+            method=method,
+            **gemini_kwargs,
         )
 
     # ------------------------------------------------------------------
