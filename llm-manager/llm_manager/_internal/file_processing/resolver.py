@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from file_manager import FileManagerHandler
 
 from llm_manager._internal.file_processing import cache_store, dedup
+from llm_manager._internal.file_processing.splitter import split_pdf
 from llm_manager._internal.file_processing.uploader import create_context_cache, upload_pdf_parts
 from llm_manager._internal.gemini_errors import is_cache_too_small
 from llm_manager._internal.handler_client.aio import upload_file
@@ -53,15 +54,16 @@ _PDF_TOKENS_PER_PAGE = 258  # Gemini 문서: PDF 페이지당 258 토큰 (flat)
 
 
 def _inline_total_limit(pool: list[FileInput]) -> int:
-    """inline 후보 합계 한도 — image/audio 포함 여부에 따라 결정.
+    """inline 후보 합계 한도 — image/audio/video 포함 여부에 따라 결정.
 
-    image 또는 audio가 하나라도 inline 후보에 있으면 엄격한 20MB,
-    PDF/텍스트만 있으면 완화된 50MB.
+    image·audio·video 중 하나라도 inline 후보에 있으면 엄격한 20MB
+    (Gemini 인라인 미디어는 요청 총 20MB 권장 — 비디오 포함),
+    PDF/텍스트만이면 완화된 50MB.
     """
-    has_image_or_audio = any(
-        fi.mime_type.startswith(("image/", "audio/")) for fi in pool
+    has_media = any(
+        fi.mime_type.startswith(("image/", "audio/", "video/")) for fi in pool
     )
-    return _INLINE_LIMIT_WITH_IMAGE_AUDIO if has_image_or_audio else _INLINE_LIMIT_PDF_OR_TEXT_ONLY
+    return _INLINE_LIMIT_WITH_IMAGE_AUDIO if has_media else _INLINE_LIMIT_PDF_OR_TEXT_ONLY
 
 
 # ── 비파일 부분 byte 추정 (§4.1 Step 2) ──────────────────────
@@ -93,32 +95,19 @@ def classify_files(
 ) -> tuple[list[FileInput], list[FileInput]]:
     """FileInput 리스트를 inline_pool / files_api_pool로 분류 (부분 섞기).
 
-    Step 1: 비디오만 선제 분리 (Gemini inline 자체 불가).
-            나머지 개별 한도(PDF 50MB, image/audio/text 20MB)는 Step 2의
-            합계 체크에 녹아들어 별도 체크 안 함. PDF 50MB 초과는
-            이후 Files API 업로드 단계에서 splitter가 처리.
-
-    Step 2: 합계 체크 — 파일 size + _estimate_non_file_bytes(llm_input).
-            모달리티 인지 한도 — image/audio 포함 시 20MB / PDF·텍스트만
-            50MB.
-
-    Step 3: 작은 것부터 정렬 + 한 번 순회 (재평가 없음 — Q2 보수).
-            큰 파일을 Files API로 보내 Redis HIT 이점 극대화.
+    모든 파일이 inline 후보다. 합계 한도(모달리티 인지 — 미디어 있으면 20MB,
+    PDF/텍스트만 50MB)를 작은 것부터 채우고, 넘치는 파일은 files_api_pool로 민다.
+    20MB 초과 비디오·대형 PDF는 자연히 합계를 초과해 files_api로 밀리므로 별도
+    선분리가 필요 없다. PDF 50MB 초과 분할은 이후 Files API 업로드 단계에서
+    splitter가 처리.
     """
-    inline_pool: list[FileInput] = []
+    inline_pool: list[FileInput] = list(files)
     files_api_pool: list[FileInput] = []
 
-    # Step 1: 비디오만 강제 분리
-    for fi in files:
-        if fi.mime_type.startswith("video/"):
-            files_api_pool.append(fi)
-        else:
-            inline_pool.append(fi)
-
-    # Step 2: 합계 한도 결정 (모달리티 인지)
+    # 합계 한도 결정 (모달리티 인지 — video 포함)
     limit = _inline_total_limit(inline_pool)
 
-    # Step 3: 작은 것부터 정렬 + 한 번 순회 (재평가 없음)
+    # 작은 것부터 정렬 + 한 번 순회 (재평가 없음)
     inline_pool.sort(key=lambda fi: fi.file_size)
     total = _estimate_non_file_bytes(llm_input)
     kept: list[FileInput] = []
@@ -173,6 +162,81 @@ def _count_pdf_pages(data: bytes) -> int | None:
         return None
 
 
+def _split_pdf_bytes(data: bytes, *, max_pages: int = 1000) -> list[bytes]:
+    """PDF bytes를 ≤50MB AND ≤max_pages 파트 bytes로 분할 (tempfile 경유).
+
+    인라인 경로에서 >1000p PDF를 메모리상으로 쪼갤 때 사용. path 기반 split_pdf를
+    재사용하므로 임시 파일에 쓰고 결과 파트를 다시 bytes로 읽는다.
+    """
+    src = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    try:
+        src.write(data)
+        src.close()
+        part_paths = split_pdf(src.name, max_pages=max_pages)
+        blobs: list[bytes] = []
+        try:
+            for p in part_paths:
+                with open(p, "rb") as f:
+                    blobs.append(f.read())
+        finally:
+            for p in part_paths:
+                if p != src.name:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+        return blobs
+    finally:
+        try:
+            os.unlink(src.name)
+        except OSError:
+            pass
+
+
+async def _expand_pdfs_over_page_limit(pool: list[FileInput]) -> list[FileInput]:
+    """inline 후보 중 >1000p PDF를 ≤1000p part FileInput들로 치환 (메모리 분할, docs/28 §5.4).
+
+    bytes를 미리 확보하므로 이후 처리에서 재fetch하지 않는다. 비-PDF·≤1000p·측정불가
+    PDF는 그대로 둔다. 반환 리스트는 classify_files로 재분류돼 inline/files_api 폴백된다.
+    """
+    fm = FileManagerHandler()
+    out: list[FileInput] = []
+    for fi in pool:
+        if fi.mime_type != "application/pdf":
+            out.append(fi)
+            continue
+        if not fi.data:
+            fi.data = await fetch_with_fallback(fm, fi)
+            if fi.resolved_via is None:
+                fi.resolved_via = "primary"  # fetch 검증 완료
+        pages = _count_pdf_pages(fi.data)
+        if pages is None or pages <= 1000:
+            fi.page_count = pages
+            out.append(fi)
+            continue
+        n_parts = 0
+        for idx, blob in enumerate(_split_pdf_bytes(fi.data), start=1):
+            n_parts = idx
+            out.append(
+                FileInput(
+                    file_name=f"{fi.file_name}#part{idx}",
+                    file_size=len(blob),
+                    file_mtime=fi.file_mtime,
+                    mime_type="application/pdf",
+                    extension="pdf",
+                    data=blob,
+                    file_path=fi.file_path,
+                    resolved_via=fi.resolved_via,
+                    page_count=_count_pdf_pages(blob),
+                )
+            )
+        logger.info(
+            "[route] file=%s inline PDF %dp → %d parts (page-split)",
+            fi.file_name, pages, n_parts,
+        )
+    return out
+
+
 def _reuse_files_api_uris(
     fi: FileInput,
     existing: dict,
@@ -221,7 +285,9 @@ async def _upload_and_cache_file(
         tmp.write(fi.data)
         tmp.close()
         try:
-            if fi.mime_type == "application/pdf" and fi.file_size > _PDF_SPLIT_LIMIT:
+            if fi.mime_type == "application/pdf" and (
+                fi.file_size > _PDF_SPLIT_LIMIT or (fi.page_count or 0) > 1000
+            ):
                 refs = await upload_pdf_parts(tmp.name)
             else:
                 refs = [await upload_file(tmp.name, mime_type=fi.mime_type)]
@@ -704,6 +770,12 @@ async def resolve_files(
         )
         files_api_pool = inline_pool
         inline_pool = []
+
+    # Step 2.5: 인라인 PDF 페이지 전개 (>1000p → 메모리 분할) + 재분류 폴백 (docs/28 §5.4)
+    if inline_pool:
+        expanded = await _expand_pdfs_over_page_limit(inline_pool)
+        inline_pool, spilled = classify_files(expanded, llm_input)
+        files_api_pool = spilled + files_api_pool
 
     # Step 3: 두 풀 병렬 처리
     checksums = [make_file_checksum(fi) for fi in files_api_pool]
