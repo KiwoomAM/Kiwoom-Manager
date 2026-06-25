@@ -110,15 +110,33 @@ class TestCountPdfPages:
 
 
 class TestClassifyFiles:
-    def test_video_forced_to_files_api(self):
-        """비디오는 inline 불가 — 항상 files_api로."""
-        video = _file(file_name="v.mp4", mime_type="video/mp4", file_size=1_000_000)
+    def test_small_video_goes_inline(self):
+        """20MB 미만 비디오는 인라인 (Gemini 인라인 비디오 지원)."""
+        video = _file(file_name="v.mp4", mime_type="video/mp4",
+                      file_size=1_000_000, extension="mp4")
         image = _file(file_name="i.png", mime_type="image/png", file_size=1_000_000)
-
         inline, files_api = classify_files([video, image], llm_input={})
-
-        assert video in files_api
+        assert video in inline
         assert image in inline
+        assert files_api == []
+
+    def test_large_video_goes_files_api(self):
+        """20MB 초과 비디오는 합계 한도 초과로 files_api."""
+        video = _file(file_name="big.mp4", mime_type="video/mp4",
+                      file_size=25 * 1024 * 1024, extension="mp4")
+        inline, files_api = classify_files([video], llm_input={})
+        assert video in files_api
+        assert inline == []
+
+    def test_pdf_with_small_video_routes_video_inline(self):
+        """혼합(§4.3): 소형 비디오가 끼면 한도 20MB → 비디오 inline, 큰 PDF files_api."""
+        pdf = _file(file_name="d.pdf", mime_type="application/pdf",
+                    file_size=45 * 1024 * 1024)
+        video = _file(file_name="v.mp4", mime_type="video/mp4",
+                      file_size=10 * 1024 * 1024, extension="mp4")
+        inline, files_api = classify_files([pdf, video], llm_input={})
+        assert video in inline
+        assert pdf in files_api
 
     def test_image_audio_present_uses_20mb_limit(self):
         """image/audio 가 있으면 inline 합계 한도 20MB로 엄격."""
@@ -896,9 +914,9 @@ class TestContextCacheIdGating:
     캐시 미생성(too-small fail-soft / ttl 미지정)이면 None — 삭제할 캐시 없음."""
 
     def _video(self):
-        # 비디오는 크기 무관 항상 files_api 경로 (split 도 안 탐) — 게이팅 검증용
+        # 20MB 초과 비디오 → 합계 한도 초과로 files_api 경로 (split 도 안 탐) — 게이팅 검증용
         return _file(file_name="clip.mp4", mime_type="video/mp4",
-                     file_size=5 * 1024 * 1024, extension="mp4")
+                     file_size=25 * 1024 * 1024, extension="mp4")
 
     def _ok_upload(self, monkeypatch):
         async def fake_upload(path, mime_type):
@@ -946,3 +964,178 @@ class TestContextCacheIdGating:
         assert result.cached_content is None
         assert result.context_cache_id is None
         assert len(result.uri_parts) == 1
+
+
+def _pdf_bytes(n_pages: int) -> bytes:
+    import fitz
+    doc = fitz.open()
+    for _ in range(n_pages):
+        doc.new_page()
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+class TestFilesApiSplitGate:
+    """_upload_and_cache_file: >1000p PDF는 upload_pdf_parts(분할)로 라우팅 (변경 C §5.3)."""
+
+    async def test_over_1000_pages_routes_to_split(self, fake_redis, monkeypatch):
+        """≤50MB지만 1500p → 단건 upload 아니라 upload_pdf_parts(분할)."""
+        fi = _file(mime_type="application/pdf", file_size=1 * 1024 * 1024, page_count=1500)
+
+        split_called = {"n": 0}
+        single_called = {"n": 0}
+
+        async def fake_parts(path, *a, **k):
+            split_called["n"] += 1
+            return [FileRef(name="files/p", uri="https://example.com/p",
+                            mime_type="application/pdf", state="ACTIVE")]
+
+        async def fake_single(path, mime_type):
+            single_called["n"] += 1
+            return FileRef(name="files/s", uri="https://example.com/s",
+                           mime_type=mime_type, state="ACTIVE")
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts", fake_parts)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_single)
+
+        await _upload_and_cache_file(fi, "cs-pages", [], [])
+        assert split_called["n"] == 1
+        assert single_called["n"] == 0
+
+
+class TestExpandPdfsOverPageLimit:
+    """_expand_pdfs_over_page_limit — >1000p PDF를 ≤1000p part FileInput들로 치환 (§5.4)."""
+
+    async def test_over_limit_splits(self):
+        data = _pdf_bytes(1100)
+        fi = _file(mime_type="application/pdf", file_size=len(data))
+        fi.data = data
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert len(out) == 2
+        assert all(o.mime_type == "application/pdf" for o in out)
+        assert all(o.page_count is not None and o.page_count <= 1000 for o in out)
+        assert sum(o.page_count for o in out) == 1100
+        assert all(o.data for o in out)
+
+    async def test_under_limit_unchanged(self):
+        data = _pdf_bytes(3)
+        fi = _file(mime_type="application/pdf", file_size=len(data))
+        fi.data = data
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert out == [fi]
+        assert fi.page_count == 3
+
+    async def test_non_pdf_unchanged(self):
+        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert out == [fi]
+
+    async def test_corrupt_pdf_unchanged(self):
+        fi = _file(mime_type="application/pdf", file_size=10)
+        fi.data = b"not a pdf"
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert out == [fi]  # _count_pdf_pages None → 분할 안 함 (fail-soft)
+
+    async def test_uses_existing_page_count_no_reparse(self, monkeypatch):
+        """page_count 이미 있으면 _count_pdf_pages 재호출 안 함 (리뷰 ②)."""
+        fi = _file(mime_type="application/pdf", file_size=1000, page_count=3)
+        fi.data = b"x"
+        calls = {"n": 0}
+
+        def fake_count(data):
+            calls["n"] += 1
+            return 3
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver._count_pdf_pages", fake_count)
+
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert calls["n"] == 0  # 이미 stash된 page_count(3) 사용 → 파싱 skip
+        assert out == [fi]
+
+
+class TestInlinePageSplitIntegration:
+    """resolve_files: 인라인 >1000p PDF 전개 + Files API 폴백 (§5.4)."""
+
+    async def test_inline_pdf_over_1000p_expands_inline(self, fake_redis):
+        """1100p 소형 PDF → 전개된 2파트가 모두 인라인."""
+        data = _pdf_bytes(1100)
+        fi = _file(mime_type="application/pdf", file_size=len(data))
+        fi.data = data
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=None, standby_ttl_seconds=10,
+        )
+        assert len(result.inline_parts) == 2
+        assert result.uri_parts == []
+
+    async def test_overflow_parts_spill_to_files_api(self, fake_redis, fast_backoff, monkeypatch):
+        """전개 파트 합계가 인라인 한도 초과 → 재분류가 files_api로 폴백."""
+        big_a = _file(file_name="d.pdf#part1", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+        big_b = _file(file_name="d.pdf#part2", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+
+        async def fake_expand(pool):
+            return [big_a, big_b]
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver._expand_pdfs_over_page_limit",
+            fake_expand)
+
+        async def fake_upload(path, mime_type):
+            return FileRef(name="files/x", uri="https://example.com/x",
+                           mime_type=mime_type, state="ACTIVE")
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload)
+
+        seed = _file(file_name="d.pdf", mime_type="application/pdf", file_size=1 * 1024 * 1024)
+        result = await resolve_files(
+            [seed], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=None, standby_ttl_seconds=10,
+        )
+        # 40+40=80MB > 50MB 한도 → 하나 inline, 하나 files_api 폴백
+        assert len(result.inline_parts) == 1
+        assert len(result.uri_parts) == 1
+
+
+class Test404RecoveryExpansion:
+    """404 복구가 Step 2.5 전개를 재현해 spilled part checksum까지 무효화 (리뷰 ①)."""
+
+    async def test_recovery_invalidates_spilled_part_checksum(self, monkeypatch):
+        from llm_manager._internal.keying import make_file_checksum
+
+        big_a = _file(file_name="d.pdf#part1", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+        big_b = _file(file_name="d.pdf#part2", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+
+        async def fake_expand(pool):
+            return [big_a, big_b]
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver._expand_pdfs_over_page_limit",
+            fake_expand)
+
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.cache_store.delete_files_api",
+            lambda cs: deleted.append(cs))
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.cache_store.delete_context_cache",
+            lambda hk: None)
+
+        # 재호출되는 resolve_files는 무력화 — 이 테스트는 '무효화 대상 checksum'만 검증
+        async def fake_resolve(*a, **k):
+            return ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.resolve_files", fake_resolve)
+
+        seed = _file(file_name="d.pdf", mime_type="application/pdf", file_size=1 * 1024 * 1024)
+        await resolver.resolve_files_after_404(
+            [seed], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=None, standby_ttl_seconds=10,
+        )
+
+        # spilled part(big_b)의 files_api checksum이 무효화 목록에 있어야 함
+        assert make_file_checksum(big_b) in deleted

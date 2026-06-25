@@ -78,6 +78,17 @@ class TestValidateMimeTypes:
             validate_mime_types(files)
         assert "bad.exe" in str(exc.value)
 
+    def test_new_video_types_supported(self):
+        """공식 누락분(mpg, wmv) + 실탐지 보강(x-ms-wmv) 화이트리스트 포함·통과."""
+        for mt in ("video/mpg", "video/wmv", "video/x-ms-wmv"):
+            assert mt in SUPPORTED_MIME_TYPES
+        files = [
+            _file(file_name="a.mpg", mime_type="video/mpg", extension="mpg"),
+            _file(file_name="b.wmv", mime_type="video/wmv", extension="wmv"),
+            _file(file_name="c.wmv", mime_type="video/x-ms-wmv", extension="wmv"),
+        ]
+        validate_mime_types(files)  # 예외 없음
+
 
 # ── validate_file_sizes ───────────────────────────────────────
 

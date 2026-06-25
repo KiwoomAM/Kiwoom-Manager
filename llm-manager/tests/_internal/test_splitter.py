@@ -255,3 +255,55 @@ class TestSplitPdfLeakPrevention:
         for part_path in result:
             if part_path != pdf_path:
                 os.unlink(part_path)
+
+
+# ── 변경 C — 페이지 캡 (max_pages) ──────────────────────────────
+
+
+def _part_pages(result: list[str]) -> list[int]:
+    counts = []
+    for p in result:
+        doc = fitz.open(p)
+        counts.append(len(doc))
+        doc.close()
+    return counts
+
+
+def _cleanup(result: list[str], original: str) -> None:
+    for p in result:
+        if p != original:
+            os.unlink(p)
+
+
+class TestPageCap:
+    """split_pdf max_pages — 초과 시 ceil(pages/max_pages) 등분 (변경 C §5.2).
+
+    실 한도는 1000p지만 거대 PDF 생성을 피하려고 max_pages를 작게 줘 등분 로직을 본다.
+    """
+
+    def test_at_max_pages_no_split(self, tmp_path):
+        """정확히 max_pages면 분할 안 함."""
+        pdf_path = _create_pdf(str(tmp_path / "p.pdf"), num_pages=10)
+        assert split_pdf(pdf_path, max_pages=10) == [pdf_path]
+
+    def test_page_cap_splits_when_over_max(self, tmp_path):
+        """25p, max_pages=10 → ceil(25/10)=3 파트, 각 ≤10p, 합계 25p."""
+        pdf_path = _create_pdf(str(tmp_path / "p.pdf"), num_pages=25)
+        result = split_pdf(pdf_path, max_pages=10)
+        try:
+            assert len(result) == 3
+            assert all(p != pdf_path for p in result)
+            counts = _part_pages(result)
+            assert all(c <= 10 for c in counts)
+            assert sum(counts) == 25
+        finally:
+            _cleanup(result, pdf_path)
+
+    def test_page_cap_equal_division(self, tmp_path):
+        """20p, max_pages=10 → 2 파트 각 10p."""
+        pdf_path = _create_pdf(str(tmp_path / "p.pdf"), num_pages=20)
+        result = split_pdf(pdf_path, max_pages=10)
+        try:
+            assert sorted(_part_pages(result)) == [10, 10]
+        finally:
+            _cleanup(result, pdf_path)
