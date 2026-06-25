@@ -209,9 +209,9 @@ async def _expand_pdfs_over_page_limit(pool: list[FileInput]) -> list[FileInput]
             fi.data = await fetch_with_fallback(fm, fi)
             if fi.resolved_via is None:
                 fi.resolved_via = "primary"  # fetch 검증 완료
-        pages = _count_pdf_pages(fi.data)
+        pages = fi.page_count if fi.page_count is not None else _count_pdf_pages(fi.data)
+        fi.page_count = pages  # stash → 재호출(404 복구 등) 시 재파싱 방지 (리뷰 ②)
         if pages is None or pages <= 1000:
-            fi.page_count = pages
             out.append(fi)
             continue
         n_parts = 0
@@ -651,6 +651,43 @@ async def _process_files_api(
     return uri_parts, cached_content, hash_key
 
 
+# ── 풀 분류 (classify + 승급 + 전개) — resolve_files / 404 복구 공유 ──
+
+
+async def _resolve_pools(
+    files: list[FileInput],
+    llm_input: dict,
+    *,
+    context_cache_ttl: int | None,
+) -> tuple[list[FileInput], list[FileInput]]:
+    """classify + 승급 + 인라인 PDF 페이지 전개 + 재분류 → (inline_pool, files_api_pool).
+
+    resolve_files와 resolve_files_after_404가 공유한다. 404 복구가 동일한
+    files_api_pool(Step 2.5 전개로 생긴 part 포함)을 봐야 무효화 대상 checksum이
+    일치한다 — 안 그러면 spilled part의 stale URI가 무효화되지 않아 "1회 복구"가
+    실패한다 (docs/27 §404 복구, docs/28 §5.4).
+    """
+    # Step 1: 분류
+    inline_pool, files_api_pool = classify_files(files, llm_input)
+
+    # Step 2: context_cache_ttl 승급 정책 (§4.4)
+    if context_cache_ttl is not None and not files_api_pool and inline_pool:
+        logger.warning(
+            "context_cache_ttl=%d 지정 — 모든 파일 Files API 경로로 승급",
+            context_cache_ttl,
+        )
+        files_api_pool = inline_pool
+        inline_pool = []
+
+    # Step 2.5: 인라인 PDF 페이지 전개 (>1000p → 메모리 분할) + 재분류 폴백 (docs/28 §5.4)
+    if inline_pool:
+        expanded = await _expand_pdfs_over_page_limit(inline_pool)
+        inline_pool, spilled = classify_files(expanded, llm_input)
+        files_api_pool = spilled + files_api_pool
+
+    return inline_pool, files_api_pool
+
+
 # ── Gemini 404 자동 복구 (§9) ─────────────────────────────────
 
 
@@ -676,10 +713,11 @@ async def resolve_files_after_404(
 
     상세: docs/07.inline-vs-files-api-strategy.md §9
     """
-    # 영향받는 checksums 계산 — resolve_files의 분류·승급 순서 재현
-    inline_pool, files_api_pool = classify_files(files, llm_input)
-    if context_cache_ttl is not None and not files_api_pool and inline_pool:
-        files_api_pool = inline_pool
+    # 영향받는 checksums 계산 — resolve_files와 동일 헬퍼로 전개(Step 2.5)까지 재현.
+    # 인라인 >1000p PDF가 part로 spill돼 캐시된 경우, 그 part checksum도 무효화 대상이다.
+    _, files_api_pool = await _resolve_pools(
+        files, llm_input, context_cache_ttl=context_cache_ttl,
+    )
     checksums = [make_file_checksum(fi) for fi in files_api_pool]
 
     logger.warning(
@@ -759,23 +797,10 @@ async def resolve_files(
 
     상세: docs/07.inline-vs-files-api-strategy.md §4, §5, §6
     """
-    # Step 1: 분류
-    inline_pool, files_api_pool = classify_files(files, llm_input)
-
-    # Step 2: context_cache_ttl 승급 정책
-    if context_cache_ttl is not None and not files_api_pool and inline_pool:
-        logger.warning(
-            "context_cache_ttl=%d 지정 — 모든 파일 Files API 경로로 승급",
-            context_cache_ttl,
-        )
-        files_api_pool = inline_pool
-        inline_pool = []
-
-    # Step 2.5: 인라인 PDF 페이지 전개 (>1000p → 메모리 분할) + 재분류 폴백 (docs/28 §5.4)
-    if inline_pool:
-        expanded = await _expand_pdfs_over_page_limit(inline_pool)
-        inline_pool, spilled = classify_files(expanded, llm_input)
-        files_api_pool = spilled + files_api_pool
+    # Step 1~2.5: 분류 + 승급 + 인라인 PDF 페이지 전개 (공유 헬퍼 — 404 복구와 동일 로직)
+    inline_pool, files_api_pool = await _resolve_pools(
+        files, llm_input, context_cache_ttl=context_cache_ttl,
+    )
 
     # Step 3: 두 풀 병렬 처리
     checksums = [make_file_checksum(fi) for fi in files_api_pool]

@@ -1039,6 +1039,22 @@ class TestExpandPdfsOverPageLimit:
         out = await resolver._expand_pdfs_over_page_limit([fi])
         assert out == [fi]  # _count_pdf_pages None → 분할 안 함 (fail-soft)
 
+    async def test_uses_existing_page_count_no_reparse(self, monkeypatch):
+        """page_count 이미 있으면 _count_pdf_pages 재호출 안 함 (리뷰 ②)."""
+        fi = _file(mime_type="application/pdf", file_size=1000, page_count=3)
+        fi.data = b"x"
+        calls = {"n": 0}
+
+        def fake_count(data):
+            calls["n"] += 1
+            return 3
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver._count_pdf_pages", fake_count)
+
+        out = await resolver._expand_pdfs_over_page_limit([fi])
+        assert calls["n"] == 0  # 이미 stash된 page_count(3) 사용 → 파싱 skip
+        assert out == [fi]
+
 
 class TestInlinePageSplitIntegration:
     """resolve_files: 인라인 >1000p PDF 전개 + Files API 폴백 (§5.4)."""
@@ -1082,3 +1098,44 @@ class TestInlinePageSplitIntegration:
         # 40+40=80MB > 50MB 한도 → 하나 inline, 하나 files_api 폴백
         assert len(result.inline_parts) == 1
         assert len(result.uri_parts) == 1
+
+
+class Test404RecoveryExpansion:
+    """404 복구가 Step 2.5 전개를 재현해 spilled part checksum까지 무효화 (리뷰 ①)."""
+
+    async def test_recovery_invalidates_spilled_part_checksum(self, monkeypatch):
+        from llm_manager._internal.keying import make_file_checksum
+
+        big_a = _file(file_name="d.pdf#part1", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+        big_b = _file(file_name="d.pdf#part2", mime_type="application/pdf",
+                      file_size=40 * 1024 * 1024, page_count=500)
+
+        async def fake_expand(pool):
+            return [big_a, big_b]
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver._expand_pdfs_over_page_limit",
+            fake_expand)
+
+        deleted: list[str] = []
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.cache_store.delete_files_api",
+            lambda cs: deleted.append(cs))
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.cache_store.delete_context_cache",
+            lambda hk: None)
+
+        # 재호출되는 resolve_files는 무력화 — 이 테스트는 '무효화 대상 checksum'만 검증
+        async def fake_resolve(*a, **k):
+            return ResolvedFiles(inline_parts=[], uri_parts=[], cached_content=None)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.resolve_files", fake_resolve)
+
+        seed = _file(file_name="d.pdf", mime_type="application/pdf", file_size=1 * 1024 * 1024)
+        await resolver.resolve_files_after_404(
+            [seed], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=None, standby_ttl_seconds=10,
+        )
+
+        # spilled part(big_b)의 files_api checksum이 무효화 목록에 있어야 함
+        assert make_file_checksum(big_b) in deleted
