@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """FileManagerHandler 오케스트레이션 테스트 (mdb + file-handler 모킹)."""
 
+import asyncio
+
 import pytest
 
 import file_manager.handler as handler_mod
@@ -146,3 +148,72 @@ async def test_close_also_closes_mdb(monkeypatch):
 
     await fm.close()
     assert closed == {"mdb": True, "client": True}
+
+
+async def test_register_or_get_serializes_same_key(monkeypatch):
+    """같은 키 동시 호출 → 락으로 직렬화되어 upload_file은 1회만, 둘은 같은 file_path."""
+    fm = FileManagerHandler()
+    stored: dict = {}
+    upload_calls: list = []
+
+    async def fake_check(meta):
+        key = (meta["file_name"], meta["file_mtime"], meta["file_size"])
+        if key in stored:
+            return {"hit": True, "file_path": stored[key]}
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        # 느린 저장 흉내: 여기서 yield되어, 락이 없으면 다른 코루틴이 끼어들어 둘 다 업로드함.
+        await asyncio.sleep(0.01)
+        key = (meta["file_name"], meta["file_mtime"], meta["file_size"])
+        path = f"path-{len(upload_calls)}"
+        upload_calls.append(key)
+        stored[key] = path
+        return path
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+
+    metadata = {
+        "file_name": "r.pdf", "file_mtime": 1, "file_size": 2,
+        "mime_type": "application/pdf", "extension": "pdf",
+    }
+    r1, r2 = await asyncio.gather(
+        fm.register_or_get(b"X", dict(metadata)),
+        fm.register_or_get(b"X", dict(metadata)),
+    )
+
+    assert len(upload_calls) == 1                  # 락 덕분에 업로드 1회
+    assert r1["file_path"] == r2["file_path"]      # 둘 다 같은(이긴) 경로
+
+
+async def test_register_or_get_different_keys_dont_block(monkeypatch):
+    """다른 키는 서로 막지 않는다(per-key 검증). 전역 락이면 이 핸드셰이크가 데드락→타임아웃."""
+    fm = FileManagerHandler()
+    a_in = asyncio.Event()
+    b_in = asyncio.Event()
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        name = meta["file_name"]
+        if name == "A":
+            a_in.set()
+            await asyncio.wait_for(b_in.wait(), timeout=1.0)  # A는 B가 업로드 시작해야 진행
+        else:
+            b_in.set()
+            await asyncio.wait_for(a_in.wait(), timeout=1.0)  # B는 A가 업로드 시작해야 진행
+        return f"path-{name}"
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+
+    base = {"file_mtime": 1, "file_size": 2, "mime_type": "application/pdf", "extension": "pdf"}
+    rA, rB = await asyncio.gather(
+        fm.register_or_get(b"X", {**base, "file_name": "A"}),
+        fm.register_or_get(b"Y", {**base, "file_name": "B"}),
+    )
+
+    assert rA["file_path"] == "path-A"
+    assert rB["file_path"] == "path-B"

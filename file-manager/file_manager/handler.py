@@ -37,6 +37,7 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
     await fm.close()
 """
 
+import asyncio
 import logging
 import mimetypes
 from pathlib import PurePosixPath
@@ -72,6 +73,10 @@ class FileManagerHandler:
             return
 
         self._client = AsyncClient()
+        # dedup 키별 asyncio.Lock — register_or_get 임계구역 직렬화용.
+        # 같은 (file_name,file_mtime,file_size) 동시 호출만 줄 세운다(다른 키는 병렬).
+        # 키 개수만큼 증가하지만 Lock 객체가 작아 무시 가능(YAGNI: 정리 로직 안 둠).
+        self._locks: dict[tuple, asyncio.Lock] = {}
         self._initialized = True
         logger.info("FileManagerHandler 초기화 완료")
 
@@ -175,12 +180,28 @@ class FileManagerHandler:
         )
         return file_data, metadata
 
+    def _dedup_lock(self, metadata: dict) -> asyncio.Lock:
+        """register_or_get 임계구역용 per-key 락.
+
+        같은 (file_name, file_mtime, file_size)만 직렬화한다. setdefault는 이벤트 루프
+        단일 스레드에서 원자적이라 락 자체의 경쟁이 없다.
+        """
+        key = (
+            metadata["file_name"],
+            metadata["file_mtime"],
+            metadata["file_size"],
+        )
+        return self._locks.setdefault(key, asyncio.Lock())
+
     async def register_or_get(
         self,
         bytes_data: bytes,
         metadata: dict,
     ) -> dict:
         """check_cache → miss 면 upload_file → 6 필드 dict 반환.
+
+        같은 (file_name, file_mtime, file_size) 동시 호출은 per-key 락으로 직렬화되어
+        프로세스 내에서 중복 업로드/저장이 발생하지 않는다(두 번째는 캐시 히트).
 
         Phase 3 helper — agent 가 llm-request 호출 전에 file-manager 등록 책임을
         직접 가져갈 때 사용. 결과 dict 를 그대로 StoredFile(**result) 로 변환 가능.
@@ -192,16 +213,17 @@ class FileManagerHandler:
         Returns:
             6 필드 dict — metadata + {"file_path": ...}
         """
-        hash_meta = {
-            "file_name": metadata["file_name"],
-            "file_size": metadata["file_size"],
-            "file_mtime": metadata["file_mtime"],
-        }
-        result = await self.check_cache(hash_meta)
-        if result["hit"]:
-            file_path = result["file_path"]
-        else:
-            file_path = await self.upload_file(bytes_data, metadata)
+        async with self._dedup_lock(metadata):
+            hash_meta = {
+                "file_name": metadata["file_name"],
+                "file_size": metadata["file_size"],
+                "file_mtime": metadata["file_mtime"],
+            }
+            result = await self.check_cache(hash_meta)
+            if result["hit"]:
+                file_path = result["file_path"]
+            else:
+                file_path = await self.upload_file(bytes_data, metadata)
         return {**metadata, "file_path": file_path}
 
     async def close(self) -> None:
