@@ -21,6 +21,9 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 
 ## 메서드
 `build_metadata`(동기, 로컬 mime/extension 추출) · `check_cache`(mdb-handler 직접 조회) · `upload_file`(file-handler 저장 + mdb 메타데이터 기록) · `get_file`(mdb 메타 조회 + file-handler 바이너리 반환) · `register_or_get`.
+
+> `register_or_get`은 같은 `(file_name, file_mtime, file_size)` 동시 호출을 per-key `asyncio.Lock`으로 직렬화한다 — **단일 프로세스 내** 중복 저장 방지(멀티 프로세스 간 보장은 범위 밖).
+
 파이프라인 명세는 [`../file-handler/file-manager-pipeline.md`](../file-handler/file-manager-pipeline.md) 참고.
 
 ## 예외
