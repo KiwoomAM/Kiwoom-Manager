@@ -70,12 +70,15 @@ async def wait_for_standby_release(
     timeout: int,
     find_cache_fn: Callable[[], Any],
 ) -> Any | None:
-    """standby 해제 또는 캐시 HIT까지 exponential backoff 대기.
+    """캐시 HIT까지 exponential backoff 대기. 성공 신호는 오직 캐시 HIT, 종료는 timeout.
 
     매 주기 find_cache_fn()을 호출(sync/async 모두 허용):
       - HIT → 캐시 결과 반환(즉시 종료)
-      - standby 사라짐(get None) → None 반환(호출자가 직접 업로드)
-      - timeout → None 반환 + 경고(중복 가능)
+      - timeout → None 반환 + 경고 (호출자의 재선점 루프가 이관받음)
+
+    standby 존재를 get()으로 조기 판정하지 않는다 — v3 read는 순간 blip에도 메모리
+    폴백(None)이라 "해제됨"을 오독해 선제 중복 업로드를 유발한다(strict-read 미지원).
+    winner가 정말 죽어 캐시가 안 써지면 timeout까지 기다렸다가 호출자가 재선점한다.
 
     backoff: 0.5 → 1 → 2 → 4 → 8 → 10(cap) → ...
     """
@@ -91,14 +94,10 @@ async def wait_for_standby_release(
         if result:
             return result
 
-        # standby 폴링 — 단절 시 None 폴백(strict-read 미지원), 호출자가 직접 업로드
-        if await asyncio.to_thread(RedisManager().get, key) is None:
-            return None
-
         delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
 
     logger.warning(
-        "standby 대기 timeout(%d초) 초과 — 호출자 직접 업로드(중복 가능). key=%s",
+        "standby 대기 timeout(%d초) 초과 — 재선점/직접 업로드로 이관. key=%s",
         timeout, key,
     )
     return None
