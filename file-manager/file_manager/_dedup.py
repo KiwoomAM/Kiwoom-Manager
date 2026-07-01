@@ -88,16 +88,19 @@ async def wait_for_standby_release(
     """
     delay = _BACKOFF_INITIAL
     elapsed = 0.0
-    while elapsed < timeout:
-        await asyncio.sleep(delay)
-        elapsed += delay
-
+    while True:
+        # 캐시부터 확인 — winner가 빨리 끝났으면 첫 backoff 낭비 없이 즉시 반환
         result = find_cache_fn()
         if inspect.isawaitable(result):
             result = await result
         if result:
             return result
 
+        if elapsed >= timeout:
+            break
+
+        await asyncio.sleep(delay)
+        elapsed += delay
         delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
 
     logger.warning(
