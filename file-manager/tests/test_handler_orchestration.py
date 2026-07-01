@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """FileManagerHandler 오케스트레이션 테스트 (mdb + file-handler 모킹)."""
 
-import asyncio
-
 import pytest
 
+import file_manager._dedup as dedup_mod
 import file_manager.handler as handler_mod
 from file_manager.handler import FileManagerHandler
 
@@ -150,70 +149,207 @@ async def test_close_also_closes_mdb(monkeypatch):
     assert closed == {"mdb": True, "client": True}
 
 
-async def test_register_or_get_serializes_same_key(monkeypatch):
-    """같은 키 동시 호출 → 락으로 직렬화되어 upload_file은 1회만, 둘은 같은 file_path."""
+_META = {
+    "file_name": "규약.pdf", "file_mtime": 1, "file_size": 2,
+    "mime_type": "application/pdf", "extension": "pdf",
+}
+
+
+async def test_register_or_get_cache_hit_skips_standby(monkeypatch):
+    """캐시 히트면 standby·업로드 모두 안 함."""
     fm = FileManagerHandler()
-    stored: dict = {}
-    upload_calls: list = []
+    calls = {"upload": 0, "acquire": 0}
 
     async def fake_check(meta):
-        key = (meta["file_name"], meta["file_mtime"], meta["file_size"])
-        if key in stored:
-            return {"hit": True, "file_path": stored[key]}
-        return {"hit": False, "file_path": None}
+        return {"hit": True, "file_path": "existing.pdf"}
 
     async def fake_upload(data, meta):
-        # 느린 저장 흉내: 여기서 yield되어, 락이 없으면 다른 코루틴이 끼어들어 둘 다 업로드함.
-        await asyncio.sleep(0.01)
-        key = (meta["file_name"], meta["file_mtime"], meta["file_size"])
-        path = f"path-{len(upload_calls)}"
-        upload_calls.append(key)
-        stored[key] = path
-        return path
+        calls["upload"] += 1
+        return "new.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        calls["acquire"] += 1
+        return True
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
     monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
 
-    metadata = {
-        "file_name": "r.pdf", "file_mtime": 1, "file_size": 2,
-        "mime_type": "application/pdf", "extension": "pdf",
-    }
-    r1, r2 = await asyncio.gather(
-        fm.register_or_get(b"X", dict(metadata)),
-        fm.register_or_get(b"X", dict(metadata)),
-    )
-
-    assert len(upload_calls) == 1                  # 락 덕분에 업로드 1회
-    assert r1["file_path"] == r2["file_path"]      # 둘 다 같은(이긴) 경로
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "existing.pdf"
+    assert calls == {"upload": 0, "acquire": 0}
 
 
-async def test_register_or_get_different_keys_dont_block(monkeypatch):
-    """다른 키는 서로 막지 않는다(per-key 검증). 전역 락이면 이 핸드셰이크가 데드락→타임아웃."""
+async def test_register_or_get_acquire_uploads_and_releases(monkeypatch):
+    """standby 선점 → 업로드 1회 + release."""
     fm = FileManagerHandler()
-    a_in = asyncio.Event()
-    b_in = asyncio.Event()
+    calls = {"upload": 0, "release": 0}
 
     async def fake_check(meta):
         return {"hit": False, "file_path": None}
 
     async def fake_upload(data, meta):
-        name = meta["file_name"]
-        if name == "A":
-            a_in.set()
-            await asyncio.wait_for(b_in.wait(), timeout=1.0)  # A는 B가 업로드 시작해야 진행
-        else:
-            b_in.set()
-            await asyncio.wait_for(a_in.wait(), timeout=1.0)  # B는 A가 업로드 시작해야 진행
-        return f"path-{name}"
+        calls["upload"] += 1
+        return "new.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return True
+
+    async def fake_release(key):
+        calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
     monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
 
-    base = {"file_mtime": 1, "file_size": 2, "mime_type": "application/pdf", "extension": "pdf"}
-    rA, rB = await asyncio.gather(
-        fm.register_or_get(b"X", {**base, "file_name": "A"}),
-        fm.register_or_get(b"Y", {**base, "file_name": "B"}),
-    )
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "new.pdf"
+    assert calls == {"upload": 1, "release": 1}
 
-    assert rA["file_path"] == "path-A"
-    assert rB["file_path"] == "path-B"
+
+async def test_register_or_get_not_acquired_reuses_winner(monkeypatch):
+    """미선점 → 대기 후 남이 저장한 결과 재사용, 업로드 안 함."""
+    fm = FileManagerHandler()
+    calls = {"upload": 0}
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        calls["upload"] += 1
+        return "new.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return False
+
+    async def fake_wait(key, timeout, find_cache_fn):
+        return {"hit": True, "file_path": "winner.pdf"}
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "wait_for_standby_release", fake_wait)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "winner.pdf"
+    assert calls["upload"] == 0
+
+
+async def test_register_or_get_wait_timeout_falls_back_to_upload(monkeypatch):
+    """미선점 + 대기 timeout(None) → 직접 업로드(폴백), 내 락 아니니 release 안 함."""
+    fm = FileManagerHandler()
+    calls = {"upload": 0, "release": 0}
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        calls["upload"] += 1
+        return "fallback.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return False
+
+    async def fake_wait(key, timeout, find_cache_fn):
+        return None
+
+    async def fake_release(key):
+        calls["release"] += 1
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "wait_for_standby_release", fake_wait)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "fallback.pdf"
+    assert calls == {"upload": 1, "release": 0}
+
+
+async def test_register_or_get_redis_down_degrades_to_upload(monkeypatch):
+    """Redis 미연결(try_acquire RuntimeError) → 직접 업로드(degrade), release 시도(무해)."""
+    fm = FileManagerHandler()
+    calls = {"upload": 0, "release": 0}
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        calls["upload"] += 1
+        return "degraded.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        raise RuntimeError("redis down")
+
+    async def fake_release(key):
+        calls["release"] += 1
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "degraded.pdf"
+    assert calls == {"upload": 1, "release": 1}
+
+
+async def test_register_or_get_wait_raises_degrades_to_upload(monkeypatch):
+    """wait_for_standby_release가 예외를 던져도 전파하지 않고 직접 업로드로 degrade."""
+    fm = FileManagerHandler()
+    calls = {"upload": 0, "release": 0}
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        calls["upload"] += 1
+        return "fallback.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return False
+
+    async def fake_wait(key, timeout, find_cache_fn):
+        raise RuntimeError("redis hiccup")
+
+    async def fake_release(key):
+        calls["release"] += 1
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "wait_for_standby_release", fake_wait)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "fallback.pdf"   # 예외 전파 대신 직접 업로드
+    assert calls == {"upload": 1, "release": 0}  # 미선점이라 release 안 함
+
+
+async def test_register_or_get_releases_on_upload_failure(monkeypatch):
+    """선점 후 upload가 실패해도 finally에서 release가 호출된다."""
+    fm = FileManagerHandler()
+    calls = {"release": 0}
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        raise RuntimeError("upload boom")
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return True
+
+    async def fake_release(key):
+        calls["release"] += 1
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    with pytest.raises(RuntimeError):
+        await fm.register_or_get(b"X", dict(_META))
+    assert calls["release"] == 1   # 업로드 실패에도 standby 해제
