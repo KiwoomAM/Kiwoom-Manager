@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
     "kiwoom-mdb-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=mdb-manager",
+    "kiwoom-redis-manager @ git+https://github.com/KiwoomAM/Kiwoom-Manager.git#subdirectory=redis-manager",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,7 @@ include = ["file_manager*"]
 
 [tool.uv.sources]
 kiwoom-mdb-manager = { path = "../mdb-manager", editable = true }
+kiwoom-redis-manager = { path = "../redis-manager", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

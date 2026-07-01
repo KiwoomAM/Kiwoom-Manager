@@ -37,12 +37,12 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
     await fm.close()
 """
 
-import asyncio
 import logging
 import mimetypes
 from pathlib import PurePosixPath
 from typing import Optional
 
+from file_manager import _dedup
 from file_manager._client import AsyncClient
 from file_manager._mdb import close_mdb, find_metadata, insert_metadata
 from file_manager.exceptions import MetadataNotFoundError
@@ -73,10 +73,6 @@ class FileManagerHandler:
             return
 
         self._client = AsyncClient()
-        # dedup 키별 asyncio.Lock — register_or_get 임계구역 직렬화용.
-        # 같은 (file_name,file_mtime,file_size) 동시 호출만 줄 세운다(다른 키는 병렬).
-        # 키 개수만큼 증가하지만 Lock 객체가 작아 무시 가능(YAGNI: 정리 로직 안 둠).
-        self._locks: dict[tuple, asyncio.Lock] = {}
         self._initialized = True
         logger.info("FileManagerHandler 초기화 완료")
 
@@ -180,19 +176,6 @@ class FileManagerHandler:
         )
         return file_data, metadata
 
-    def _dedup_lock(self, metadata: dict) -> asyncio.Lock:
-        """register_or_get 임계구역용 per-key 락.
-
-        같은 (file_name, file_mtime, file_size)만 직렬화한다. setdefault는 이벤트 루프
-        단일 스레드에서 원자적이라 락 자체의 경쟁이 없다.
-        """
-        key = (
-            metadata["file_name"],
-            metadata["file_mtime"],
-            metadata["file_size"],
-        )
-        return self._locks.setdefault(key, asyncio.Lock())
-
     async def register_or_get(
         self,
         bytes_data: bytes,
@@ -200,11 +183,10 @@ class FileManagerHandler:
     ) -> dict:
         """check_cache → miss 면 upload_file → 6 필드 dict 반환.
 
-        같은 (file_name, file_mtime, file_size) 동시 호출은 per-key 락으로 직렬화되어
-        프로세스 내에서 중복 업로드/저장이 발생하지 않는다(두 번째는 캐시 히트).
-
-        Phase 3 helper — agent 가 llm-request 호출 전에 file-manager 등록 책임을
-        직접 가져갈 때 사용. 결과 dict 를 그대로 StoredFile(**result) 로 변환 가능.
+        같은 (file_name, file_mtime, file_size) 동시 호출을 Redis standby(SETNX)로
+        **프로세스·워커 넘어** 직렬화한다 — 첫 요청만 업로드하고, 나머지는 대기 후
+        캐시 결과를 재사용해 중복 저장을 막는다. Redis 미연결/타임아웃 시에는 직접
+        업로드로 degrade(가용성 우선; 드물게 중복 가능).
 
         Args:
             bytes_data: 파일 바이트
@@ -213,17 +195,62 @@ class FileManagerHandler:
         Returns:
             6 필드 dict — metadata + {"file_path": ...}
         """
-        async with self._dedup_lock(metadata):
-            hash_meta = {
-                "file_name": metadata["file_name"],
-                "file_size": metadata["file_size"],
-                "file_mtime": metadata["file_mtime"],
-            }
+        hash_meta = {
+            "file_name": metadata["file_name"],
+            "file_size": metadata["file_size"],
+            "file_mtime": metadata["file_mtime"],
+        }
+        key = _dedup.standby_key(metadata)
+
+        async def _find_cache():
+            r = await self.check_cache(hash_meta)
+            return r if r["hit"] else None
+
+        # standby로 감싼 check→upload를 "재선점 루프"로 직렬화한다.
+        # 선점자의 upload_file이 실패해 standby가 풀려도, 대기자 전원이 동시에 직접
+        # 업로드로 쏟아지지 않고 "다음 한 명만" 재선점해 업로드한다(thundering herd 방지,
+        # 구 asyncio.Lock의 직렬 재시도 의미론 복원). 상한 초과 시에만 직접 업로드로 degrade.
+        for _ in range(_dedup.STANDBY_MAX_ROUNDS):
+            # 1) 이미 저장돼 있으면 바로 반환
             result = await self.check_cache(hash_meta)
             if result["hit"]:
-                file_path = result["file_path"]
-            else:
+                return {**metadata, "file_path": result["file_path"]}
+
+            # 2) standby 선점 시도 (Redis 미연결 → standby 없이 직접 업로드로 degrade)
+            try:
+                token = await _dedup.try_acquire_standby(key)
+            except RuntimeError:
                 file_path = await self.upload_file(bytes_data, metadata)
+                return {**metadata, "file_path": file_path}
+
+            # 3) 선점 성공 → 업로드 후 "내 토큰으로만" 해제(만료 후 남이 재선점한 키 삭제 방지)
+            if token is not None:
+                try:
+                    file_path = await self.upload_file(bytes_data, metadata)
+                finally:
+                    await _dedup.release_standby(key, token)
+                return {**metadata, "file_path": file_path}
+
+            # 4) 미선점 → 대기. 남이 저장 완료했으면 재사용, 아니면(선점자 실패/해제-miss) 재선점.
+            try:
+                cached = await _dedup.wait_for_standby_release(
+                    key, timeout=_dedup.STANDBY_TTL_SECONDS, find_cache_fn=_find_cache
+                )
+            except Exception:
+                logger.exception(
+                    "wait_for_standby_release 예외(무시, 재선점): key=%s", key
+                )
+                cached = None
+            if cached is not None:
+                return {**metadata, "file_path": cached["file_path"]}
+            # cached is None → 루프 상단으로 돌아가 재선점
+
+        # 재선점 상한 초과 → degrade: 직접 업로드(드물게 중복 가능)
+        logger.warning(
+            "standby 재선점 상한(%d회) 초과 — 직접 업로드 degrade. key=%s",
+            _dedup.STANDBY_MAX_ROUNDS, key,
+        )
+        file_path = await self.upload_file(bytes_data, metadata)
         return {**metadata, "file_path": file_path}
 
     async def close(self) -> None:
