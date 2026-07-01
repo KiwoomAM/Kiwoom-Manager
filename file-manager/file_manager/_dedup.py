@@ -13,10 +13,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
-import json
 import logging
+import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import Any
 
 from redis_manager import (
@@ -46,23 +45,28 @@ def standby_key(metadata: dict) -> str:
 
 async def try_acquire_standby(
     key: str, ttl_seconds: int = STANDBY_TTL_SECONDS
-) -> bool:
-    """SETNX로 standby 선점.
+) -> str | None:
+    """SETNX로 standby 선점. owner 토큰을 값에 담아 반환한다.
+
+    release가 이 토큰으로만 삭제하므로, 만료 후 남이 재선점한 키를 뒤늦게 지우지 않는다.
 
     Returns:
-        True  — 내가 선점(업로드 수행)
-        False — 이미 다른 요청이 작업 중(wait_for_standby_release로 대기)
+        str  — 선점 성공(발급된 owner 토큰; 그대로 release_standby에 넘긴다)
+        None — 이미 다른 요청이 작업 중(wait_for_standby_release로 대기)
 
     Raises:
         RuntimeError — Redis 미연결/retry 소진. 호출자가 degrade 처리.
     """
-    value = json.dumps({"started_at": datetime.now(timezone.utc).isoformat()})
+    # 값 == owner 토큰(bare). compare_and_delete가 "저장값 전체 == expected"로 비교하므로
+    # 값에 토큰만 담아야 release(key, token)가 자기 것만 삭제한다.
+    token = uuid.uuid4().hex
     try:
-        return await asyncio.to_thread(
-            RedisManager().setnx, key, value, ttl=ttl_seconds
+        acquired = await asyncio.to_thread(
+            RedisManager().setnx, key, token, ttl=ttl_seconds
         )
     except (RedisUnavailableError, RedisRetryExhausted) as e:
         raise RuntimeError("Redis 미연결 — standby 불가") from e
+    return token if acquired else None
 
 
 async def wait_for_standby_release(
@@ -103,9 +107,13 @@ async def wait_for_standby_release(
     return None
 
 
-async def release_standby(key: str) -> None:
-    """standby DEL(finally 용). 실패는 삼킴 — 남은 키는 TTL로 자연 정리."""
+async def release_standby(key: str, token: str) -> None:
+    """owner 토큰 일치 시에만 standby 삭제(compare_and_delete). finally 용, 실패는 삼킴.
+
+    무조건 DEL이 아니라 CAD를 써서, TTL 만료 후 남이 재선점한 키를 뒤늦게 지우는 것을
+    막는다. Redis 미연결/토큰 불일치(False)는 무해 — 남은 키는 TTL로 자연 정리.
+    """
     try:
-        await asyncio.to_thread(RedisManager().delete, key)
+        await asyncio.to_thread(RedisManager().compare_and_delete, key, token)
     except Exception:
         logger.exception("standby release 실패(무시, TTL 정리): key=%s", key)

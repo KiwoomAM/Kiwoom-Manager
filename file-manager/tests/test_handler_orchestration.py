@@ -169,7 +169,7 @@ async def test_register_or_get_cache_hit_skips_standby(monkeypatch):
 
     async def fake_acquire(key, ttl_seconds=None):
         calls["acquire"] += 1
-        return True
+        return "tok"
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
     monkeypatch.setattr(fm, "upload_file", fake_upload)
@@ -193,9 +193,9 @@ async def test_register_or_get_acquire_uploads_and_releases(monkeypatch):
         return "new.pdf"
 
     async def fake_acquire(key, ttl_seconds=None):
-        return True
+        return "tok"
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
@@ -221,7 +221,7 @@ async def test_register_or_get_not_acquired_reuses_winner(monkeypatch):
         return "new.pdf"
 
     async def fake_acquire(key, ttl_seconds=None):
-        return False
+        return None
 
     async def fake_wait(key, timeout, find_cache_fn):
         return {"hit": True, "file_path": "winner.pdf"}
@@ -249,12 +249,12 @@ async def test_register_or_get_wait_timeout_falls_back_to_upload(monkeypatch):
         return "fallback.pdf"
 
     async def fake_acquire(key, ttl_seconds=None):
-        return False
+        return None
 
     async def fake_wait(key, timeout, find_cache_fn):
         return None
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
@@ -269,7 +269,7 @@ async def test_register_or_get_wait_timeout_falls_back_to_upload(monkeypatch):
 
 
 async def test_register_or_get_redis_down_degrades_to_upload(monkeypatch):
-    """Redis 미연결(try_acquire RuntimeError) → 직접 업로드(degrade), release 시도(무해)."""
+    """Redis 미연결(try_acquire RuntimeError) → standby 없이 직접 업로드(degrade), release 안 함."""
     fm = FileManagerHandler()
     calls = {"upload": 0, "release": 0}
 
@@ -283,7 +283,7 @@ async def test_register_or_get_redis_down_degrades_to_upload(monkeypatch):
     async def fake_acquire(key, ttl_seconds=None):
         raise RuntimeError("redis down")
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
@@ -293,7 +293,7 @@ async def test_register_or_get_redis_down_degrades_to_upload(monkeypatch):
 
     out = await fm.register_or_get(b"X", dict(_META))
     assert out["file_path"] == "degraded.pdf"
-    assert calls == {"upload": 1, "release": 1}
+    assert calls == {"upload": 1, "release": 0}   # degrade는 standby 미보유 → release 없음
 
 
 async def test_register_or_get_wait_raises_degrades_to_upload(monkeypatch):
@@ -309,12 +309,12 @@ async def test_register_or_get_wait_raises_degrades_to_upload(monkeypatch):
         return "fallback.pdf"
 
     async def fake_acquire(key, ttl_seconds=None):
-        return False
+        return None
 
     async def fake_wait(key, timeout, find_cache_fn):
         raise RuntimeError("redis hiccup")
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
@@ -340,9 +340,9 @@ async def test_register_or_get_releases_on_upload_failure(monkeypatch):
         raise RuntimeError("upload boom")
 
     async def fake_acquire(key, ttl_seconds=None):
-        return True
+        return "tok"
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)
@@ -360,8 +360,8 @@ async def test_register_or_get_reacquires_after_wait_none(monkeypatch):
     재선점 후 업로드로 직렬화된다 (thundering herd 회귀 방지)."""
     fm = FileManagerHandler()
     calls = {"upload": 0, "release": 0}
-    # 1라운드: 남이 선점(False) → wait None(선점자 실패). 2라운드: 재선점 성공(True).
-    acquire_seq = iter([False, True])
+    # 1라운드: 남이 선점(None) → wait None(선점자 실패). 2라운드: 재선점 성공(토큰).
+    acquire_seq = iter([None, "tok"])
 
     async def fake_check(meta):
         return {"hit": False, "file_path": None}
@@ -376,7 +376,7 @@ async def test_register_or_get_reacquires_after_wait_none(monkeypatch):
     async def fake_wait(key, timeout, find_cache_fn):
         return None  # 선점자가 저장 못 하고 standby 해제 → 재선점 유도
 
-    async def fake_release(key):
+    async def fake_release(key, token):
         calls["release"] += 1
 
     monkeypatch.setattr(fm, "check_cache", fake_check)

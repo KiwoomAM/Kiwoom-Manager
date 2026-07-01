@@ -15,19 +15,30 @@ def test_standby_key_stable_and_distinct():
     assert dedup.standby_key(m1).startswith("file_cache:register_standby:")
 
 
-async def test_try_acquire_returns_setnx_result(monkeypatch):
+async def test_try_acquire_returns_token_on_success_none_on_miss(monkeypatch):
     captured = {}
 
     class FakeRM:
+        def __init__(self, ok):
+            self._ok = ok
+
         def setnx(self, key, value, ttl=None):
             captured["key"] = key
             captured["ttl"] = ttl
-            return True
+            captured["value"] = value
+            return self._ok
 
-    monkeypatch.setattr(dedup, "RedisManager", lambda: FakeRM())
-    ok = await dedup.try_acquire_standby("file_cache:register_standby:abc", ttl_seconds=30)
-    assert ok is True
-    assert captured == {"key": "file_cache:register_standby:abc", "ttl": 30}
+    # 선점 성공 → owner 토큰(str) 반환, 값에 그 토큰이 담겨야 한다
+    monkeypatch.setattr(dedup, "RedisManager", lambda: FakeRM(True))
+    token = await dedup.try_acquire_standby("file_cache:register_standby:abc", ttl_seconds=30)
+    assert isinstance(token, str) and token
+    assert captured["key"] == "file_cache:register_standby:abc"
+    assert captured["ttl"] == 30
+    assert token in captured["value"]   # 값에 owner 토큰 포함
+
+    # 선점 실패(setnx False) → None
+    monkeypatch.setattr(dedup, "RedisManager", lambda: FakeRM(False))
+    assert await dedup.try_acquire_standby("k") is None
 
 
 async def test_try_acquire_maps_redis_error_to_runtimeerror(monkeypatch):

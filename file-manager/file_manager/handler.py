@@ -216,18 +216,19 @@ class FileManagerHandler:
             if result["hit"]:
                 return {**metadata, "file_path": result["file_path"]}
 
-            # 2) standby 선점 (Redis 미연결 시 단독 작업자로 degrade)
+            # 2) standby 선점 시도 (Redis 미연결 → standby 없이 직접 업로드로 degrade)
             try:
-                acquired = await _dedup.try_acquire_standby(key)
+                token = await _dedup.try_acquire_standby(key)
             except RuntimeError:
-                acquired = True
+                file_path = await self.upload_file(bytes_data, metadata)
+                return {**metadata, "file_path": file_path}
 
-            # 3) 선점 성공 → 업로드 후 finally에서 해제
-            if acquired:
+            # 3) 선점 성공 → 업로드 후 "내 토큰으로만" 해제(만료 후 남이 재선점한 키 삭제 방지)
+            if token is not None:
                 try:
                     file_path = await self.upload_file(bytes_data, metadata)
                 finally:
-                    await _dedup.release_standby(key)
+                    await _dedup.release_standby(key, token)
                 return {**metadata, "file_path": file_path}
 
             # 4) 미선점 → 대기. 남이 저장 완료했으면 재사용, 아니면(선점자 실패/해제-miss) 재선점.
