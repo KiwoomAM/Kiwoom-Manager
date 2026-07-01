@@ -28,6 +28,7 @@ from redis_manager import (
 logger = logging.getLogger(__name__)
 
 STANDBY_TTL_SECONDS = 120  # 큰 파일 업로드+메타기록을 넉넉히 덮는 값
+STANDBY_MAX_ROUNDS = 5  # 재선점 루프 상한 — 초과 시 직접 업로드로 degrade(무한루프 방지)
 _BACKOFF_INITIAL = 0.5
 _BACKOFF_MULTIPLIER = 2.0
 _BACKOFF_CAP = 10.0

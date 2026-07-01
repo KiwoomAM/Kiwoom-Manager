@@ -353,3 +353,39 @@ async def test_register_or_get_releases_on_upload_failure(monkeypatch):
     with pytest.raises(RuntimeError):
         await fm.register_or_get(b"X", dict(_META))
     assert calls["release"] == 1   # 업로드 실패에도 standby 해제
+
+
+async def test_register_or_get_reacquires_after_wait_none(monkeypatch):
+    """미선점→대기 None(선점자 실패로 standby 풀림)이면 직접 업로드가 아니라
+    재선점 후 업로드로 직렬화된다 (thundering herd 회귀 방지)."""
+    fm = FileManagerHandler()
+    calls = {"upload": 0, "release": 0}
+    # 1라운드: 남이 선점(False) → wait None(선점자 실패). 2라운드: 재선점 성공(True).
+    acquire_seq = iter([False, True])
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        calls["upload"] += 1
+        return "reacquired.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return next(acquire_seq)
+
+    async def fake_wait(key, timeout, find_cache_fn):
+        return None  # 선점자가 저장 못 하고 standby 해제 → 재선점 유도
+
+    async def fake_release(key):
+        calls["release"] += 1
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "wait_for_standby_release", fake_wait)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert out["file_path"] == "reacquired.pdf"
+    assert calls["upload"] == 1    # 직접 업로드 아니라 재선점한 1명만 업로드
+    assert calls["release"] == 1   # 재선점 성공분은 release

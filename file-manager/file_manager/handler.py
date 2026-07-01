@@ -200,45 +200,56 @@ class FileManagerHandler:
             "file_size": metadata["file_size"],
             "file_mtime": metadata["file_mtime"],
         }
-
-        # 1) fast path: 이미 저장돼 있으면 바로 반환
-        result = await self.check_cache(hash_meta)
-        if result["hit"]:
-            return {**metadata, "file_path": result["file_path"]}
-
         key = _dedup.standby_key(metadata)
 
         async def _find_cache():
             r = await self.check_cache(hash_meta)
             return r if r["hit"] else None
 
-        # 2) standby 선점 시도 (Redis 미연결 시 단독 작업자로 degrade)
-        try:
-            acquired = await _dedup.try_acquire_standby(key)
-        except RuntimeError:
-            acquired = True
+        # standby로 감싼 check→upload를 "재선점 루프"로 직렬화한다.
+        # 선점자의 upload_file이 실패해 standby가 풀려도, 대기자 전원이 동시에 직접
+        # 업로드로 쏟아지지 않고 "다음 한 명만" 재선점해 업로드한다(thundering herd 방지,
+        # 구 asyncio.Lock의 직렬 재시도 의미론 복원). 상한 초과 시에만 직접 업로드로 degrade.
+        for _ in range(_dedup.STANDBY_MAX_ROUNDS):
+            # 1) 이미 저장돼 있으면 바로 반환
+            result = await self.check_cache(hash_meta)
+            if result["hit"]:
+                return {**metadata, "file_path": result["file_path"]}
 
-        # 3) 미선점이면 남의 작업 완료를 대기하고 캐시 재사용
-        if not acquired:
+            # 2) standby 선점 (Redis 미연결 시 단독 작업자로 degrade)
+            try:
+                acquired = await _dedup.try_acquire_standby(key)
+            except RuntimeError:
+                acquired = True
+
+            # 3) 선점 성공 → 업로드 후 finally에서 해제
+            if acquired:
+                try:
+                    file_path = await self.upload_file(bytes_data, metadata)
+                finally:
+                    await _dedup.release_standby(key)
+                return {**metadata, "file_path": file_path}
+
+            # 4) 미선점 → 대기. 남이 저장 완료했으면 재사용, 아니면(선점자 실패/해제-miss) 재선점.
             try:
                 cached = await _dedup.wait_for_standby_release(
                     key, timeout=_dedup.STANDBY_TTL_SECONDS, find_cache_fn=_find_cache
                 )
             except Exception:
                 logger.exception(
-                    "wait_for_standby_release 예외(무시, 직접 업로드 폴백): key=%s", key
+                    "wait_for_standby_release 예외(무시, 재선점): key=%s", key
                 )
                 cached = None
             if cached is not None:
                 return {**metadata, "file_path": cached["file_path"]}
-            # timeout/해제-miss → 폴백: 내가 직접 업로드(선점 안 했으므로 release 안 함)
+            # cached is None → 루프 상단으로 돌아가 재선점
 
-        # 4) 업로드. 선점했다면 finally에서 standby 해제
-        try:
-            file_path = await self.upload_file(bytes_data, metadata)
-        finally:
-            if acquired:
-                await _dedup.release_standby(key)
+        # 재선점 상한 초과 → degrade: 직접 업로드(드물게 중복 가능)
+        logger.warning(
+            "standby 재선점 상한(%d회) 초과 — 직접 업로드 degrade. key=%s",
+            _dedup.STANDBY_MAX_ROUNDS, key,
+        )
+        file_path = await self.upload_file(bytes_data, metadata)
         return {**metadata, "file_path": file_path}
 
     async def close(self) -> None:
