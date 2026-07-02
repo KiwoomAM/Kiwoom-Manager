@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
 
