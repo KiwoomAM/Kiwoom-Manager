@@ -43,7 +43,7 @@ async def _require_modules(client) -> None:
     missing = [m for m in _REQUIRED_MODULES if not any(m in p for p in present)]
     if missing:
         label = {"rejson": "ReJSON(RedisJSON)", "search": "search(RediSearch)"}
-        names = ", ".join(label[m] for m in missing)
+        names = ", ".join(label.get(m, m) for m in missing)
         raise RuntimeError(
             f"LangGraph 체크포인터에 필요한 Redis 모듈이 없습니다: {names}. "
             f"RedisJSON+RediSearch가 탑재된 Redis Stack을 LANGGRAPH_REDIS_URL로 지정하세요."
