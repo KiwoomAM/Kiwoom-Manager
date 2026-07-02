@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from redis.asyncio import Redis as AsyncRedis
-# Task 1 Step 2에서 확인된 공개 경로. ImportError면 확인된 실제 경로로 교체.
+# 최상위 공개 경로 (langgraph-checkpoint-redis 0.5.0에서 확인).
 from langgraph.checkpoint.redis import AsyncRedisSaver
 
 _DEFAULT_URL = "redis://192.7.9.45:6379/0"
