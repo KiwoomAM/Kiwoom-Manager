@@ -6,6 +6,12 @@
 [langgraph] extra로 분리되며, 최상위 redis_manager는 이 모듈을 import하지 않는다.
 """
 import os
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from redis.asyncio import Redis as AsyncRedis
+# Task 1 Step 2에서 확인된 공개 경로. ImportError면 확인된 실제 경로로 교체.
+from langgraph.checkpoint.redis import AsyncRedisSaver
 
 _DEFAULT_URL = "redis://192.7.9.45:6379/0"
 
@@ -42,3 +48,24 @@ async def _require_modules(client) -> None:
             f"LangGraph 체크포인터에 필요한 Redis 모듈이 없습니다: {names}. "
             f"RedisJSON+RediSearch가 탑재된 Redis Stack을 LANGGRAPH_REDIS_URL로 지정하세요."
         )
+
+
+@asynccontextmanager
+async def open_checkpointer() -> AsyncIterator[AsyncRedisSaver]:
+    """대상 Redis(Stack)에 직접 연결해 준비된 AsyncRedisSaver를 넘긴다.
+
+    커넥션을 이 함수가 직접 만들어 소유한다 — 모듈 확인·asetup·종료까지 단일
+    커넥션 하나로 처리하고 finally에서 닫는다. `async with open_checkpointer()`는
+    앱 수명 전체를 감싸야 한다(블록을 벗어나면 커넥션이 닫힘).
+    """
+    client = AsyncRedis.from_url(_url())
+    try:
+        await _require_modules(client)
+        saver = AsyncRedisSaver(redis_client=client)
+        await saver.asetup()
+        yield saver
+    finally:
+        await client.aclose()
+
+
+__all__ = ["open_checkpointer"]
