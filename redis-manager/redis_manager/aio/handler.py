@@ -55,14 +55,23 @@ class AsyncRedisManager:
                 "AsyncRedisManager is closed. 새 인스턴스를 만들거나 aclose 호출 전에 사용하세요."
             )
 
-    # ── String CRUD ──────────────────────────────────
-    async def get(self, key: str) -> Optional[str]:
+    # ── 폴백 디스패치 ────────────────────────────────
+    async def _dispatch(self, op: str, *args, **kwargs):
+        """일반 명령 공용 폴백: backend 실패(RedisHandlerError) 시 sync MemoryBackend로.
+
+        전제: args[0]는 항상 키. NX/XX·compare_*에는 쓰지 않는다. backend는 await,
+        메모리 폴백은 sync 호출(별도 async 메모리 백엔드 없음).
+        """
         self._ensure_open()
         try:
-            return await self._backend.get(key)
+            return await getattr(self._backend, op)(*args, **kwargs)
         except RedisHandlerError as e:
-            logger.warning("Redis GET 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.get(key)
+            logger.warning("Redis %s 폴백 → 메모리 (%s): %s", op.upper(), args[0], e)
+        return getattr(self._memory, op)(*args, **kwargs)
+
+    # ── String CRUD ──────────────────────────────────
+    async def get(self, key: str) -> Optional[str]:
+        return await self._dispatch("get", key)
 
     async def set(
         self,
@@ -99,11 +108,7 @@ class AsyncRedisManager:
             )
 
         # 일반 set: 폴백 허용
-        try:
-            return await self._backend.set(key, value, ex=effective_ttl, keepttl=keepttl)
-        except RedisHandlerError as e:
-            logger.warning("Redis SET 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.set(key, value, ex=effective_ttl, keepttl=keepttl)
+        return await self._dispatch("set", key, value, ex=effective_ttl, keepttl=keepttl)
 
     async def setex(self, key: str, ttl: int, value: str) -> bool:
         """TTL과 함께 set. Redis SETEX 호환 시그니처."""
@@ -119,12 +124,7 @@ class AsyncRedisManager:
         return await self.set(key, value, nx=True, ex=ttl)
 
     async def delete(self, key: str) -> int:
-        self._ensure_open()
-        try:
-            return await self._backend.delete(key)
-        except RedisHandlerError as e:
-            logger.warning("Redis DELETE 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.delete(key)
+        return await self._dispatch("delete", key)
 
     async def compare_and_delete(self, key: str, expected: str) -> bool:
         """소유자 토큰 일치 시에만 atomic 삭제 (분산 락 release).
@@ -149,28 +149,13 @@ class AsyncRedisManager:
 
     # ── Key 연산 ─────────────────────────────────────
     async def exists(self, key: str) -> bool:
-        self._ensure_open()
-        try:
-            return await self._backend.exists(key)
-        except RedisHandlerError as e:
-            logger.warning("Redis EXISTS 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.exists(key)
+        return await self._dispatch("exists", key)
 
     async def ttl(self, key: str) -> int:
-        self._ensure_open()
-        try:
-            return await self._backend.ttl(key)
-        except RedisHandlerError as e:
-            logger.warning("Redis TTL 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.ttl(key)
+        return await self._dispatch("ttl", key)
 
     async def expire(self, key: str, seconds: int) -> bool:
-        self._ensure_open()
-        try:
-            return await self._backend.expire(key, seconds)
-        except RedisHandlerError as e:
-            logger.warning("Redis EXPIRE 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.expire(key, seconds)
+        return await self._dispatch("expire", key, seconds)
 
     async def scan_iter(self, match: str, count: int = 100) -> AsyncIterator[str]:
         """Cursor 기반 키 SCAN. handler 미가용/일시 장애 시 메모리 폴백.
@@ -190,28 +175,13 @@ class AsyncRedisManager:
 
     # ── Set 연산 ─────────────────────────────────────
     async def sadd(self, key: str, *members: str) -> int:
-        self._ensure_open()
-        try:
-            return await self._backend.sadd(key, *members)
-        except RedisHandlerError as e:
-            logger.warning("Redis SADD 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.sadd(key, *members)
+        return await self._dispatch("sadd", key, *members)
 
     async def smembers(self, key: str) -> Set[str]:
-        self._ensure_open()
-        try:
-            return await self._backend.smembers(key)
-        except RedisHandlerError as e:
-            logger.warning("Redis SMEMBERS 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.smembers(key)
+        return await self._dispatch("smembers", key)
 
     async def srem(self, key: str, *members: str) -> int:
-        self._ensure_open()
-        try:
-            return await self._backend.srem(key, *members)
-        except RedisHandlerError as e:
-            logger.warning("Redis SREM 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.srem(key, *members)
+        return await self._dispatch("srem", key, *members)
 
     # ── 진단 (live, HTTP 왕복) ────────────────────────
     async def ping(self) -> bool:
