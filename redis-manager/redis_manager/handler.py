@@ -53,16 +53,18 @@ class RedisManager:
         self._backend = HandlerBackend()
         self._initialized = True
 
-    # ── 백엔드 선택 ──────────────────────────────────
-    def _redis(self) -> HandlerBackend:
-        """항상 HandlerBackend 반환 — 가용성 판단은 per-call 예외로.
+    # ── 폴백 디스패치 ─────────────────────────────────
+    def _dispatch(self, op: str, *args, **kwargs):
+        """일반 명령 공용 폴백: HandlerBackend 실패(RedisHandlerError) 시 MemoryBackend로.
 
-        v2의 _redis_available 캐시 플래그 + is_available() early-return은
-        제거됨 (health 진단 false-negative/false-positive의 원인).
-        각 명령이 handler 호출 실패 시 그 호출만 폴백한다.
-        기존 `if rb is not None` 분기는 v2 diff 최소화를 위해 유지된 항상-참 경로다.
+        전제: args[0]는 항상 키다 (로그 컨텍스트로 사용). NX/XX·compare_* 등 폴백
+        차단 명령에는 쓰지 않는다 (기존대로 backend 직접 호출).
         """
-        return self._backend
+        try:
+            return getattr(self._backend, op)(*args, **kwargs)
+        except RedisHandlerError as e:
+            logger.warning("Redis %s 폴백 → 메모리 (%s): %s", op.upper(), args[0], e)
+        return getattr(self._memory, op)(*args, **kwargs)
 
     @property
     def is_redis_connected(self) -> bool:
@@ -78,13 +80,7 @@ class RedisManager:
 
     # ── String CRUD ──────────────────────────────────
     def get(self, key: str) -> Optional[str]:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.get(key)
-            except RedisHandlerError as e:
-                logger.warning("Redis GET 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.get(key)
+        return self._dispatch("get", key)
 
     def set(
         self,
@@ -116,16 +112,10 @@ class RedisManager:
         # NX/XX: 폴백 차단 — handler 미도달 시 backend가 RedisUnavailableError,
         # handler가 Redis 재시도 소진 보고 시 RedisRetryExhausted를 raise한다.
         if nx or xx:
-            return self._redis().set(key, value, ex=effective_ttl, nx=nx, xx=xx, keepttl=keepttl)
+            return self._backend.set(key, value, ex=effective_ttl, nx=nx, xx=xx, keepttl=keepttl)
 
         # 일반 set: 폴백 허용
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.set(key, value, ex=effective_ttl, keepttl=keepttl)
-            except RedisHandlerError as e:
-                logger.warning("Redis SET 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.set(key, value, ex=effective_ttl, keepttl=keepttl)
+        return self._dispatch("set", key, value, ex=effective_ttl, keepttl=keepttl)
 
     def setex(self, key: str, ttl: int, value: str) -> bool:
         """TTL과 함께 set. Redis SETEX 호환 시그니처."""
@@ -145,13 +135,7 @@ class RedisManager:
         return self.set(key, value, nx=True, ex=ttl)
 
     def delete(self, key: str) -> int:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.delete(key)
-            except RedisHandlerError as e:
-                logger.warning("Redis DELETE 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.delete(key)
+        return self._dispatch("delete", key)
 
     def compare_and_delete(self, key: str, expected: str) -> bool:
         """소유자 토큰 일치 시에만 atomic 삭제 (분산 락 release).
@@ -172,7 +156,7 @@ class RedisManager:
             RedisUnavailableError: Redis 미연결
             RedisRetryExhausted: retry 소진
         """
-        return self._redis().compare_and_delete(key, expected)
+        return self._backend.compare_and_delete(key, expected)
 
     def compare_and_set(self, key: str, expected: str, value: str, *, ex: int) -> bool:
         """소유자 토큰 일치 시에만 atomic 값 교체 + TTL 갱신 (분산 락 renew).
@@ -187,35 +171,17 @@ class RedisManager:
             RedisUnavailableError: Redis 미연결
             RedisRetryExhausted: retry 소진
         """
-        return self._redis().compare_and_set(key, expected, value, ex=ex)
+        return self._backend.compare_and_set(key, expected, value, ex=ex)
 
     # ── Key 연산 ─────────────────────────────────────
     def exists(self, key: str) -> bool:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.exists(key)
-            except RedisHandlerError as e:
-                logger.warning("Redis EXISTS 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.exists(key)
+        return self._dispatch("exists", key)
 
     def ttl(self, key: str) -> int:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.ttl(key)
-            except RedisHandlerError as e:
-                logger.warning("Redis TTL 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.ttl(key)
+        return self._dispatch("ttl", key)
 
     def expire(self, key: str, seconds: int) -> bool:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.expire(key, seconds)
-            except RedisHandlerError as e:
-                logger.warning("Redis EXPIRE 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.expire(key, seconds)
+        return self._dispatch("expire", key, seconds)
 
     def scan_iter(self, match: str, count: int = 100) -> Iterator[str]:
         """Cursor 기반 키 SCAN.
@@ -233,42 +199,22 @@ class RedisManager:
         나머지는 메모리 백엔드에서 yield된다 — 호출자가 받는 결과는 두 백엔드의
         키가 혼재한 형태가 될 수 있다 (예외는 raise되지 않음).
         """
-        rb = self._redis()
-        if rb is not None:
-            try:
-                yield from rb.scan_iter(match, count)
-                return
-            except RedisHandlerError as e:
-                logger.warning("Redis SCAN 폴백 → 메모리 (%s): %s", match, e)
+        try:
+            yield from self._backend.scan_iter(match, count)
+            return
+        except RedisHandlerError as e:
+            logger.warning("Redis SCAN 폴백 → 메모리 (%s): %s", match, e)
         yield from self._memory.scan_iter(match, count)
 
     # ── Set 연산 ─────────────────────────────────────
     def sadd(self, key: str, *members: str) -> int:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.sadd(key, *members)
-            except RedisHandlerError as e:
-                logger.warning("Redis SADD 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.sadd(key, *members)
+        return self._dispatch("sadd", key, *members)
 
     def smembers(self, key: str) -> Set[str]:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.smembers(key)
-            except RedisHandlerError as e:
-                logger.warning("Redis SMEMBERS 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.smembers(key)
+        return self._dispatch("smembers", key)
 
     def srem(self, key: str, *members: str) -> int:
-        rb = self._redis()
-        if rb is not None:
-            try:
-                return rb.srem(key, *members)
-            except RedisHandlerError as e:
-                logger.warning("Redis SREM 폴백 → 메모리 (%s): %s", key, e)
-        return self._memory.srem(key, *members)
+        return self._dispatch("srem", key, *members)
 
     # ── 유틸리티 ─────────────────────────────────────
     def ping(self) -> bool:
