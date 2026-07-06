@@ -83,10 +83,23 @@ class TestEstimateCacheTokens:
         assert resolver._estimate_cache_tokens([pdf_a, pdf_b], None) == 1032
 
     def test_any_out_of_scope_returns_none(self):
-        """유효 PDF가 섞여 있어도 스코프 외(이미지) 하나면 전체 None (조기 return 가드)."""
+        """이미지에 image_tokens stash 가 없으면(미상) PDF가 섞여도 전체 None (조기 return 가드)."""
         pdf = _file(mime_type="application/pdf", page_count=2)
         img = _file(file_name="i.png", mime_type="image/png", file_size=500)
         assert resolver._estimate_cache_tokens([pdf, img], None) is None
+
+    def test_image_with_stashed_tokens_summed(self):
+        """이미지에 image_tokens 가 stash 돼 있으면 합산에 포함(더는 무조건 None 아님)."""
+        img = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        img.image_tokens = 516
+        assert resolver._estimate_cache_tokens([img], None) == 516
+
+    def test_image_stash_summed_with_pdf(self):
+        """이미지(stash) + PDF 합산 — 516 + 258×2 = 1032."""
+        img = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        img.image_tokens = 516
+        pdf = _file(mime_type="application/pdf", page_count=2)
+        assert resolver._estimate_cache_tokens([img, pdf], None) == 1032
 
 
 class TestCountPdfPages:
@@ -104,6 +117,31 @@ class TestCountPdfPages:
 
     def test_invalid_bytes_returns_none(self):
         assert resolver._count_pdf_pages(b"not a pdf at all") is None
+
+
+# ── _estimate_image_tokens ───────────────────────────────────
+
+
+def _png_bytes(w: int, h: int) -> bytes:
+    """테스트용 w×h PNG 생성 (fitz)."""
+    import fitz
+
+    return fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, w, h), False).tobytes("png")
+
+
+class TestEstimateImageTokens:
+    """_estimate_image_tokens — 이미지 픽셀 → Gemini 타일 토큰 어림 (768px 타일 × 258)."""
+
+    def test_small_image_one_tile(self):
+        # 100x100 → ceil(100/768)=1 타일 → 258
+        assert resolver._estimate_image_tokens(_png_bytes(100, 100)) == 258
+
+    def test_multi_tile(self):
+        # 800x600 → ceil(800/768)*ceil(600/768) = 2*1 = 2 타일 → 516
+        assert resolver._estimate_image_tokens(_png_bytes(800, 600)) == 516
+
+    def test_non_image_returns_none(self):
+        assert resolver._estimate_image_tokens(b"not an image") is None
 
 
 # ── classify_files ────────────────────────────────────────────
@@ -313,6 +351,67 @@ class TestResolveFiles:
         assert len(result.context_cache_id) == 64  # SHA-256 hex
         assert upload_count == 1
 
+    async def test_promotion_mixed_sizes_when_ttl_set(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """context_cache_ttl 지정 + 크기 혼합(작은 것 + 큰 것) → 작은 것도 files_api로 승급.
+
+        classify_files 는 두 30MB PDF를 합계 60MB>50MB 라 하나는 inline, 하나는
+        files_api 로 나눈다(부분 섞기). ttl 이 켜지면 캐시는 all-or-nothing 이어야
+        하므로 작은 것도 승급돼 inline_pool 이 비어야 한다.
+        (docs/30 — 수정 전엔 승급 조건 `not files_api_pool` 때문에 작은 것이 inline 에 잔류)
+        """
+        small = _file(file_name="a.pdf", file_size=30 * 1024 * 1024)
+        large = _file(file_name="b.pdf", file_size=30 * 1024 * 1024)
+
+        upload_count = 0
+
+        async def fake_upload(path, mime_type):
+            nonlocal upload_count
+            upload_count += 1
+            return FileRef(
+                name=f"files/x{upload_count}", uri=f"https://example.com/x{upload_count}",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        async def fake_create_cache(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
+            return CacheRef(name="cachedContents/x", model=model)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+
+        result = await resolve_files(
+            [small, large], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None,
+            context_cache_ttl=3600,
+            standby_ttl_seconds=10,
+        )
+
+        # 혼합이어도 전원 승급 — inline 비고 두 파일 모두 files_api(캐시)로
+        assert result.inline_parts == []
+        assert len(result.uri_parts) == 2
+        assert result.cached_content == "cachedContents/x"
+        assert upload_count == 2
+
+    async def test_no_promotion_when_ttl_none(self, fake_redis):
+        """ttl 없으면 승급 안 함 — 크기 혼합이 그대로(작은 inline / 큰 files_api).
+
+        docs/30 회귀 가드: 승급 조건 완화가 ttl-off 경로로 새지 않아야 한다.
+        """
+        small = _file(file_name="a.pdf", file_size=30 * 1024 * 1024, page_count=5)
+        large = _file(file_name="b.pdf", file_size=30 * 1024 * 1024, page_count=5)
+
+        inline_pool, files_api_pool = await resolver._resolve_pools(
+            [small, large], llm_input={}, context_cache_ttl=None,
+        )
+
+        assert small in inline_pool
+        assert large in files_api_pool
+
 
 class TestTooSmallGate:
     """too-small 선제 게이트 (§4.4.1) — create 시도 전 모달리티 토큰 어림.
@@ -470,11 +569,11 @@ class TestTooSmallGate:
         assert result.cached_content is None   # fail-soft 가 흡수 (예외 전파 안 됨)
         assert len(result.uri_parts) == 1      # URI 폴백
 
-    async def test_image_out_of_scope_attempts_create(
+    async def test_image_unestimatable_attempts_create(
         self, fake_redis, fast_backoff, monkeypatch,
     ):
-        """이미지(스코프 외) → 추정 None → 게이트 무영향(통과) → create 시도."""
-        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        """이미지인데 추정 불가(깨진/미상 bytes) → image_tokens None → 게이트 통과 → create 시도 (fail-soft)."""
+        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)  # data=b"x" (파싱 불가)
         calls = self._patch_upload_and_cache(monkeypatch)
 
         result = await resolve_files(
@@ -484,6 +583,25 @@ class TestTooSmallGate:
 
         assert calls["create"] == 1
         assert result.cached_content == "cachedContents/x"
+
+    async def test_small_image_skips_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """작은 실제 이미지 → 업로드 시 image_tokens stash(258<1024) → 게이트가 skip → create 안 함.
+
+        docs/07 §4.4.1 이미지 스코프 편입 — 561토큰 출금요청서류의 doomed 400 제거 핵심.
+        """
+        fi = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        fi.data = _png_bytes(100, 100)  # 실제 이미지 → 1타일 = 258 토큰
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 0          # 게이트가 doomed create 를 막음
+        assert result.cached_content is None  # 캐시 없이 URI 로 전송(uncached)
 
 
 # ── #2 Phase 1 — Files API 경로 fi.data 회수 ──────────────────
