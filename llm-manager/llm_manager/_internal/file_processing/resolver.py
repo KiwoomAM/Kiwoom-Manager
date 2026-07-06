@@ -51,6 +51,8 @@ _PDF_SPLIT_LIMIT = 50 * 1024 * 1024  # 50 MB
 # context cache too-small 선제 게이트 (§4.4.1) — 캐시 최소 토큰 + 모달리티 환산
 _CACHE_MIN_TOKENS = 1024  # Gemini Context Cache 최소 합계 토큰
 _PDF_TOKENS_PER_PAGE = 258  # Gemini 문서: PDF 페이지당 258 토큰 (flat)
+_IMAGE_TOKENS_PER_TILE = 258  # Gemini 문서: 이미지 타일당 258 토큰
+_IMAGE_TILE_PX = 768  # 이미지는 768×768 타일로 분할 (작은 이미지=1타일)
 
 
 def _inline_total_limit(pool: list[FileInput]) -> int:
@@ -162,6 +164,25 @@ def _count_pdf_pages(data: bytes) -> int | None:
         return None
 
 
+def _estimate_image_tokens(data: bytes) -> int | None:
+    """이미지 바이트 → Gemini 타일 토큰 어림 (fitz/PyMuPDF). 깨진/비-이미지면 None.
+
+    Gemini 는 이미지를 768×768 픽셀 타일로 나눠 타일당 258 토큰(작은 이미지=1타일=258).
+    too-small 게이트(§4.4.1)용 — 타일 올림이라 과대추정 방향이라, 캐시 가능한 이미지를
+    잘못 skip 하지 않는다. None 은 '추정 불가' → 게이트 통과(create 시도, fail-soft backstop).
+    """
+    try:
+        import math
+
+        import fitz
+
+        pix = fitz.Pixmap(data)
+        tiles = math.ceil(pix.width / _IMAGE_TILE_PX) * math.ceil(pix.height / _IMAGE_TILE_PX)
+        return max(1, tiles) * _IMAGE_TOKENS_PER_TILE
+    except Exception:
+        return None
+
+
 def _split_pdf_bytes(data: bytes, *, max_pages: int = 1000) -> list[bytes]:
     """PDF bytes를 ≤50MB AND ≤max_pages 파트 bytes로 분할 (tempfile 경유).
 
@@ -253,8 +274,9 @@ def _reuse_files_api_uris(
         "[route] file=%s mode=files_api source=cached uris=%d",
         fi.file_name, len(existing["uris"]),
     )
-    # Redis 에 stash 된 PDF 페이지 수 복원 → too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작
+    # Redis 에 stash 된 PDF 페이지 수 / 이미지 토큰 복원 → too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작
     fi.page_count = existing.get("page_count")
+    fi.image_tokens = existing.get("image_tokens")
     fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
@@ -270,9 +292,11 @@ async def _upload_and_cache_file(
         fi.data = await fetch_with_fallback(fm, fi)
         if fi.resolved_via is None:
             fi.resolved_via = "primary"  # fetch 검증 완료
-    # PDF 페이지 수 stash (bytes 보유 시점 — 곧 비워짐) → too-small 게이트(§4.4.1)
+    # PDF 페이지 수 / 이미지 토큰 stash (bytes 보유 시점 — 곧 비워짐) → too-small 게이트(§4.4.1)
     if fi.mime_type == "application/pdf" and fi.page_count is None:
         fi.page_count = _count_pdf_pages(fi.data)
+    elif fi.mime_type.startswith("image/") and fi.image_tokens is None:
+        fi.image_tokens = _estimate_image_tokens(fi.data)
     if not fi.extension:
         logger.warning(
             "파일 확장자 없음: file_name=%s — 임시 파일 suffix 없이 업로드 진행",
@@ -324,6 +348,7 @@ async def _upload_and_cache_file(
                 "uris": uris,
                 "split": len(refs) > 1,
                 "page_count": fi.page_count,
+                "image_tokens": fi.image_tokens,
             },
             ttl=dynamic_ttl,
         )
@@ -406,7 +431,8 @@ def _estimate_cache_tokens(
     (fail-soft 가 backstop).
 
     환산 (Gemini 공식): PDF=`258×page_count`, 텍스트=`file_size//3`(바이트 기반 보수),
-    system=`len//3`. 이미지/오디오/비디오는 스코프 외(§4.4.1) → None.
+    이미지=`image_tokens`(stash, 타일수×258), system=`len//3`. 오디오/비디오는 스코프 외 → None.
+    이미지도 `image_tokens` 미상(None)이면 None(추정 불가 — 게이트 통과, fail-soft).
     """
     total = len(system_instruction) // 3 if system_instruction else 0
     for fi in files:
@@ -416,6 +442,10 @@ def _estimate_cache_tokens(
             total += _PDF_TOKENS_PER_PAGE * fi.page_count
         elif fi.mime_type.startswith("text/"):
             total += fi.file_size // 3
+        elif fi.mime_type.startswith("image/"):
+            if fi.image_tokens is None:
+                return None
+            total += fi.image_tokens
         else:
             return None
     return total

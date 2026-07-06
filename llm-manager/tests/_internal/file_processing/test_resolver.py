@@ -83,10 +83,23 @@ class TestEstimateCacheTokens:
         assert resolver._estimate_cache_tokens([pdf_a, pdf_b], None) == 1032
 
     def test_any_out_of_scope_returns_none(self):
-        """유효 PDF가 섞여 있어도 스코프 외(이미지) 하나면 전체 None (조기 return 가드)."""
+        """이미지에 image_tokens stash 가 없으면(미상) PDF가 섞여도 전체 None (조기 return 가드)."""
         pdf = _file(mime_type="application/pdf", page_count=2)
         img = _file(file_name="i.png", mime_type="image/png", file_size=500)
         assert resolver._estimate_cache_tokens([pdf, img], None) is None
+
+    def test_image_with_stashed_tokens_summed(self):
+        """이미지에 image_tokens 가 stash 돼 있으면 합산에 포함(더는 무조건 None 아님)."""
+        img = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        img.image_tokens = 516
+        assert resolver._estimate_cache_tokens([img], None) == 516
+
+    def test_image_stash_summed_with_pdf(self):
+        """이미지(stash) + PDF 합산 — 516 + 258×2 = 1032."""
+        img = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        img.image_tokens = 516
+        pdf = _file(mime_type="application/pdf", page_count=2)
+        assert resolver._estimate_cache_tokens([img, pdf], None) == 1032
 
 
 class TestCountPdfPages:
@@ -104,6 +117,31 @@ class TestCountPdfPages:
 
     def test_invalid_bytes_returns_none(self):
         assert resolver._count_pdf_pages(b"not a pdf at all") is None
+
+
+# ── _estimate_image_tokens ───────────────────────────────────
+
+
+def _png_bytes(w: int, h: int) -> bytes:
+    """테스트용 w×h PNG 생성 (fitz)."""
+    import fitz
+
+    return fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, w, h), False).tobytes("png")
+
+
+class TestEstimateImageTokens:
+    """_estimate_image_tokens — 이미지 픽셀 → Gemini 타일 토큰 어림 (768px 타일 × 258)."""
+
+    def test_small_image_one_tile(self):
+        # 100x100 → ceil(100/768)=1 타일 → 258
+        assert resolver._estimate_image_tokens(_png_bytes(100, 100)) == 258
+
+    def test_multi_tile(self):
+        # 800x600 → ceil(800/768)*ceil(600/768) = 2*1 = 2 타일 → 516
+        assert resolver._estimate_image_tokens(_png_bytes(800, 600)) == 516
+
+    def test_non_image_returns_none(self):
+        assert resolver._estimate_image_tokens(b"not an image") is None
 
 
 # ── classify_files ────────────────────────────────────────────
@@ -531,11 +569,11 @@ class TestTooSmallGate:
         assert result.cached_content is None   # fail-soft 가 흡수 (예외 전파 안 됨)
         assert len(result.uri_parts) == 1      # URI 폴백
 
-    async def test_image_out_of_scope_attempts_create(
+    async def test_image_unestimatable_attempts_create(
         self, fake_redis, fast_backoff, monkeypatch,
     ):
-        """이미지(스코프 외) → 추정 None → 게이트 무영향(통과) → create 시도."""
-        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)
+        """이미지인데 추정 불가(깨진/미상 bytes) → image_tokens None → 게이트 통과 → create 시도 (fail-soft)."""
+        fi = _file(file_name="i.png", mime_type="image/png", file_size=500)  # data=b"x" (파싱 불가)
         calls = self._patch_upload_and_cache(monkeypatch)
 
         result = await resolve_files(
@@ -545,6 +583,25 @@ class TestTooSmallGate:
 
         assert calls["create"] == 1
         assert result.cached_content == "cachedContents/x"
+
+    async def test_small_image_skips_create(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """작은 실제 이미지 → 업로드 시 image_tokens stash(258<1024) → 게이트가 skip → create 안 함.
+
+        docs/07 §4.4.1 이미지 스코프 편입 — 561토큰 출금요청서류의 doomed 400 제거 핵심.
+        """
+        fi = _file(file_name="scan.png", mime_type="image/png", file_size=5000)
+        fi.data = _png_bytes(100, 100)  # 실제 이미지 → 1타일 = 258 토큰
+        calls = self._patch_upload_and_cache(monkeypatch)
+
+        result = await resolve_files(
+            [fi], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        assert calls["create"] == 0          # 게이트가 doomed create 를 막음
+        assert result.cached_content is None  # 캐시 없이 URI 로 전송(uncached)
 
 
 # ── #2 Phase 1 — Files API 경로 fi.data 회수 ──────────────────

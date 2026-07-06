@@ -44,6 +44,8 @@ class FileInput(BaseModel):
     `resolved_via`: "primary"(1차 fetch) | "fallback"(check_cache 경유).
     `page_count`: PDF 페이지 수 — 업로드 시(bytes 보유 시점) 계산해 stash. context cache
         too-small 선제 게이트(§4.4.1)의 토큰 어림에 사용. PDF 외/미상이면 None.
+    `image_tokens`: 이미지 Gemini 타일 토큰 어림 — page_count 와 같은 목적/시점(업로드 시
+        stash)으로 이미지의 too-small 게이트용. 이미지 외/미상이면 None.
     """
 
     file_name: str
@@ -55,6 +57,7 @@ class FileInput(BaseModel):
     file_path: str | None = None
     resolved_via: str | None = None
     page_count: int | None = None
+    image_tokens: int | None = None
 
 
 class FileKeyingMeta(BaseModel):
