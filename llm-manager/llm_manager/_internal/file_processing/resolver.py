@@ -168,8 +168,10 @@ def _estimate_image_tokens(data: bytes) -> int | None:
     """이미지 바이트 → Gemini 타일 토큰 어림 (fitz/PyMuPDF). 깨진/비-이미지면 None.
 
     Gemini 는 이미지를 768×768 픽셀 타일로 나눠 타일당 258 토큰(작은 이미지=1타일=258).
-    too-small 게이트(§4.4.1)용 — 타일 올림이라 과대추정 방향이라, 캐시 가능한 이미지를
-    잘못 skip 하지 않는다. None 은 '추정 불가' → 게이트 통과(create 시도, fail-soft backstop).
+    too-small 게이트(§4.4.1)용 — 산식 ceil(w/768)×ceil(h/768)×258 이 Gemini 타일 과금과
+    동일해 실측과 같다(과대 > 가 아니라 하한 보장 ≥ — Gemini 가 대형 이미지를 축소하면 그 이상).
+    하한이 보장(잘못 skip 은 estimate<actual 일 때만 발생)되므로 캐시 가능한 이미지를 잘못 skip 안 함.
+    None 은 '추정 불가' → 게이트 통과(create 시도, fail-soft backstop).
     """
     try:
         import math
@@ -456,6 +458,7 @@ async def _create_and_save_context_cache(
     checksums: list[str],
     file_refs: list[FileRef],
     *,
+    cache_contents: list[str | FileRef],
     model: str,
     system_instruction: str | None,
     ttl: int,
@@ -463,6 +466,9 @@ async def _create_and_save_context_cache(
     tool_config: str | None = None,
 ) -> str | None:
     """context_cache 생성 + Redis 저장 → cached_content_name 반환 (분기 ④).
+
+    `cache_contents` = 파일별 헤더 라벨이 섞인 캐시 콘텐츠(create 대상, doc 29).
+    `file_refs` = Redis `files_api_uris` 저장·checksum 용(라벨 없는 순수 refs, 유지).
 
     standby 선점 후(정상 경로), 또는 standby 대기 timeout 후(Y' Hybrid)
     양쪽에서 호출된다.
@@ -478,7 +484,7 @@ async def _create_and_save_context_cache(
     """
     try:
         cache_ref = await create_context_cache(
-            file_refs,
+            cache_contents,
             model=model,
             system_instruction=system_instruction,
             ttl=ttl,
@@ -535,6 +541,7 @@ async def _resolve_or_create_context_cache(
     checksums: list[str],
     file_refs: list[FileRef],
     *,
+    cache_contents: list[str | FileRef],
     model: str | None,
     system_instruction: str | None,
     context_cache_ttl: int,
@@ -560,6 +567,7 @@ async def _resolve_or_create_context_cache(
         try:
             return await _create_and_save_context_cache(
                 hash_key, checksums, file_refs,
+                cache_contents=cache_contents,
                 model=model,
                 system_instruction=system_instruction,
                 ttl=context_cache_ttl,
@@ -583,12 +591,37 @@ async def _resolve_or_create_context_cache(
     )
     return await _create_and_save_context_cache(
         hash_key, checksums, file_refs,
+        cache_contents=cache_contents,
         model=model,
         system_instruction=system_instruction,
         ttl=context_cache_ttl,
         tools=tools,
         tool_config=tool_config,
     )
+
+
+def _build_labeled_cache_contents(
+    groups: list[tuple[FileInput, list[FileRef]]],
+) -> list[str | FileRef]:
+    """파일별 '===== [문서 N] 파일명 =====' 헤더 + FileRef 를 섞은 cache contents (doc 29).
+
+    분할 파일(len(refs)>1)은 한 헤더 아래 파트들을 라벨 없이 연속 배치해 '한 문서가 용량
+    때문에 쪼개진 것'임을 LLM 이 인지하되 연속성은 유지한다(docs/29 §3.1).
+
+    주의(라벨을 출처 귀속에 쓰는 소비자용 — docs/29 §3.3/§3.6):
+    라벨은 context cache 콘텐츠에만 붙는다(inline/캐시 skip 경로엔 없음).
+    분할 파일 각 파트는 새 PDF 라 페이지가 1 부터 재시작한다(원문 오프셋 미적용).
+    """
+    contents: list[str | FileRef] = []
+    for idx, (fi, refs) in enumerate(groups, start=1):
+        n = len(refs)
+        header = f"===== [문서 {idx}] {fi.file_name}"
+        if n > 1:
+            header += f" (총 {n}개 파트로 분할 업로드됨)"
+        header += " ====="
+        contents.append(header)
+        contents.extend(refs)
+    return contents
 
 
 async def _process_files_api(
@@ -640,7 +673,8 @@ async def _process_files_api(
 
     # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 standby → 업로드 ──
     uri_parts: list[Part] = []
-    file_refs: list[FileRef] = []  # context_cache 생성용
+    file_refs: list[FileRef] = []  # context_cache 생성 + Redis files_api_uris용
+    groups: list[tuple[FileInput, list[FileRef]]] = []  # 파일별 그룹(라벨링, doc 29)
 
     for fi, checksum in zip(files_api_pool, checksums):
         parts, refs = await _resolve_one_files_api(
@@ -648,6 +682,7 @@ async def _process_files_api(
         )
         uri_parts.extend(parts)
         file_refs.extend(refs)
+        groups.append((fi, refs))
 
     # ── ④ context_cache_ttl 지정 시 standby로 보호된 create_cache + Redis 저장 ──
     cached_content: str | None = None
@@ -670,6 +705,7 @@ async def _process_files_api(
         else:
             cached_content = await _resolve_or_create_context_cache(
                 hash_key, checksums, file_refs,
+                cache_contents=_build_labeled_cache_contents(groups),
                 model=model,
                 system_instruction=system_instruction,
                 context_cache_ttl=context_cache_ttl,

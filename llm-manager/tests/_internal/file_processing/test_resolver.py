@@ -217,6 +217,42 @@ class TestClassifyFiles:
         assert files_api == []
 
 
+# ── _build_labeled_cache_contents (doc 29 파일 라벨링) ─────────
+
+
+class TestBuildLabeledCacheContents:
+    """doc 29 §3.3 — 파일별 '===== [문서 N] 파일명 =====' 헤더 + FileRef 섞은 cache contents.
+
+    분할 파일은 헤더에 '(총 N개 파트로 분할 업로드됨)', 파트 사이엔 라벨 없이 연속.
+    """
+
+    @staticmethod
+    def _ref(name):
+        return FileRef(name=f"files/{name}", uri=f"gs://x/{name}",
+                       mime_type="application/pdf", state="ACTIVE")
+
+    def test_headers_per_file_with_split_marker(self):
+        fa = _file(file_name="A.pdf")
+        fb = _file(file_name="B.pdf")
+        ra1, ra2, rb = self._ref("a1"), self._ref("a2"), self._ref("b")
+        groups = [(fa, [ra1, ra2]), (fb, [rb])]   # A 는 2파트 분할, B 는 단일
+
+        out = resolver._build_labeled_cache_contents(groups)
+
+        assert out == [
+            "===== [문서 1] A.pdf (총 2개 파트로 분할 업로드됨) =====",
+            ra1, ra2,
+            "===== [문서 2] B.pdf =====",
+            rb,
+        ]
+
+    def test_single_file_no_split_marker(self):
+        fa = _file(file_name="report.pdf")
+        r = self._ref("r")
+        out = resolver._build_labeled_cache_contents([(fa, [r])])
+        assert out == ["===== [문서 1] report.pdf =====", r]
+
+
 # ── _estimate_non_file_bytes ──────────────────────────────────
 
 
@@ -411,6 +447,38 @@ class TestResolveFiles:
 
         assert small in inline_pool
         assert large in files_api_pool
+
+    async def test_context_cache_created_with_file_labels(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """context cache 생성 시 create_context_cache 가 파일별 헤더 붙은 cache_contents 를 받는다 (doc 29)."""
+        fa = _file(file_name="A.pdf", file_size=30 * 1024 * 1024)
+        fb = _file(file_name="B.pdf", file_size=30 * 1024 * 1024)
+
+        async def fake_upload(path, mime_type):
+            return FileRef(name="files/x", uri="gs://x", mime_type=mime_type, state="ACTIVE")
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        captured = {}
+
+        async def fake_create_cache(contents, *, model, system_instruction, ttl, tools=None, tool_config=None):
+            captured["contents"] = contents
+            return CacheRef(name="cachedContents/x", model=model)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+
+        await resolve_files(
+            [fa, fb], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        headers = [c for c in captured["contents"] if isinstance(c, str)]
+        assert any("[문서 1] A.pdf" in h for h in headers)
+        assert any("[문서 2] B.pdf" in h for h in headers)
 
 
 class TestTooSmallGate:
@@ -987,6 +1055,7 @@ class TestContextCacheTooSmallFailSoft:
 
         result = await resolver._create_and_save_context_cache(
             "a" * 64, ["cs1"], [self._ref()],
+            cache_contents=[self._ref()],
             model="gemini-2.5-flash", system_instruction=None, ttl=3600,
         )
         assert result is None
@@ -1006,6 +1075,7 @@ class TestContextCacheTooSmallFailSoft:
         with pytest.raises(HandlerError):
             await resolver._create_and_save_context_cache(
                 "a" * 64, ["cs1"], [self._ref()],
+                cache_contents=[self._ref()],
                 model="gemini-2.5-flash", system_instruction=None, ttl=3600,
             )
 
@@ -1023,6 +1093,7 @@ class TestContextCacheTooSmallFailSoft:
         with pytest.raises(HandlerError):
             await resolver._create_and_save_context_cache(
                 "a" * 64, ["cs1"], [self._ref()],
+                cache_contents=[self._ref()],
                 model="gemini-2.5-flash", system_instruction=None, ttl=3600,
             )
 

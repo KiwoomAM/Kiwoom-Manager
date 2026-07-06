@@ -65,7 +65,7 @@ async def upload_pdf_parts(
 
 
 async def create_context_cache(
-    file_refs: list[FileRef],
+    contents: list[str | FileRef],
     *,
     model: str,
     system_instruction: str | None = None,
@@ -80,7 +80,7 @@ async def create_context_cache(
     의 `create_cache` 가 이들 파라미터를 지원하므로 llm-manager wrapper 에서도 그대로 전달.
 
     Args:
-        file_refs: 업로드된 FileRef 리스트.
+        contents: 캐싱할 콘텐츠 — 파일별 헤더 라벨(str) + FileRef 혼합 (doc 29).
         model: Gemini 모델명.
         system_instruction: 시스템 프롬프트.
         ttl: 캐시 TTL (초).
@@ -96,7 +96,7 @@ async def create_context_cache(
     for attempt in range(_MAX_RETRIES + 1):
         try:
             return await _aio_create_cache(
-                file_refs,
+                contents,
                 model=model,
                 system=system_instruction,
                 ttl=ttl,
