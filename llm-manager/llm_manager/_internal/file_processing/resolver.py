@@ -660,26 +660,26 @@ async def _resolve_pools(
     *,
     context_cache_ttl: int | None,
 ) -> tuple[list[FileInput], list[FileInput]]:
-    """classify + 승급 + 인라인 PDF 페이지 전개 + 재분류 → (inline_pool, files_api_pool).
+    """→ (inline_pool, files_api_pool). ttl 켜지면 크기 분기 없이 전 파일 files_api(docs/30);
+    ttl 없을 때만 classify(부분 섞기) + 인라인 >1000p PDF 전개·재분류.
 
     resolve_files와 resolve_files_after_404가 공유한다. 404 복구가 동일한
     files_api_pool(Step 2.5 전개로 생긴 part 포함)을 봐야 무효화 대상 checksum이
     일치한다 — 안 그러면 spilled part의 stale URI가 무효화되지 않아 "1회 복구"가
     실패한다 (docs/27 §404 복구, docs/28 §5.4).
     """
-    # Step 1: 분류
-    inline_pool, files_api_pool = classify_files(files, llm_input)
-
-    # Step 2: context_cache_ttl 승급 정책 (§4.4)
-    if context_cache_ttl is not None and not files_api_pool and inline_pool:
+    # ttl 켜지면 캐시는 all-or-nothing — 크기 분기(classify) 없이 전 파일을 Files API 로 (docs/30).
+    # inline 분기의 목적(작은 파일을 굳이 Files API 로 안 올림)은 '캐시 안 할 때' 얘기라,
+    # 캐시를 켠 경우엔 나누지 않고 전부 캐시 대상으로 보낸다.
+    if context_cache_ttl is not None:
         logger.warning(
-            "context_cache_ttl=%d 지정 — 모든 파일 Files API 경로로 승급",
+            "context_cache_ttl=%d 지정 — 크기 분기 없이 전 파일 Files API 경로로 승급",
             context_cache_ttl,
         )
-        files_api_pool = inline_pool
-        inline_pool = []
+        return [], list(files)
 
-    # Step 2.5: 인라인 PDF 페이지 전개 (>1000p → 메모리 분할) + 재분류 폴백 (docs/28 §5.4)
+    # ttl 없을 때만: 크기로 분류(부분 섞기) + 인라인 >1000p PDF 페이지 전개·재분류 (docs/28 §5.4)
+    inline_pool, files_api_pool = classify_files(files, llm_input)
     if inline_pool:
         expanded = await _expand_pdfs_over_page_limit(inline_pool)
         inline_pool, spilled = classify_files(expanded, llm_input)

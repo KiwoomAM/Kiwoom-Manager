@@ -313,6 +313,67 @@ class TestResolveFiles:
         assert len(result.context_cache_id) == 64  # SHA-256 hex
         assert upload_count == 1
 
+    async def test_promotion_mixed_sizes_when_ttl_set(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """context_cache_ttl 지정 + 크기 혼합(작은 것 + 큰 것) → 작은 것도 files_api로 승급.
+
+        classify_files 는 두 30MB PDF를 합계 60MB>50MB 라 하나는 inline, 하나는
+        files_api 로 나눈다(부분 섞기). ttl 이 켜지면 캐시는 all-or-nothing 이어야
+        하므로 작은 것도 승급돼 inline_pool 이 비어야 한다.
+        (docs/30 — 수정 전엔 승급 조건 `not files_api_pool` 때문에 작은 것이 inline 에 잔류)
+        """
+        small = _file(file_name="a.pdf", file_size=30 * 1024 * 1024)
+        large = _file(file_name="b.pdf", file_size=30 * 1024 * 1024)
+
+        upload_count = 0
+
+        async def fake_upload(path, mime_type):
+            nonlocal upload_count
+            upload_count += 1
+            return FileRef(
+                name=f"files/x{upload_count}", uri=f"https://example.com/x{upload_count}",
+                mime_type=mime_type, state="ACTIVE",
+            )
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        async def fake_create_cache(file_refs, *, model, system_instruction, ttl, tools=None, tool_config=None):
+            return CacheRef(name="cachedContents/x", model=model)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+
+        result = await resolve_files(
+            [small, large], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None,
+            context_cache_ttl=3600,
+            standby_ttl_seconds=10,
+        )
+
+        # 혼합이어도 전원 승급 — inline 비고 두 파일 모두 files_api(캐시)로
+        assert result.inline_parts == []
+        assert len(result.uri_parts) == 2
+        assert result.cached_content == "cachedContents/x"
+        assert upload_count == 2
+
+    async def test_no_promotion_when_ttl_none(self, fake_redis):
+        """ttl 없으면 승급 안 함 — 크기 혼합이 그대로(작은 inline / 큰 files_api).
+
+        docs/30 회귀 가드: 승급 조건 완화가 ttl-off 경로로 새지 않아야 한다.
+        """
+        small = _file(file_name="a.pdf", file_size=30 * 1024 * 1024, page_count=5)
+        large = _file(file_name="b.pdf", file_size=30 * 1024 * 1024, page_count=5)
+
+        inline_pool, files_api_pool = await resolver._resolve_pools(
+            [small, large], llm_input={}, context_cache_ttl=None,
+        )
+
+        assert small in inline_pool
+        assert large in files_api_pool
+
 
 class TestTooSmallGate:
     """too-small 선제 게이트 (§4.4.1) — create 시도 전 모달리티 토큰 어림.
