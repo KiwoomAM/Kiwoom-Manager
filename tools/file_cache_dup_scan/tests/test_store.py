@@ -35,3 +35,12 @@ def test_fetch_new_files_filters_by_window_and_returns_metadata():
             {"_id": old, "metadata": {"file_name": "old.pdf"}}]
     out = store.fetch_new_files(FakeCollection(docs=docs), start)
     assert out == [{"file_name": "new.pdf"}]
+
+
+def test_fetch_new_files_skips_docs_without_metadata():
+    start = datetime(2026, 7, 6, 22, 0, 0, tzinfo=timezone.utc)
+    new = ObjectId.from_datetime(datetime(2026, 7, 7, tzinfo=timezone.utc))
+    docs = [{"_id": new, "metadata": {"file_name": "ok.pdf"}},
+            {"_id": new}]  # metadata 필드 없는 이상 문서
+    out = store.fetch_new_files(FakeCollection(docs=docs), start)
+    assert out == [{"file_name": "ok.pdf"}]  # 죽지 않고 정상 문서만
