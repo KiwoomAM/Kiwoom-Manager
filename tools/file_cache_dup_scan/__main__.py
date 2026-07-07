@@ -13,7 +13,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-from pymongo import MongoClient
+from mdb_manager import MDBConnectionError
 
 from tools.file_cache_dup_scan import gh_issue, scan, store, summary
 
@@ -21,7 +21,6 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("file_cache_dup_scan")
 
 KST = timezone(timedelta(hours=9))
-CACHE_COLLECTION = "file_cache"
 
 
 def _kst(dt_utc: datetime) -> str:
@@ -40,7 +39,7 @@ def _write_summary(md: str) -> None:
 def _issue_body(g: dict) -> str:
     k = g["key"]
     ids = "\n".join(
-        f"  - `{i}` (생성 {_kst(i.generation_time)} KST)" for i in g["ids"]
+        f"  - `{i}` (생성 {_kst(scan.oid_time(i))} KST)" for i in g["ids"]
     )
     return (f"file_cache 중복 저장 감지.\n\n"
             f"- file_name: `{k.get('n')}`\n"
@@ -75,7 +74,6 @@ def process_dups(dups: list[dict], slug: str, label: str, token: str, *,
 
 def main() -> int:
     lookback = float(os.environ.get("LOOKBACK_HOURS", "25"))
-    mongo_uri = os.environ.get("MONGO_URI", "mongodb://192.7.9.45:27017")
     mongo_db = os.environ.get("MONGO_DB", "kw_ai")
     label = os.environ.get("DUP_ISSUE_LABEL", "file-cache-dup")
     token = os.environ.get("GITHUB_TOKEN")
@@ -84,12 +82,15 @@ def main() -> int:
     now_utc = datetime.now(timezone.utc)
     start = scan.window_start(now_utc, lookback)
 
-    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
-    col = client[mongo_db][CACHE_COLLECTION]
-
-    groups = store.fetch_dup_groups(col)
+    mgr = store.get_manager(mongo_db)
+    try:
+        groups = store.fetch_dup_groups(mgr)
+        new_files = store.fetch_new_files(mgr, start)
+    except MDBConnectionError as e:
+        handler_url = os.environ.get("MDB_HANDLER_URL", "http://192.7.9.45:8300")
+        logger.error("mdb-handler(%s) 접근 실패 — 러너에서 :8300 도달 불가? %s", handler_url, e)
+        raise
     dups = scan.reportable_dups(groups, start)
-    new_files = store.fetch_new_files(col, start)
     logger.info("윈도우 신규 %d건, 중복 그룹 %d건", len(new_files), len(dups))
 
     md = summary.render(_kst(start), _kst(now_utc), new_files, dups)

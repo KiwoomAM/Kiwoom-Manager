@@ -25,13 +25,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install deps
-        run: pip install pymongo
+        run: pip install ./mdb-manager   # 체크아웃된 레포의 mdb-manager(→ mdb-handler HTTP), httpx 포함
 
       - name: Run dup scan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPO: ${{ github.repository }}
-          MONGO_URI: mongodb://192.7.9.45:27017
+          MDB_HANDLER_URL: http://192.7.9.45:8300
           MONGO_DB: kw_ai
           LOOKBACK_HOURS: "25"
           DUP_ISSUE_LABEL: file-cache-dup

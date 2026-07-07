@@ -1,11 +1,11 @@
 """main()의 이슈 dedup 경로 검증 — skip/생성/soft-fail 분기."""
-from bson import ObjectId
 from tools.file_cache_dup_scan import gh_issue
 from tools.file_cache_dup_scan import __main__ as m
 
 
 def _dup(name):
-    return {"key": {"n": name, "m": 1, "s": 2}, "ids": [ObjectId()], "count": 2}
+    # ids 는 hex 문자열(앞 8자=유닉스초) — _issue_body 가 oid_time 으로 파싱
+    return {"key": {"n": name, "m": 1, "s": 2}, "ids": ["69f0610700000000000000aa"], "count": 2}
 
 
 def test_skips_when_fingerprint_already_open():
