@@ -6,6 +6,8 @@ on:
   workflow_dispatch:        # 수동 실행 허용
 
 permissions:
+  contents: read            # actions/checkout 가 레포를 읽으려면 필요
+                            # (permissions 블록을 명시하면 미기재 권한은 none 이 되므로 반드시 포함)
   issues: write             # GITHUB_TOKEN 으로 이슈 생성
 
 concurrency:
