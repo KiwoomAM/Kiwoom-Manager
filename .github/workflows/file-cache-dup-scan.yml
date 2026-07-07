@@ -1,0 +1,36 @@
+name: file-cache dup scan
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 매일 08:00 KST (UTC 23:00)
+  workflow_dispatch:        # 수동 실행 허용
+
+permissions:
+  issues: write             # GITHUB_TOKEN 으로 이슈 생성
+
+concurrency:
+  group: file-cache-dup-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: self-hosted    # 내부망 러너 — file_cache Mongo(192.7.9.45) 접근 가능
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install pymongo
+
+      - name: Run dup scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          MONGO_URI: mongodb://192.7.9.45:27017
+          MONGO_DB: kw_ai
+          LOOKBACK_HOURS: "25"
+          DUP_ISSUE_LABEL: file-cache-dup
+        run: python -m tools.file_cache_dup_scan
