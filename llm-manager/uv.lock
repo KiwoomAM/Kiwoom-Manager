@@ -108,17 +108,19 @@ wheels = [
 
 [[package]]
 name = "kiwoom-file-manager"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "../file-manager" }
 dependencies = [
     { name = "httpx" },
     { name = "kiwoom-mdb-manager" },
+    { name = "kiwoom-redis-manager" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "kiwoom-mdb-manager", editable = "../mdb-manager" },
+    { name = "kiwoom-redis-manager", editable = "../redis-manager" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
     { name = "tqdm", marker = "extra == 'scripts'", specifier = ">=4.66.0" },
@@ -188,12 +190,14 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.2.0" },
+    { name = "langgraph-checkpoint-redis", marker = "extra == 'langgraph'", specifier = "==0.5.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "langgraph"]
 
 [[package]]
 name = "nodeenv"

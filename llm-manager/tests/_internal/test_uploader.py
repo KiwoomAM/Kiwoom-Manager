@@ -54,7 +54,7 @@ class TestUploadPdfParts:
             new_callable=AsyncMock,
             return_value=_fake_file_ref(),
         ):
-            refs = await upload_pdf_parts(pdf_path)
+            refs, _ = await upload_pdf_parts(pdf_path)
             assert len(refs) == 1
 
     @pytest.mark.asyncio
@@ -80,7 +80,7 @@ class TestUploadPdfParts:
         ), patch(
             "llm_manager._internal.file_processing.splitter._MERGE_LIMIT_MB", 0,
         ):
-            refs = await upload_pdf_parts(pdf_path, target_mb=target_mb)
+            refs, _ = await upload_pdf_parts(pdf_path, target_mb=target_mb)
             assert len(refs) >= 2
             assert call_count == len(refs)
 
@@ -125,6 +125,55 @@ class TestUploadPdfParts:
         # 임시 파일이 정리됐는지 확인 (시스템 temp 디렉토리에 생성되므로 tmp_path에는 원본만)
         remaining = list(tmp_path.glob("*.pdf"))
         assert len(remaining) == 1
+
+    @pytest.mark.asyncio
+    async def test_split_returns_part_page_ranges(self, tmp_path):
+        """분할 시 (refs, part_ranges) 튜플 반환 — 파트별 원본 페이지 범위(1-based, 끝 포함)."""
+        pdf_path = str(tmp_path / "ranges.pdf")
+        _create_pdf(pdf_path, num_pages=20)
+
+        file_size = os.path.getsize(pdf_path)
+        target_mb = max((file_size / (1024 * 1024)) / 3, 0.001)
+
+        async def _mock_upload(path, **kwargs):
+            return _fake_file_ref()
+
+        with patch(
+            "llm_manager._internal.file_processing.uploader.upload_file",
+            side_effect=_mock_upload,
+        ), patch(
+            "llm_manager._internal.file_processing.splitter._MERGE_LIMIT_MB", 0,
+        ):
+            result = await upload_pdf_parts(pdf_path, target_mb=target_mb)
+
+        assert isinstance(result, tuple)
+        refs, part_ranges = result
+        assert len(refs) >= 2
+        assert part_ranges is not None
+        # 파트 수와 범위 수 일치
+        assert len(part_ranges) == len(refs)
+        # 1부터 시작, 끝은 총 페이지수(20), 인접 파트가 빈틈·겹침 없이 이어짐
+        assert part_ranges[0][0] == 1
+        assert part_ranges[-1][1] == 20
+        for (s0, e0), (s1, e1) in zip(part_ranges, part_ranges[1:]):
+            assert e0 >= s0
+            assert s1 == e0 + 1
+
+    @pytest.mark.asyncio
+    async def test_no_split_returns_none_ranges(self, tmp_path):
+        """비분할(단일 파트) 시 part_ranges 는 None."""
+        pdf_path = str(tmp_path / "single.pdf")
+        _create_pdf(pdf_path, num_pages=5)
+
+        with patch(
+            "llm_manager._internal.file_processing.uploader.upload_file",
+            new_callable=AsyncMock,
+            return_value=_fake_file_ref(),
+        ):
+            refs, part_ranges = await upload_pdf_parts(pdf_path)
+
+        assert len(refs) == 1
+        assert part_ranges is None
 
 
 # ── create_context_cache ─────────────────────────────────────

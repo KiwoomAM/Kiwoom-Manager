@@ -314,7 +314,11 @@ async def _upload_and_cache_file(
             if fi.mime_type == "application/pdf" and (
                 fi.file_size > _PDF_SPLIT_LIMIT or (fi.page_count or 0) > 1000
             ):
-                refs = await upload_pdf_parts(tmp.name)
+                refs, pdf_part_ranges = await upload_pdf_parts(tmp.name)
+                # 분할된 경우 파트별 원본 페이지 범위를 fi 에 실어 file_meta 로 노출 (소비자의
+                # (파트, 로컬쪽)→절대쪽 환산용). 비분할이면 None 이라 굳이 덮지 않는다.
+                if pdf_part_ranges is not None:
+                    fi.pdf_part_ranges = pdf_part_ranges
             else:
                 refs = [await upload_file(tmp.name, mime_type=fi.mime_type)]
         except (HandlerError, HandlerConnectionError, PdfPageTooLargeError):

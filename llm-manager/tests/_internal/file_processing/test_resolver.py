@@ -1178,7 +1178,7 @@ class TestFilesApiSplitGate:
         async def fake_parts(path, *a, **k):
             split_called["n"] += 1
             return [FileRef(name="files/p", uri="https://example.com/p",
-                            mime_type="application/pdf", state="ACTIVE")]
+                            mime_type="application/pdf", state="ACTIVE")], [(1, 1500)]
 
         async def fake_single(path, mime_type):
             single_called["n"] += 1
@@ -1193,6 +1193,26 @@ class TestFilesApiSplitGate:
         await _upload_and_cache_file(fi, "cs-pages", [], [])
         assert split_called["n"] == 1
         assert single_called["n"] == 0
+
+    async def test_split_populates_pdf_part_ranges(self, fake_redis, monkeypatch):
+        """분할 라우팅 시 upload_pdf_parts 가 준 파트 범위를 fi.pdf_part_ranges 에 실어
+        file_meta 로 나가게 한다."""
+        fi = _file(mime_type="application/pdf", file_size=1 * 1024 * 1024, page_count=1500)
+
+        async def fake_parts(path, *a, **k):
+            refs = [
+                FileRef(name="files/p1", uri="https://example.com/p1",
+                        mime_type="application/pdf", state="ACTIVE"),
+                FileRef(name="files/p2", uri="https://example.com/p2",
+                        mime_type="application/pdf", state="ACTIVE"),
+            ]
+            return refs, [(1, 750), (751, 1500)]
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts", fake_parts)
+
+        await _upload_and_cache_file(fi, "cs-ranges", [], [])
+        assert fi.pdf_part_ranges == [(1, 750), (751, 1500)]
 
 
 class TestExpandPdfsOverPageLimit:
