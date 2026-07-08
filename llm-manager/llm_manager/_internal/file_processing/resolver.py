@@ -633,6 +633,55 @@ def _build_labeled_cache_contents(
     return contents
 
 
+def _build_split_page_notice(
+    groups: list[tuple[FileInput, list[FileRef]]],
+) -> str | None:
+    """분할 업로드된 파일이 있으면 '각 파트의 원본 페이지 범위 + 출처는 원본 절대 페이지로'
+    안내 문구를 만든다(없으면 None).
+
+    50MB/1000p 초과로 분할되면 각 파트가 새 PDF 라 페이지가 1 부터 재시작한다. 그대로 두면
+    LLM 이 뒤 파트의 근거를 '파트 안 로컬 쪽번호'로 답해 원본 기준으로 밀린다(앞 파트 장수만큼).
+    이 문구를 system_instruction 뒤에 붙여 context cache 에 구우면, 모델이 출처를 원본 절대
+    페이지로 답하도록 유도한다. 분할된 파일이 하나도 없으면 None(문구 없음).
+    """
+    lines: list[str] = []
+    for idx, (fi, refs) in enumerate(groups, start=1):
+        rngs = fi.pdf_part_ranges
+        if len(refs) > 1 and rngs and len(rngs) == len(refs):
+            spans = ", ".join(
+                f"part{i}=원본 {s}~{e}쪽" for i, (s, e) in enumerate(rngs, start=1)
+            )
+            lines.append(f"- [문서 {idx}] {fi.file_name}: {spans}")
+    if not lines:
+        return None
+    body = "\n".join(lines)
+    return (
+        "\n\n[분할 업로드 안내]\n"
+        "아래 문서는 용량 때문에 원본 PDF가 여러 파트로 분할되어 업로드되었다. 각 파트는 그 파트 "
+        "안에서 다시 1쪽부터 시작하지만, 원본 PDF 기준 각 파트의 페이지 범위는 다음과 같다:\n"
+        f"{body}\n"
+        "출처의 페이지(쪽) 번호는 반드시 원본 PDF 파일 기준의 절대 페이지로 답하라 — 페이지에 "
+        "인쇄된 쪽번호가 아니라, 원본 PDF 파일에서 물리적으로 몇 번째 장인지다."
+    )
+
+
+def _with_split_page_notice(
+    system_instruction: str | None,
+    groups: list[tuple[FileInput, list[FileRef]]],
+) -> str | None:
+    """system_instruction 뒤에 분할 안내 문구를 덧붙인다(분할 파일 없으면 원본 그대로).
+
+    주의: 이 문구는 context cache 에 굽는 system 에만 붙이고 캐시 KEY(make_context_cache_key)
+    에는 넣지 않는다 — KEY 는 원본 system 으로 계산돼 조회/생성이 일관된다. 문구는 파일의
+    pdf_part_ranges 에서 결정론적으로 파생되고 파일 신원(checksum)은 이미 KEY 에 있으므로
+    충돌하지 않는다.
+    """
+    notice = _build_split_page_notice(groups)
+    if notice is None:
+        return system_instruction
+    return (system_instruction or "") + notice
+
+
 async def _process_files_api(
     files_api_pool: list[FileInput],
     *,
@@ -716,7 +765,8 @@ async def _process_files_api(
                 hash_key, checksums, file_refs,
                 cache_contents=_build_labeled_cache_contents(groups),
                 model=model,
-                system_instruction=system_instruction,
+                # 분할된 파일이 있으면 안내 문구를 system 뒤에 붙여 캐시에 굽는다(키는 원본 system).
+                system_instruction=_with_split_page_notice(system_instruction, groups),
                 context_cache_ttl=context_cache_ttl,
                 standby_ttl_seconds=standby_ttl_seconds,
                 tools=tools,

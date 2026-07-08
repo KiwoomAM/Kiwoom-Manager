@@ -253,6 +253,49 @@ class TestBuildLabeledCacheContents:
         assert out == ["===== [문서 1] report.pdf =====", r]
 
 
+# ── _build_split_page_notice / _with_split_page_notice (분할 출처 페이지 안내) ──
+
+
+class TestSplitPageNotice:
+    """분할 업로드 파일이 있으면 원본 페이지 범위 + '절대 페이지로 답하라' 안내를 만든다.
+
+    분할 파트가 각자 1쪽부터 재시작해 뒤 파트 출처가 밀리는 것 방지 — system 뒤에 붙여 캐시에 굽는다.
+    """
+
+    @staticmethod
+    def _ref(name):
+        return FileRef(name=f"files/{name}", uri=f"gs://x/{name}",
+                       mime_type="application/pdf", state="ACTIVE")
+
+    def _split_group(self):
+        fa = _file(file_name="big.pdf")
+        fa.pdf_part_ranges = [(1, 42), (43, 133)]
+        return (fa, [self._ref("a1"), self._ref("a2")])
+
+    def test_notice_lists_ranges_and_demands_absolute(self):
+        notice = resolver._build_split_page_notice([self._split_group()])
+        assert notice is not None
+        assert "big.pdf" in notice
+        assert "part1=원본 1~42쪽" in notice
+        assert "part2=원본 43~133쪽" in notice
+        assert "절대 페이지" in notice
+
+    def test_none_when_no_split_file(self):
+        fa = _file(file_name="small.pdf")   # pdf_part_ranges None → 분할 아님
+        assert resolver._build_split_page_notice([(fa, [self._ref("s")])]) is None
+
+    def test_with_notice_appends_to_system(self):
+        out = resolver._with_split_page_notice("SYSTEM_BASE", [self._split_group()])
+        assert out.startswith("SYSTEM_BASE")
+        assert "[분할 업로드 안내]" in out
+
+    def test_with_notice_passthrough_when_no_split(self):
+        fa = _file(file_name="small.pdf")
+        groups = [(fa, [self._ref("s")])]
+        assert resolver._with_split_page_notice("BASE", groups) == "BASE"
+        assert resolver._with_split_page_notice(None, groups) is None
+
+
 # ── _estimate_non_file_bytes ──────────────────────────────────
 
 

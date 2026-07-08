@@ -18,6 +18,7 @@ from llm_manager._internal.file_processing.resolver import (
     _build_labeled_cache_contents,
     _resolve_one_files_api,
     _resolve_or_create_context_cache,
+    _with_split_page_notice,
 )
 from llm_manager._internal.handler_client.models import FileRef
 from llm_manager._internal.keying import make_file_checksum
@@ -73,7 +74,8 @@ async def file_preprocessing_async(
             hash_key, checksums, file_refs_all,
             cache_contents=_build_labeled_cache_contents(groups),
             model=llm_input.get("model"),
-            system_instruction=llm_input.get("system"),
+            # 분할된 파일이 있으면 안내 문구를 system 뒤에 붙여 캐시에 굽는다(키는 원본 system).
+            system_instruction=_with_split_page_notice(llm_input.get("system"), groups),
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
             tools=llm_input.get("tools"),
