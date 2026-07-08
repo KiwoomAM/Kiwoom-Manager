@@ -1214,6 +1214,44 @@ class TestFilesApiSplitGate:
         await _upload_and_cache_file(fi, "cs-ranges", [], [])
         assert fi.pdf_part_ranges == [(1, 750), (751, 1500)]
 
+    async def test_split_saves_pdf_part_ranges_to_redis(self, fake_redis, monkeypatch):
+        """MISS(분할) 저장 시 pdf_part_ranges 도 Redis files_api 레코드에 남긴다 (page_count 와 대칭).
+        HIT 응답에도 값이 나가려면 저장이 선행돼야 함 (PR #62 리뷰)."""
+        fi = _file(mime_type="application/pdf", file_size=1 * 1024 * 1024, page_count=1500)
+
+        async def fake_parts(path, *a, **k):
+            refs = [
+                FileRef(name="files/p1", uri="https://example.com/p1",
+                        mime_type="application/pdf", state="ACTIVE"),
+                FileRef(name="files/p2", uri="https://example.com/p2",
+                        mime_type="application/pdf", state="ACTIVE"),
+            ]
+            return refs, [(1, 750), (751, 1500)]
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts", fake_parts)
+
+        from llm_manager._internal.file_processing import cache_store
+        await _upload_and_cache_file(fi, "cs-ranges-save", [], [])
+        saved = cache_store.find_files_api("cs-ranges-save")
+        assert saved is not None
+        assert saved.get("pdf_part_ranges") == [[1, 750], [751, 1500]]  # JSON 직렬화로 튜플→리스트
+
+    def test_reuse_restores_pdf_part_ranges_as_tuples(self):
+        """HIT 재사용 시 Redis 의 pdf_part_ranges(리스트의 리스트)를 list[tuple] 로 복원 (계약 유지)."""
+        fi = _file(file_name="c.pdf", file_size=1024, mime_type="application/pdf")
+        existing = {"uris": ["https://example.com/c"], "page_count": 1500,
+                    "pdf_part_ranges": [[1, 750], [751, 1500]]}
+        _reuse_files_api_uris(fi, existing, [], [])
+        assert fi.pdf_part_ranges == [(1, 750), (751, 1500)]
+
+    def test_reuse_pdf_part_ranges_none_when_absent(self):
+        """비분할/레거시 레코드(pdf_part_ranges 없음)면 HIT 에서 None."""
+        fi = _file(file_name="c.pdf", file_size=1024, mime_type="application/pdf")
+        existing = {"uris": ["https://example.com/c"], "page_count": 2}
+        _reuse_files_api_uris(fi, existing, [], [])
+        assert fi.pdf_part_ranges is None
+
 
 class TestExpandPdfsOverPageLimit:
     """_expand_pdfs_over_page_limit — >1000p PDF를 ≤1000p part FileInput들로 치환 (§5.4)."""

@@ -279,6 +279,10 @@ def _reuse_files_api_uris(
     # Redis 에 stash 된 PDF 페이지 수 / 이미지 토큰 복원 → too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작
     fi.page_count = existing.get("page_count")
     fi.image_tokens = existing.get("image_tokens")
+    # 분할 PDF 파트별 원본 페이지 범위 복원 (page_count 와 대칭) — 없으면 HIT 응답에 사라져 소비자의
+    # 절대페이지 환산이 조용히 깨진다(PR #62 리뷰). Redis JSON 은 튜플→리스트라 다시 list[tuple] 로 재구성(계약 유지).
+    _ranges = existing.get("pdf_part_ranges")
+    fi.pdf_part_ranges = [tuple(r) for r in _ranges] if _ranges else None
     fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
@@ -355,6 +359,7 @@ async def _upload_and_cache_file(
                 "split": len(refs) > 1,
                 "page_count": fi.page_count,
                 "image_tokens": fi.image_tokens,
+                "pdf_part_ranges": fi.pdf_part_ranges,
             },
             ttl=dynamic_ttl,
         )

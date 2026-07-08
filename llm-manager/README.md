@@ -537,6 +537,8 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 
 > **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
 
+> **파일별 라벨은 Context Cache 콘텐츠에만 붙는다 (출처 귀속용).** 캐시에 담기는 콘텐츠 앞에 파일 헤더 `===== [문서 N] 파일명 =====`(분할 파일은 `(총 N개 파트로 분할 업로드됨)`)를 삽입해, 소비자가 응답의 출처를 파일별로 귀속할 수 있게 한다(docs/29). 단 **캐시 경로를 타지 않는 응답**(`context_cache_ttl` 미지정, too-small fail-soft 로 URI 폴백 등)에는 라벨이 없다 — 라벨을 출처 귀속에 쓰는 소비자는 "라벨 부재 = 캐시 미적용" 상황을 견디도록 짜야 한다.
+
 ### Context Cache 수명 관리 — `delete_context_cache` (만료) / `update_context_cache` (연장)
 
 `context_cache_ttl` 을 길게 잡아두고, agent task 가 끝났을 때 즉시 만료시킬 수 있다. storage 비용은 새 TTL 기준으로 분 단위 prorate 청구되므로, "넉넉히 잡고 끝나면 줄이기" 패턴이 비용 효율적이다. 반대로 더 오래 살려야 하면 `update_context_cache` 로 TTL 을 연장한다.
