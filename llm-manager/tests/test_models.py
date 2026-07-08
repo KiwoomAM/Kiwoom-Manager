@@ -3,7 +3,27 @@ from __future__ import annotations
 
 import pytest
 
-from llm_manager.models import ResponseMeta
+from llm_manager.models import FileInput, ResponseMeta
+
+
+class TestFileInputPdfPartRanges:
+    """FileInput.pdf_part_ranges — 분할 PDF 파트별 원본 페이지 범위. file_meta 로 노출된다."""
+
+    def _fi(self, **kw):
+        base = dict(
+            file_name="r.pdf", file_size=1, file_mtime=0,
+            mime_type="application/pdf", extension="pdf",
+        )
+        base.update(kw)
+        return FileInput(**base)
+
+    def test_default_none(self):
+        assert self._fi().pdf_part_ranges is None
+
+    def test_exposed_in_model_dump(self):
+        fi = self._fi(pdf_part_ranges=[(1, 500), (501, 1000)])
+        dumped = fi.model_dump(exclude={"data"})
+        assert dumped["pdf_part_ranges"] == [(1, 500), (501, 1000)]
 
 
 class TestResponseMetaFileMeta:

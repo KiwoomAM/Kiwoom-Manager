@@ -96,6 +96,30 @@ class TestFilePreprocessingContextCacheMode:
             "cached_content_name": "cachedContents/xyz",
         }
 
+    async def test_passes_labeled_cache_contents(self, fake_redis, monkeypatch):
+        """context cache 생성 시 파일별 헤더 라벨이 붙은 cache_contents 를 넘긴다 (doc 29)."""
+        sf_a = _sf("a.pdf", "a.pdf")
+        sf_b = _sf("b.pdf", "b.pdf")
+        await _seed_files_api(sf_a, ["u-a1"])
+        await _seed_files_api(sf_b, ["u-b1"])
+
+        captured = {}
+
+        async def fake_create(hash_key, checksums, file_refs, *, cache_contents, **kw):
+            captured["cache_contents"] = cache_contents
+            return "cachedContents/xyz"
+        monkeypatch.setattr(preprocess, "_resolve_or_create_context_cache", fake_create)
+
+        await preprocess.file_preprocessing_async(
+            {"model": "gemini-2.5-flash"},
+            stored_files=[sf_a, sf_b],
+            context_cache_ttl=1800,
+        )
+
+        headers = [c for c in captured["cache_contents"] if isinstance(c, str)]
+        assert any("[문서 1] a.pdf" in h for h in headers)
+        assert any("[문서 2] b.pdf" in h for h in headers)
+
     async def test_too_small_falls_back_to_uris(self, fake_redis, monkeypatch):
         """생성이 None(too-small fail-soft) → (n, ?) URI 폴백."""
         sf = _sf("a.pdf", "a.pdf")

@@ -46,6 +46,9 @@ class FileInput(BaseModel):
         too-small 선제 게이트(§4.4.1)의 토큰 어림에 사용. PDF 외/미상이면 None.
     `image_tokens`: 이미지 Gemini 타일 토큰 어림 — page_count 와 같은 목적/시점(업로드 시
         stash)으로 이미지의 too-small 게이트용. 이미지 외/미상이면 None.
+    `pdf_part_ranges`: 50MB/1000p 초과로 분할 업로드된 PDF 의 파트별 원본 페이지 범위
+        (1-based, 끝 포함, 업로드 순서). 분할된 파트는 각자 p.1 부터 재시작하므로, 소비자가
+        모델이 인용한 (파트, 로컬쪽)을 원본 절대쪽으로 환산할 때 쓴다. 비분할·비PDF면 None.
     """
 
     file_name: str
@@ -58,6 +61,7 @@ class FileInput(BaseModel):
     resolved_via: str | None = None
     page_count: int | None = None
     image_tokens: int | None = None
+    pdf_part_ranges: list[tuple[int, int]] | None = None
 
 
 class FileKeyingMeta(BaseModel):

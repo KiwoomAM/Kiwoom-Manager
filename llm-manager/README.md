@@ -413,7 +413,7 @@ response, meta = await llm_request_async(
 | `metadata` | `dict` | `{"service_name": ..., "task_name": ..., "model": ...}` — `service_name`=env `SERVICE_NAME`(실행 주체), `task_name`=`llm_input`의 호출 라벨 |
 | `collection` | `str \| None` | MongoDB 컬렉션명 |
 | `route_reason` | `str \| None` | `debug=True`일 때만 포함 |
-| `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 각 `StoredFile` 의 6 필드(`file_path` 포함)가 담긴 list. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능 |
+| `file_meta` | `list[dict] \| None` | `stored_files` 인자로 호출 시 파일별 메타(내부 `FileInput` 을 `data`(bytes)만 빼고 dump)가 담긴 list. 6 식별 필드(`file_name`·`file_size`·`file_mtime`·`mime_type`·`extension`·`file_path`) + `resolved_via`·`page_count`·`image_tokens`·`pdf_part_ranges`. stored_files 없는 호출이면 `None` (응답 dict 에는 키 자체 부재). 호출자가 자기 DB 에 저장 후 재호출 등에 활용 가능. `pdf_part_ranges`: 50MB/1000p 초과로 분할 업로드된 PDF 의 파트별 원본 페이지 범위 `[[1,500],[501,1000],…]`(1-based·끝 포함·업로드 순서), 비분할·비PDF면 `None` — 분할 파트는 각자 p.1 부터 재시작하므로 모델이 인용한 (파트, 로컬쪽)을 원본 절대쪽으로 환산할 때 쓴다 |
 | `context_cache_id` | `str \| None` | Context Cache 생성/HIT 시 노출되는 식별자 (= hash_key). `delete_context_cache_async` / `update_context_cache_async` 호출에 사용. live 호출일 때만 노출되며, MDB cache HIT 응답에는 키 자체 부재. **영구 식별자가 아니다** — Gemini 측 TTL 이 만료되면 자동 파괴되고, 같은 입력으로 재호출 시 새 cache (새 id) 가 생성된다 |
 
 #### `file_meta` 활용 예시
@@ -536,6 +536,8 @@ PDF가 50MB를 초과하면 자동으로 분할 후 병렬 업로드한다.
 > **Context Cache는 시간 단위로 비용이 발생한다.** 필요 이상으로 긴 TTL은 불필요한 비용을 유발하므로 실제 사용 패턴에 맞게 설정할 것.
 
 > **캐시 키 재료(5개) 중 하나라도 달라지면 캐시 미스가 발생한다.** Context Cache는 `file_checksums` + `model` + `system_instruction` + `tools` + `tool_config` 를 하나의 키로 묶으므로, 이 중 하나라도 바뀌면 새로운 캐시가 생성된다. 특히 `tools` / `tool_config` 는 cache 생성 시 Gemini 쪽에도 함께 저장되므로, 같은 파일로도 tools 가 다르면 별도 cache 가 만들어진다 (오염된 cache HIT 방지).
+
+> **파일별 라벨은 Context Cache 콘텐츠에만 붙는다 (출처 귀속용).** 캐시에 담기는 콘텐츠 앞에 파일 헤더 `===== [문서 N] 파일명 =====`(분할 파일은 `(총 N개 파트로 분할 업로드됨)`)를 삽입해, 소비자가 응답의 출처를 파일별로 귀속할 수 있게 한다(docs/29). 단 **캐시 경로를 타지 않는 응답**(`context_cache_ttl` 미지정, too-small fail-soft 로 URI 폴백 등)에는 라벨이 없다 — 라벨을 출처 귀속에 쓰는 소비자는 "라벨 부재 = 캐시 미적용" 상황을 견디도록 짜야 한다.
 
 ### Context Cache 수명 관리 — `delete_context_cache` (만료) / `update_context_cache` (연장)
 

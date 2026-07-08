@@ -15,13 +15,14 @@ import logging
 
 from llm_manager._internal.file_processing import cache_store
 from llm_manager._internal.file_processing.resolver import (
+    _build_labeled_cache_contents,
     _resolve_one_files_api,
     _resolve_or_create_context_cache,
 )
 from llm_manager._internal.handler_client.models import FileRef
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.stored_file_resolver import resolve_stored_files
-from llm_manager.models import StoredFile
+from llm_manager.models import FileInput, StoredFile
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,14 @@ async def file_preprocessing_async(
     # 전 파일 강제 files_api (classify 미사용) — 파일별 URI 그룹 수집
     per_file_uris: list[list[str]] = []
     file_refs_all: list[FileRef] = []
+    groups: list[tuple[FileInput, list[FileRef]]] = []  # 파일별 그룹(라벨링, doc 29)
     for fi, cs in zip(files, checksums):
         _uri_parts, refs = await _resolve_one_files_api(
             fi, cs, standby_ttl_seconds=standby_ttl_seconds,
         )
         per_file_uris.append([r.uri for r in refs])
         file_refs_all.extend(refs)
+        groups.append((fi, refs))
 
     # context cache 모드 (opt-in): 전체 파일에 대해 cache 1개
     if context_cache_ttl is not None and context_cache_ttl > 0 and file_refs_all:
@@ -68,6 +71,7 @@ async def file_preprocessing_async(
         )
         name = await _resolve_or_create_context_cache(
             hash_key, checksums, file_refs_all,
+            cache_contents=_build_labeled_cache_contents(groups),
             model=llm_input.get("model"),
             system_instruction=llm_input.get("system"),
             context_cache_ttl=context_cache_ttl,

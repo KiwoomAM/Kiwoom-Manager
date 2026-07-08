@@ -217,6 +217,42 @@ class TestClassifyFiles:
         assert files_api == []
 
 
+# ── _build_labeled_cache_contents (doc 29 파일 라벨링) ─────────
+
+
+class TestBuildLabeledCacheContents:
+    """doc 29 §3.3 — 파일별 '===== [문서 N] 파일명 =====' 헤더 + FileRef 섞은 cache contents.
+
+    분할 파일은 헤더에 '(총 N개 파트로 분할 업로드됨)', 파트 사이엔 라벨 없이 연속.
+    """
+
+    @staticmethod
+    def _ref(name):
+        return FileRef(name=f"files/{name}", uri=f"gs://x/{name}",
+                       mime_type="application/pdf", state="ACTIVE")
+
+    def test_headers_per_file_with_split_marker(self):
+        fa = _file(file_name="A.pdf")
+        fb = _file(file_name="B.pdf")
+        ra1, ra2, rb = self._ref("a1"), self._ref("a2"), self._ref("b")
+        groups = [(fa, [ra1, ra2]), (fb, [rb])]   # A 는 2파트 분할, B 는 단일
+
+        out = resolver._build_labeled_cache_contents(groups)
+
+        assert out == [
+            "===== [문서 1] A.pdf (총 2개 파트로 분할 업로드됨) =====",
+            ra1, ra2,
+            "===== [문서 2] B.pdf =====",
+            rb,
+        ]
+
+    def test_single_file_no_split_marker(self):
+        fa = _file(file_name="report.pdf")
+        r = self._ref("r")
+        out = resolver._build_labeled_cache_contents([(fa, [r])])
+        assert out == ["===== [문서 1] report.pdf =====", r]
+
+
 # ── _estimate_non_file_bytes ──────────────────────────────────
 
 
@@ -411,6 +447,38 @@ class TestResolveFiles:
 
         assert small in inline_pool
         assert large in files_api_pool
+
+    async def test_context_cache_created_with_file_labels(
+        self, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """context cache 생성 시 create_context_cache 가 파일별 헤더 붙은 cache_contents 를 받는다 (doc 29)."""
+        fa = _file(file_name="A.pdf", file_size=30 * 1024 * 1024)
+        fb = _file(file_name="B.pdf", file_size=30 * 1024 * 1024)
+
+        async def fake_upload(path, mime_type):
+            return FileRef(name="files/x", uri="gs://x", mime_type=mime_type, state="ACTIVE")
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_file", fake_upload,
+        )
+
+        captured = {}
+
+        async def fake_create_cache(contents, *, model, system_instruction, ttl, tools=None, tool_config=None):
+            captured["contents"] = contents
+            return CacheRef(name="cachedContents/x", model=model)
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.create_context_cache",
+            fake_create_cache,
+        )
+
+        await resolve_files(
+            [fa, fb], llm_input={}, model="gemini-2.5-flash",
+            system_instruction=None, context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+        headers = [c for c in captured["contents"] if isinstance(c, str)]
+        assert any("[문서 1] A.pdf" in h for h in headers)
+        assert any("[문서 2] B.pdf" in h for h in headers)
 
 
 class TestTooSmallGate:
@@ -987,6 +1055,7 @@ class TestContextCacheTooSmallFailSoft:
 
         result = await resolver._create_and_save_context_cache(
             "a" * 64, ["cs1"], [self._ref()],
+            cache_contents=[self._ref()],
             model="gemini-2.5-flash", system_instruction=None, ttl=3600,
         )
         assert result is None
@@ -1006,6 +1075,7 @@ class TestContextCacheTooSmallFailSoft:
         with pytest.raises(HandlerError):
             await resolver._create_and_save_context_cache(
                 "a" * 64, ["cs1"], [self._ref()],
+                cache_contents=[self._ref()],
                 model="gemini-2.5-flash", system_instruction=None, ttl=3600,
             )
 
@@ -1023,6 +1093,7 @@ class TestContextCacheTooSmallFailSoft:
         with pytest.raises(HandlerError):
             await resolver._create_and_save_context_cache(
                 "a" * 64, ["cs1"], [self._ref()],
+                cache_contents=[self._ref()],
                 model="gemini-2.5-flash", system_instruction=None, ttl=3600,
             )
 
@@ -1107,7 +1178,7 @@ class TestFilesApiSplitGate:
         async def fake_parts(path, *a, **k):
             split_called["n"] += 1
             return [FileRef(name="files/p", uri="https://example.com/p",
-                            mime_type="application/pdf", state="ACTIVE")]
+                            mime_type="application/pdf", state="ACTIVE")], [(1, 1500)]
 
         async def fake_single(path, mime_type):
             single_called["n"] += 1
@@ -1122,6 +1193,64 @@ class TestFilesApiSplitGate:
         await _upload_and_cache_file(fi, "cs-pages", [], [])
         assert split_called["n"] == 1
         assert single_called["n"] == 0
+
+    async def test_split_populates_pdf_part_ranges(self, fake_redis, monkeypatch):
+        """분할 라우팅 시 upload_pdf_parts 가 준 파트 범위를 fi.pdf_part_ranges 에 실어
+        file_meta 로 나가게 한다."""
+        fi = _file(mime_type="application/pdf", file_size=1 * 1024 * 1024, page_count=1500)
+
+        async def fake_parts(path, *a, **k):
+            refs = [
+                FileRef(name="files/p1", uri="https://example.com/p1",
+                        mime_type="application/pdf", state="ACTIVE"),
+                FileRef(name="files/p2", uri="https://example.com/p2",
+                        mime_type="application/pdf", state="ACTIVE"),
+            ]
+            return refs, [(1, 750), (751, 1500)]
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts", fake_parts)
+
+        await _upload_and_cache_file(fi, "cs-ranges", [], [])
+        assert fi.pdf_part_ranges == [(1, 750), (751, 1500)]
+
+    async def test_split_saves_pdf_part_ranges_to_redis(self, fake_redis, monkeypatch):
+        """MISS(분할) 저장 시 pdf_part_ranges 도 Redis files_api 레코드에 남긴다 (page_count 와 대칭).
+        HIT 응답에도 값이 나가려면 저장이 선행돼야 함 (PR #62 리뷰)."""
+        fi = _file(mime_type="application/pdf", file_size=1 * 1024 * 1024, page_count=1500)
+
+        async def fake_parts(path, *a, **k):
+            refs = [
+                FileRef(name="files/p1", uri="https://example.com/p1",
+                        mime_type="application/pdf", state="ACTIVE"),
+                FileRef(name="files/p2", uri="https://example.com/p2",
+                        mime_type="application/pdf", state="ACTIVE"),
+            ]
+            return refs, [(1, 750), (751, 1500)]
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.upload_pdf_parts", fake_parts)
+
+        from llm_manager._internal.file_processing import cache_store
+        await _upload_and_cache_file(fi, "cs-ranges-save", [], [])
+        saved = cache_store.find_files_api("cs-ranges-save")
+        assert saved is not None
+        assert saved.get("pdf_part_ranges") == [[1, 750], [751, 1500]]  # JSON 직렬화로 튜플→리스트
+
+    def test_reuse_restores_pdf_part_ranges_as_tuples(self):
+        """HIT 재사용 시 Redis 의 pdf_part_ranges(리스트의 리스트)를 list[tuple] 로 복원 (계약 유지)."""
+        fi = _file(file_name="c.pdf", file_size=1024, mime_type="application/pdf")
+        existing = {"uris": ["https://example.com/c"], "page_count": 1500,
+                    "pdf_part_ranges": [[1, 750], [751, 1500]]}
+        _reuse_files_api_uris(fi, existing, [], [])
+        assert fi.pdf_part_ranges == [(1, 750), (751, 1500)]
+
+    def test_reuse_pdf_part_ranges_none_when_absent(self):
+        """비분할/레거시 레코드(pdf_part_ranges 없음)면 HIT 에서 None."""
+        fi = _file(file_name="c.pdf", file_size=1024, mime_type="application/pdf")
+        existing = {"uris": ["https://example.com/c"], "page_count": 2}
+        _reuse_files_api_uris(fi, existing, [], [])
+        assert fi.pdf_part_ranges is None
 
 
 class TestExpandPdfsOverPageLimit:
