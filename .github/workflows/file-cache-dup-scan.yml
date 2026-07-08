@@ -1,0 +1,38 @@
+name: file-cache dup scan
+
+on:
+  schedule:
+    - cron: "0 23 * * *"   # 매일 08:00 KST (UTC 23:00)
+  workflow_dispatch:        # 수동 실행 허용
+
+permissions:
+  contents: read            # actions/checkout 가 레포를 읽으려면 필요
+                            # (permissions 블록을 명시하면 미기재 권한은 none 이 되므로 반드시 포함)
+  issues: write             # GITHUB_TOKEN 으로 이슈 생성
+
+concurrency:
+  group: file-cache-dup-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: self-hosted    # 내부망 러너 — file_cache Mongo(192.7.9.45) 접근 가능
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install ./mdb-manager   # 체크아웃된 레포의 mdb-manager(→ mdb-handler HTTP), httpx 포함
+
+      - name: Run dup scan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          MDB_HANDLER_URL: http://192.7.9.45:8300
+          MONGO_DB: kw_ai
+          LOOKBACK_HOURS: "25"
+          DUP_ISSUE_LABEL: file-cache-dup
+        run: python -m tools.file_cache_dup_scan
