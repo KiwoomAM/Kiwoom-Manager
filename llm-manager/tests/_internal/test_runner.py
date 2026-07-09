@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import pytest
 
 from llm_manager._internal.file_processing.resolver import ResolvedFiles
-from llm_manager._internal.handler_client.models import Part
+from llm_manager._internal.handler_client.models import LLMResponse, Part
 from llm_manager._internal.runner import _apply_resolved, _build_server_call_input, _Prepared
 from llm_manager.models import FileInput
 
@@ -633,3 +633,31 @@ class TestPrepareFiles:
 
         combined = await runner._prepare_files(None)
         assert combined is None
+
+
+# ── _to_stream_chunk (캐시 히트 시 LLMResponse → StreamChunk 변환) ──
+
+
+def test_to_stream_chunk_preserves_url_context():
+    """캐시 히트로 재생되는 스트림에서도 url_context 가 grounding 처럼 보존된다."""
+    from llm_manager._internal.handler_client.models import UrlContextMetadata, UrlMetadata
+    from llm_manager._internal.runner import _to_stream_chunk
+
+    response = LLMResponse(
+        text="기사 요약입니다.",
+        model="gemini-3-flash-preview",
+        request_id="req_cache1",
+        url_context=UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://example.com/a",
+                    url_retrieval_status="URL_RETRIEVAL_STATUS_SUCCESS",
+                )
+            ]
+        ),
+    )
+
+    chunk = _to_stream_chunk(response)
+
+    assert chunk.url_context is not None
+    assert chunk.url_context.url_metadata[0].retrieved_url == "https://example.com/a"

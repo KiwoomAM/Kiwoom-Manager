@@ -129,6 +129,27 @@ class Grounding(BaseModel):
     supports: list[GroundingSupport] = []
 
 
+class UrlMetadata(BaseModel):
+    """url_context 도구가 실제로 읽은 개별 URL + 조회 상태.
+
+    retrieved_url 은 grounding chunk.uri(vertexai redirect, 수시간~1일 ephemeral)와 달리
+    Gemini 가 읽은 원문 URL 로 노출된다(SDK 계약: "The URL retrieved by the tool"). redirect
+    가 아니라 영구 저장 가능 — 단, 라이브 실제 값 재확인은 후속 과제.
+    url_retrieval_status 는 SDK enum(UrlRetrievalStatus) 을 .name 문자열로 직렬화 —
+    SUCCESS/ERROR/PAYWALL/UNSAFE/UNSPECIFIED. 실패분도 status 를 실어 노출하므로
+    downstream 은 SUCCESS 인 항목만 실제 출처로 선별해야 한다.
+    """
+
+    retrieved_url: str | None = None
+    url_retrieval_status: str | None = None
+
+
+class UrlContextMetadata(BaseModel):
+    """url_context 도구 사용 흔적 컨테이너. grounding 과 대칭 — 응답 시점에만 의미 (Turn 2 echo X)."""
+
+    url_metadata: list[UrlMetadata] = []
+
+
 class LLMResponse(BaseModel):
     """LLM 호출 응답."""
 
@@ -142,6 +163,7 @@ class LLMResponse(BaseModel):
     code_blocks: list[CodeBlock] | None = None
     code_results: list[CodeResult] | None = None
     grounding: Grounding | None = None
+    url_context: UrlContextMetadata | None = None
     assistant_message: "Content | None" = None
     request_id: str
 
@@ -174,6 +196,7 @@ class StreamChunk(BaseModel):
     code_blocks: list[CodeBlock] | None = None
     code_results: list[CodeResult] | None = None
     grounding: Grounding | None = None
+    url_context: UrlContextMetadata | None = None
 
 
 class FileRef(BaseModel):

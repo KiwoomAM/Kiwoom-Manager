@@ -319,6 +319,7 @@ def _to_stream_chunk(response: LLMResponse) -> StreamChunk:
         code_blocks=response.code_blocks,
         code_results=response.code_results,
         grounding=response.grounding,
+        url_context=response.url_context,
     )
 
 
