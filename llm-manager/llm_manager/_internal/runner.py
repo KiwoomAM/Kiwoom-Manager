@@ -16,6 +16,7 @@ from llm_manager._internal.file_processing import (
     resolve_files_after_404,
 )
 from llm_manager._internal.gemini_errors import is_gemini_404
+from llm_manager._internal.handler_client._common import extend_stream_field
 from llm_manager._internal.handler_client.aio import call as aio_call
 from llm_manager._internal.handler_client.aio import last_assistant_message
 from llm_manager._internal.handler_client.aio import stream as aio_stream
@@ -283,11 +284,15 @@ def finalize(
 class _StreamMeta:
     """스트림 청크에 흩어져 오는 candidate-level 메타를 누적한다 (캐시 저장용).
 
-    스트림엔 완성 응답 객체가 없어 _finalize_stream 이 조각으로 재조립하는데, 이 필드들은 서로
-    다른 청크에 흩어져 온다(tool_call·function_call·code 는 자기 청크에, grounding·url_context 는
-    마지막 청크에 — handler 실측). 마지막 청크만 읽으면 앞 청크 값이 새므로 청크마다 'last
-    non-None 우선'으로 누적한다(_session.py pseudo_response 관례와 동일). text/usage/finish_reason 은
-    각각 done event 의 assistant_message·마지막 청크로 복원하므로 여기서 누적하지 않는다.
+    스트림엔 완성 응답 객체가 없어 _finalize_stream 이 조각으로 재조립하는데, 이 필드들은 두 부류로
+    나뉘어 서로 다른 규칙으로 누적해야 한다(PR #66 재리뷰):
+      - 리스트 5종(function_calls·tool_calls·tool_responses·code_blocks·code_results): 청크마다
+        자기 몫만 실려 온다(parallel fc N개 → N chunks, 1개씩 — llm-handler 계약). 덮어쓰면 마지막
+        청크 것만 남으므로 extend_stream_field 로 이어붙여 누적한다.
+      - 단발성 컨테이너(grounding·url_context): 턴당 한 번(마지막 청크)만 오므로 마지막 non-None 으로
+        덮어쓴다.
+    text/usage/finish_reason 은 각각 done event 의 assistant_message·마지막 청크로 복원하므로 여기서
+    누적하지 않는다.
     """
 
     function_calls: list[FunctionCall] | None = None
@@ -299,16 +304,13 @@ class _StreamMeta:
     url_context: UrlContextMetadata | None = None
 
     def update(self, chunk: StreamChunk) -> None:
-        if chunk.function_calls is not None:
-            self.function_calls = chunk.function_calls
-        if chunk.tool_calls is not None:
-            self.tool_calls = chunk.tool_calls
-        if chunk.tool_responses is not None:
-            self.tool_responses = chunk.tool_responses
-        if chunk.code_blocks is not None:
-            self.code_blocks = chunk.code_blocks
-        if chunk.code_results is not None:
-            self.code_results = chunk.code_results
+        # 리스트 5종: 청크마다 흩어져 오므로 extend(앞엣것 보존)
+        self.function_calls = extend_stream_field(self.function_calls, chunk.function_calls)
+        self.tool_calls = extend_stream_field(self.tool_calls, chunk.tool_calls)
+        self.tool_responses = extend_stream_field(self.tool_responses, chunk.tool_responses)
+        self.code_blocks = extend_stream_field(self.code_blocks, chunk.code_blocks)
+        self.code_results = extend_stream_field(self.code_results, chunk.code_results)
+        # 단발성 컨테이너: 마지막 non-None 으로 덮어씀
         if chunk.grounding is not None:
             self.grounding = chunk.grounding
         if chunk.url_context is not None:
