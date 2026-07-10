@@ -231,6 +231,53 @@ def test_llm_response_parses_grounding_and_assistant_message():
     assert parts[1].tool_call.tool_type == "GOOGLE_SEARCH_WEB"
 
 
+def test_llm_response_parses_url_context():
+    """handler 응답의 url_context_metadata — 성공/실패 항목 모두 status 와 함께 보존."""
+    from llm_manager._internal.handler_client.models import LLMResponse
+
+    payload = {
+        "model": "gemini-3-flash-preview",
+        "request_id": "req_url1",
+        "text": "기사 요약입니다.",
+        "url_context": {
+            "url_metadata": [
+                {
+                    "retrieved_url": "https://en.wikipedia.org/wiki/HTTP",
+                    "url_retrieval_status": "URL_RETRIEVAL_STATUS_SUCCESS",
+                },
+                {
+                    "retrieved_url": "https://www.wsj.com/some-article",
+                    "url_retrieval_status": "URL_RETRIEVAL_STATUS_PAYWALL",
+                },
+            ]
+        },
+    }
+    resp = LLMResponse.model_validate(payload)
+    assert resp.url_context is not None
+    assert len(resp.url_context.url_metadata) == 2
+    assert resp.url_context.url_metadata[0].retrieved_url == "https://en.wikipedia.org/wiki/HTTP"
+    assert resp.url_context.url_metadata[0].url_retrieval_status == "URL_RETRIEVAL_STATUS_SUCCESS"
+    assert resp.url_context.url_metadata[1].url_retrieval_status == "URL_RETRIEVAL_STATUS_PAYWALL"
+
+
+def test_stream_chunk_parses_url_context():
+    """StreamChunk 도 url_context 를 grounding 과 대칭으로 파싱."""
+    data = {
+        "text": "청크",
+        "url_context": {
+            "url_metadata": [
+                {
+                    "retrieved_url": "https://example.com/a",
+                    "url_retrieval_status": "URL_RETRIEVAL_STATUS_SUCCESS",
+                }
+            ]
+        },
+    }
+    chunk = StreamChunk.model_validate(data)
+    assert chunk.url_context is not None
+    assert chunk.url_context.url_metadata[0].retrieved_url == "https://example.com/a"
+
+
 def test_ts_wire_roundtrip():
     """ts_to_wire/ts_from_wire — bytes ↔ base64 무손실."""
     from llm_manager._internal.handler_client.models import ts_from_wire, ts_to_wire

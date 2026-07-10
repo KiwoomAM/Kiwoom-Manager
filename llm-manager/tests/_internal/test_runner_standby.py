@@ -17,7 +17,21 @@ from __future__ import annotations
 import asyncio
 
 from llm_manager._internal import runner
-from llm_manager._internal.handler_client.models import Content, LLMResponse, StreamChunk, TokenUsage
+from llm_manager._internal.handler_client.models import (
+    CodeBlock,
+    CodeResult,
+    Content,
+    FunctionCall,
+    Grounding,
+    GroundingChunk,
+    LLMResponse,
+    StreamChunk,
+    TokenUsage,
+    ToolCallInfo,
+    ToolResponseInfo,
+    UrlContextMetadata,
+    UrlMetadata,
+)
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -299,6 +313,127 @@ class TestStreamAssistantMessageSave:
             pass
 
         assert len(mock_collection) == 0  # 저장 안 됨
+
+
+# ── stream candidate-level 메타 저장 회귀 (grounding/url_context 등) ──
+
+
+class TestStreamCandidateMetaSave:
+    """스트림 저장 시 llm 이 뱉은 candidate-level 메타를 통째로 보존하는지 검증 (PR #66 리뷰 2).
+
+    스트림엔 완성 응답 객체가 없어 _finalize_stream 이 청크 조각으로 재조립하는데, 기존엔 text/
+    usage/finish_reason/assistant_message 만 담고 grounding·url_context·function_calls·tool_calls·
+    tool_responses·code_blocks·code_results 를 통째로 흘렸다. 이 필드들은 서로 다른 청크에 흩어져
+    오므로(tool_call 은 자기 청크, grounding·url_context 는 마지막 청크), '마지막 청크만 읽기'가
+    아니라 청크 누적이어야 함을 함께 검증한다.
+    """
+
+    async def test_meta_scattered_across_chunks_all_saved(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        async def fake_aio_stream(**kwargs):
+            # 1번째 청크: grounding + function_calls 첫 조각 (last 아님)
+            yield StreamChunk(
+                text="검색 결과: ", finish_reason=None, usage=None,
+                function_calls=[FunctionCall(name="get_price", args={"sym": "005930"}, id="fc-1")],
+                grounding=Grounding(
+                    web_search_queries=["삼성전자 주가"],
+                    chunks=[GroundingChunk(title="mk.co.kr", uri="https://vertex.../redir/a")],
+                ),
+            )
+            # 2번째 청크: function_calls 를 1번 청크와 나눠 실음(누적 검증) + tool 계열
+            yield StreamChunk(
+                text="87,500원", finish_reason=None, usage=None,
+                function_calls=[FunctionCall(name="get_news", args={"sym": "005930"}, id="fc-2")],
+                tool_calls=[ToolCallInfo(tool_type="GOOGLE_SEARCH_WEB", id="tc-1")],
+                tool_responses=[ToolResponseInfo(tool_type="GOOGLE_SEARCH_WEB", id="tc-1")],
+                code_blocks=[CodeBlock(language="PYTHON", code="print(1)", id="cb-1")],
+                code_results=[CodeResult(outcome="OUTCOME_OK", output="1", id="cr-1")],
+            )
+            # 마지막 청크: url_context + finish_reason/usage (그 외 필드는 전부 None)
+            yield StreamChunk(
+                text="입니다.", finish_reason="STOP",
+                usage=TokenUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+                url_context=UrlContextMetadata(url_metadata=[
+                    UrlMetadata(
+                        retrieved_url="https://example.com/a",
+                        url_retrieval_status="URL_RETRIEVAL_STATUS_SUCCESS",
+                    ),
+                ]),
+            )
+
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "검색 결과: 87,500원입니다."}],
+        }))
+
+        llm_input = {"contents": "삼성전자 주가", "model": "gemini-2.5-flash", "task_name": "test"}
+        stream, _meta = await runner.llm_request_stream_async(
+            llm_input, cache_mode=True, save_mode=True,
+            standby_ttl_seconds=10, database="test_db",
+        )
+        async for _ in stream:
+            pass
+
+        assert len(mock_collection) == 1
+        result = next(iter(mock_collection.values()))["result"]
+
+        # function_calls 는 1·2번 청크에 나뉘어 왔으므로 둘 다 남아야 함(extend 누적)
+        assert [fc["name"] for fc in result["function_calls"]] == ["get_price", "get_news"]
+        assert result["grounding"]["web_search_queries"] == ["삼성전자 주가"]
+        assert result["tool_calls"][0]["tool_type"] == "GOOGLE_SEARCH_WEB"
+        assert result["tool_responses"][0]["tool_type"] == "GOOGLE_SEARCH_WEB"
+        assert result["code_blocks"][0]["code"] == "print(1)"
+        assert result["code_results"][0]["output"] == "1"
+        assert result["url_context"]["url_metadata"][0]["retrieved_url"] == "https://example.com/a"
+
+
+# ── _StreamMeta 필드별 누적 규칙 (PR #66 재리뷰) ──
+
+
+class TestStreamMetaAccumulation:
+    """청크마다 하나씩 흩어져 오는 리스트 5종은 extend, 턴당 한 번 오는 grounding·url_context 는
+    마지막 non-None 덮어쓰기. parallel fc N개 → N chunks(1개씩) 계약(llm-handler)."""
+
+    def test_list_fields_extend_across_chunks(self):
+        from llm_manager._internal.runner import _StreamMeta
+
+        m = _StreamMeta()
+        m.update(StreamChunk(text="", function_calls=[FunctionCall(name="get_price", id="fc-1")]))
+        m.update(StreamChunk(text="", function_calls=[FunctionCall(name="get_news", id="fc-2")]))
+        m.update(StreamChunk(text="", function_calls=[FunctionCall(name="get_chart", id="fc-3")]))
+
+        assert [fc.id for fc in m.function_calls] == ["fc-1", "fc-2", "fc-3"]
+
+    def test_tool_calls_extend_across_chunks(self):
+        from llm_manager._internal.runner import _StreamMeta
+
+        m = _StreamMeta()
+        m.update(StreamChunk(text="", tool_calls=[ToolCallInfo(tool_type="GOOGLE_SEARCH_WEB", id="tc-1")]))
+        m.update(StreamChunk(text="", tool_calls=[ToolCallInfo(tool_type="URL_CONTEXT", id="tc-2")]))
+
+        assert [tc.id for tc in m.tool_calls] == ["tc-1", "tc-2"]
+
+    def test_grounding_url_context_last_non_none_wins(self):
+        """단발성 컨테이너는 누적이 아니라 마지막 non-None 유지 — 뒤 None 청크가 덮지 않음."""
+        from llm_manager._internal.runner import _StreamMeta
+
+        m = _StreamMeta()
+        m.update(StreamChunk(text="a"))  # 둘 다 None
+        m.update(StreamChunk(
+            text="b",
+            grounding=Grounding(web_search_queries=["q"]),
+            url_context=UrlContextMetadata(url_metadata=[
+                UrlMetadata(retrieved_url="https://x", url_retrieval_status="URL_RETRIEVAL_STATUS_SUCCESS"),
+            ]),
+        ))
+        m.update(StreamChunk(text="c"))  # 다시 None — 앞 값 유지되어야
+
+        assert m.grounding is not None
+        assert m.grounding.web_search_queries == ["q"]
+        assert m.url_context is not None
+        assert m.url_context.url_metadata[0].retrieved_url == "https://x"
 
 
 # ── Phase 3 lazy fetch dedup 통합 ──────────────────────────

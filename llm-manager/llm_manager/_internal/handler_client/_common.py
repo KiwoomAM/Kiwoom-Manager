@@ -40,6 +40,19 @@ _done_payload_var: ContextVar[dict[str, object] | None] = ContextVar("llm_handle
 ContentsType = str | list[str | FileRef | Part]
 
 
+def extend_stream_field(dst: list | None, src: list | None) -> list | None:
+    """스트림 청크마다 흩어져 오는 리스트 필드를 앞엣것을 버리지 않고 이어붙인다.
+
+    parallel function call N개가 N개 청크로(1개씩) 흩어져 오는 등(llm-handler 계약: "client 누적은
+    extend 필수"), function_calls·tool_calls·tool_responses·code_blocks·code_results 는 청크별로
+    자기 몫만 실려 오므로 덮어쓰면 마지막 청크 것만 남는다. grounding·url_context 처럼 턴당 한 번
+    오는 단발성 컨테이너에는 쓰지 않는다(그건 마지막 non-None 으로 덮어씀).
+    """
+    if src is None:
+        return dst
+    return src if dst is None else dst + src
+
+
 # ── MIME 타입 감지/검증 ──
 
 

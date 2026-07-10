@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ._client import AsyncClient
-from ._common import ContentsType, _normalize_contents, is_valid_response
+from ._common import ContentsType, _normalize_contents, extend_stream_field, is_valid_response
 from .models import Content, FunctionResponse, LLMResponse, Part, StreamChunk
 
 
@@ -125,6 +125,7 @@ class AsyncSession:
         collected_code_blocks = None
         collected_code_results = None
         collected_grounding = None
+        collected_url_context = None
         async for chunk in self._client.stream(
             contents,
             system=self._system,
@@ -146,18 +147,17 @@ class AsyncSession:
             collected_text += chunk.text or ""
             if chunk.finish_reason is not None:
                 last_finish_reason = chunk.finish_reason
-            if chunk.function_calls is not None:
-                collected_function_calls = chunk.function_calls
-            if chunk.tool_calls is not None:
-                collected_tool_calls = chunk.tool_calls
-            if chunk.tool_responses is not None:
-                collected_tool_responses = chunk.tool_responses
-            if chunk.code_blocks is not None:
-                collected_code_blocks = chunk.code_blocks
-            if chunk.code_results is not None:
-                collected_code_results = chunk.code_results
+            # 리스트 5종: 청크마다 흩어져 오므로 extend(앞엣것 보존 — parallel fc N개 → N chunks)
+            collected_function_calls = extend_stream_field(collected_function_calls, chunk.function_calls)
+            collected_tool_calls = extend_stream_field(collected_tool_calls, chunk.tool_calls)
+            collected_tool_responses = extend_stream_field(collected_tool_responses, chunk.tool_responses)
+            collected_code_blocks = extend_stream_field(collected_code_blocks, chunk.code_blocks)
+            collected_code_results = extend_stream_field(collected_code_results, chunk.code_results)
+            # 단발성 컨테이너: 마지막 non-None 으로 덮어씀
             if chunk.grounding is not None:
                 collected_grounding = chunk.grounding
+            if chunk.url_context is not None:
+                collected_url_context = chunk.url_context
             yield chunk
 
         # Handler 의 done event 에서 한 turn 의 완성된 assistant_message (parts 단위 — ts 포함) 복원.
@@ -179,6 +179,7 @@ class AsyncSession:
             code_blocks=collected_code_blocks,
             code_results=collected_code_results,
             grounding=collected_grounding,
+            url_context=collected_url_context,
             assistant_message=assistant_message,
         )
         self._record_history(contents, pseudo_response)
