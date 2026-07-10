@@ -19,7 +19,18 @@ from llm_manager._internal.gemini_errors import is_gemini_404
 from llm_manager._internal.handler_client.aio import call as aio_call
 from llm_manager._internal.handler_client.aio import last_assistant_message
 from llm_manager._internal.handler_client.aio import stream as aio_stream
-from llm_manager._internal.handler_client.models import Content, LLMResponse, StreamChunk
+from llm_manager._internal.handler_client.models import (
+    CodeBlock,
+    CodeResult,
+    Content,
+    FunctionCall,
+    Grounding,
+    LLMResponse,
+    StreamChunk,
+    ToolCallInfo,
+    ToolResponseInfo,
+    UrlContextMetadata,
+)
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.meta import build_meta, require_service_name
 from llm_manager._internal.store import cache_get, save_result
@@ -268,16 +279,54 @@ def finalize(
 
 # ── stream finalize ────────────────────────────────────────────
 
+@dataclass
+class _StreamMeta:
+    """스트림 청크에 흩어져 오는 candidate-level 메타를 누적한다 (캐시 저장용).
+
+    스트림엔 완성 응답 객체가 없어 _finalize_stream 이 조각으로 재조립하는데, 이 필드들은 서로
+    다른 청크에 흩어져 온다(tool_call·function_call·code 는 자기 청크에, grounding·url_context 는
+    마지막 청크에 — handler 실측). 마지막 청크만 읽으면 앞 청크 값이 새므로 청크마다 'last
+    non-None 우선'으로 누적한다(_session.py pseudo_response 관례와 동일). text/usage/finish_reason 은
+    각각 done event 의 assistant_message·마지막 청크로 복원하므로 여기서 누적하지 않는다.
+    """
+
+    function_calls: list[FunctionCall] | None = None
+    tool_calls: list[ToolCallInfo] | None = None
+    tool_responses: list[ToolResponseInfo] | None = None
+    code_blocks: list[CodeBlock] | None = None
+    code_results: list[CodeResult] | None = None
+    grounding: Grounding | None = None
+    url_context: UrlContextMetadata | None = None
+
+    def update(self, chunk: StreamChunk) -> None:
+        if chunk.function_calls is not None:
+            self.function_calls = chunk.function_calls
+        if chunk.tool_calls is not None:
+            self.tool_calls = chunk.tool_calls
+        if chunk.tool_responses is not None:
+            self.tool_responses = chunk.tool_responses
+        if chunk.code_blocks is not None:
+            self.code_blocks = chunk.code_blocks
+        if chunk.code_results is not None:
+            self.code_results = chunk.code_results
+        if chunk.grounding is not None:
+            self.grounding = chunk.grounding
+        if chunk.url_context is not None:
+            self.url_context = chunk.url_context
+
+
 def _finalize_stream(
     prep: _Prepared,
     last: StreamChunk | None,
+    meta: _StreamMeta,
     *,
     database: str | None = None,
 ) -> None:
-    """Stream 완료 후 handler done event 의 assistant_message 로 MDB 저장.
+    """Stream 완료 후 handler done event 의 assistant_message + 누적 메타로 MDB 저장.
 
-    handler 가 한 턴 전체를 done event 의 assistant_message 로 모아 보내므로,
-    llm-manager 는 chunk 별 누적 없이 그대로 받아 저장한다 (PR #593 review §2).
+    text 는 handler 가 done event 의 assistant_message 로 모아 보낸 것을 그대로 쓰고(PR #593 §2),
+    candidate-level 메타(grounding·url_context·function_calls 등)는 청크마다 누적한 meta 로 채워
+    비스트림 저장·라이브 스트림과 동일한 표면을 갖게 한다 (PR #66 리뷰 2).
     """
     if not prep.save_mode or prep.dc is None:
         return
@@ -302,6 +351,13 @@ def _finalize_stream(
         usage=last.usage,
         finish_reason=last.finish_reason,
         request_id="",  # raw stream 저장은 원래 빈 값 (helper 가 request_id 미노출)
+        function_calls=meta.function_calls,
+        tool_calls=meta.tool_calls,
+        tool_responses=meta.tool_responses,
+        code_blocks=meta.code_blocks,
+        code_results=meta.code_results,
+        grounding=meta.grounding,
+        url_context=meta.url_context,
         assistant_message=am,
     )
     finalize(prep, response, database=database)   # 기존 저장 로직 재사용
@@ -549,11 +605,13 @@ async def _do_llm_stream(
 ) -> AsyncIterator[StreamChunk]:
     """파일 처리 + LLM stream + 404 자동 복구 + stream finalize."""
     call_input = await _build_server_call_input(prep)
-    # chunk 는 그대로 흘리고, 저장은 handler done event 의 assistant_message 로 (PR #593 review §2)
+    # chunk 는 그대로 흘리고, 저장은 handler done event 의 assistant_message + 누적 메타로 (PR #593 §2, #66 리뷰 2)
     last: StreamChunk | None = None
+    meta = _StreamMeta()
     try:
         async for chunk in aio_stream(**call_input):
             last = chunk
+            meta.update(chunk)
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
@@ -572,13 +630,14 @@ async def _do_llm_stream(
             call_input = _apply_resolved(prep.llm_input, resolved)
             async for chunk in aio_stream(**call_input):
                 last = chunk
+                meta.update(chunk)
                 yield chunk
         else:
             # 404 외 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
             # 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출 안 함. 동일 요청 재호출 시 LLM 재과금 발생.
             logger.warning("스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
             raise
-    _finalize_stream(prep, last, database=database)
+    _finalize_stream(prep, last, meta, database=database)
 
 
 async def llm_request_stream_async(

@@ -125,6 +125,7 @@ class AsyncSession:
         collected_code_blocks = None
         collected_code_results = None
         collected_grounding = None
+        collected_url_context = None
         async for chunk in self._client.stream(
             contents,
             system=self._system,
@@ -158,6 +159,8 @@ class AsyncSession:
                 collected_code_results = chunk.code_results
             if chunk.grounding is not None:
                 collected_grounding = chunk.grounding
+            if chunk.url_context is not None:
+                collected_url_context = chunk.url_context
             yield chunk
 
         # Handler 의 done event 에서 한 turn 의 완성된 assistant_message (parts 단위 — ts 포함) 복원.
@@ -179,6 +182,7 @@ class AsyncSession:
             code_blocks=collected_code_blocks,
             code_results=collected_code_results,
             grounding=collected_grounding,
+            url_context=collected_url_context,
             assistant_message=assistant_message,
         )
         self._record_history(contents, pseudo_response)

@@ -135,9 +135,12 @@ class UrlMetadata(BaseModel):
     retrieved_url 은 grounding chunk.uri(vertexai redirect, 수시간~1일 ephemeral)와 달리
     Gemini 가 읽은 원문 URL 로 노출된다(SDK 계약: "The URL retrieved by the tool"). redirect
     가 아니라 영구 저장 가능 — 단, 라이브 실제 값 재확인은 후속 과제.
-    url_retrieval_status 는 SDK enum(UrlRetrievalStatus) 을 .name 문자열로 직렬화 —
-    SUCCESS/ERROR/PAYWALL/UNSAFE/UNSPECIFIED. 실패분도 status 를 실어 노출하므로
-    downstream 은 SUCCESS 인 항목만 실제 출처로 선별해야 한다.
+    url_retrieval_status 는 SDK enum(UrlRetrievalStatus) 의 .name 을 그대로 직렬화한 문자열이다.
+    멤버 이름 자체가 접두사를 달고 있어 실제 값은 URL_RETRIEVAL_STATUS_SUCCESS /
+    URL_RETRIEVAL_STATUS_ERROR / URL_RETRIEVAL_STATUS_PAYWALL / URL_RETRIEVAL_STATUS_UNSAFE /
+    URL_RETRIEVAL_STATUS_UNSPECIFIED 이다 (짧은 "SUCCESS" 가 아니라 handler 가 뱉는 원문 그대로).
+    실패분도 status 를 실어 노출하므로, downstream 은
+    url_retrieval_status == "URL_RETRIEVAL_STATUS_SUCCESS" 인 항목만 실제 출처로 선별해야 한다.
     """
 
     retrieved_url: str | None = None
@@ -145,7 +148,8 @@ class UrlMetadata(BaseModel):
 
 
 class UrlContextMetadata(BaseModel):
-    """url_context 도구 사용 흔적 컨테이너. grounding 과 대칭 — 응답 시점에만 의미 (Turn 2 echo X)."""
+    """url_context 도구 사용 흔적 컨테이너. grounding 과 대칭 — 응답 시점에만 의미가 있고
+    다음 턴 요청에 되돌려 보내지 않는다."""
 
     url_metadata: list[UrlMetadata] = []
 
