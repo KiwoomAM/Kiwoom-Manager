@@ -8,6 +8,7 @@ runner의 llm_request_async / llm_request_stream_async 진입 직후 fail-fast�
 
 from __future__ import annotations
 
+from llm_manager._internal.handler_client._config import get_settings
 from llm_manager.exceptions import FileTooLargeError, UnsupportedFileTypeError
 from llm_manager.models import FileInput
 
@@ -18,6 +19,10 @@ SUPPORTED_MIME_TYPES: frozenset[str] = frozenset({
     "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
     # 오디오 (공식 확정)
     "audio/wav", "audio/mp3", "audio/aiff", "audio/aac", "audio/ogg", "audio/flac",
+    # 오디오 — 공식 목록 밖이나 Gemini 가 실제로 받아준다 (.m4a = MP4 컨테이너 + AAC 코덱).
+    # 증거: quickstarts/handler_client/04_files.ipynb — 화이트리스트를 거치지 않는
+    # handler_client 경로로 test_audio.m4a 를 보내 정상 응답을 받는다.
+    "audio/mp4",
     # 문서 — 비전 지원
     "application/pdf",
     # 문서 — 텍스트 추출만 (보수적 포함)
@@ -28,6 +33,21 @@ SUPPORTED_MIME_TYPES: frozenset[str] = frozenset({
     "video/x-flv", "video/webm", "video/3gpp",
     "video/mpg", "video/wmv", "video/x-ms-wmv",
 })
+
+
+def normalize_mime_types(files: list[FileInput]) -> None:
+    """mime 을 Gemini 표준형으로 제자리 교정한다. validate_mime_types 보다 먼저 부른다.
+
+    화이트리스트는 정규화된 이름(`audio/mp3`)으로 적혀 있는데, file-manager 의
+    build_metadata 는 `mimetypes.guess_type` 이 주는 별칭(`audio/mpeg`)을 싣는다.
+    정규화를 검증보다 뒤에 두면 Gemini 가 받아주는 타입이 거짓 거부된다.
+
+    gemini_mime_normalize 는 전체 mime 표가 아니라 **별칭 교정표**다. 맵에 없는 값은
+    이미 표준형이거나 미지의 타입이므로 그대로 둔다. 판정은 화이트리스트가 한다.
+    """
+    normalize = get_settings().gemini_mime_normalize
+    for fi in files:
+        fi.mime_type = normalize.get(fi.mime_type, fi.mime_type)
 
 
 def validate_mime_types(files: list[FileInput]) -> None:

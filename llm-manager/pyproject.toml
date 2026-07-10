@@ -25,6 +25,11 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
     "pyright>=1.1.0",
+    # quickstarts/*.ipynb 실행용. 선언하지 않으면 `uv sync` 가 커널을 지운다.
+    # python-dotenv 는 pydantic-settings 의 전이 의존성이지만 노트북이 직접 import 하므로 명시한다.
+    "ipykernel>=6.29.0",
+    "nest-asyncio>=1.6.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [build-system]

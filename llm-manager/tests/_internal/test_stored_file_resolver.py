@@ -94,6 +94,31 @@ class TestResolveStoredFilesLazy:
         # validators 가 file-manager 호출 전에 raise
         mock_fm.get_file.assert_not_awaited()
 
+    async def test_alias_mime_normalized_before_validation(self, mock_fm):
+        """정규화가 검증보다 먼저 일어난다 — 거짓 거부의 해소.
+
+        file-manager 의 build_metadata 는 mimetypes.guess_type 을 쓰므로 `.mp3` 를
+        `audio/mpeg` 로 준다. 화이트리스트는 정규화된 `audio/mp3` 만 알고 있다.
+        """
+        from llm_manager._internal.stored_file_resolver import resolve_stored_files
+
+        ref = _ref("a.mp3", file_name="a.mp3", mime_type="audio/mpeg", extension=".mp3")
+
+        result = await resolve_stored_files([ref])
+
+        assert result[0].mime_type == "audio/mp3"
+        mock_fm.get_file.assert_not_awaited()
+
+    async def test_m4a_accepted(self, mock_fm):
+        """audio/mp4 는 Gemini 가 실제로 받아주므로 거부하지 않는다."""
+        from llm_manager._internal.stored_file_resolver import resolve_stored_files
+
+        ref = _ref("a.m4a", file_name="a.m4a", mime_type="audio/mp4", extension=".m4a")
+
+        result = await resolve_stored_files([ref])
+
+        assert result[0].mime_type == "audio/mp4"
+
 
 class TestFetchWithFallbackPrimary:
     """fetch_with_fallback: get_file 1차 성공 → bytes 반환, fi 변경 없음."""
