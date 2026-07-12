@@ -28,7 +28,9 @@ SUPPORTED_MIME_TYPES: frozenset[str] = frozenset({
     # 문서 — 텍스트 추출만 (보수적 포함)
     "text/plain", "text/html", "text/csv", "text/markdown", "text/xml",
     "application/json", "application/xml",
-    # 비디오 (보수적) — video/x-ms-wmv 는 .wmv 의 실제 탐지 MIME(filetype/OS 매핑)
+    # 비디오 (보수적). video/x-ms-wmv 는 .wmv 의 실제 탐지 MIME(filetype/OS 매핑)이지만,
+    # stored 경로에선 normalize_mime_types 가 검증 전에 video/wmv 로 교정하므로 이 엔트리엔
+    # 도달하지 않는다 — 정규화를 거치지 않는 입력을 대비한 방어적 잔류다.
     "video/mp4", "video/mpeg", "video/mov", "video/avi",
     "video/x-flv", "video/webm", "video/3gpp",
     "video/mpg", "video/wmv", "video/x-ms-wmv",
