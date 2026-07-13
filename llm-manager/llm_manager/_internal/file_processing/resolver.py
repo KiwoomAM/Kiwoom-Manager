@@ -704,6 +704,9 @@ async def _process_files_api(
                 )
                 raise CacheError(f"Redis files_api 조회 실패: {e}") from e
             if existing is None:
+                # 정상 운영선 거의 도달 불가한 안전망: files_api TTL(Gemini 파일 만료 ~47h 기준)이
+                # 보통 context_cache_ttl 보다 길어 컨텍스트캐시가 먼저 만료된다 → "context_cache HIT
+                # 인데 files_api 만 부재"는 외부 삭제·TTL 오설정 같은 비정상 신호. 조용한 None 대신 raise.
                 raise CacheError(
                     "context_cache HIT 인데 files_api 엔트리 부재 — 파일 메타 복원 불가"
                     f" (만료 엣지): checksum={checksum[:16]}"
