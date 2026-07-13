@@ -11,6 +11,7 @@ import pytest
 from llm_manager._internal.file_processing.validators import (
     MAX_FILE_SIZE,
     SUPPORTED_MIME_TYPES,
+    normalize_mime_types,
     validate_file_sizes,
     validate_mime_types,
 )
@@ -88,6 +89,83 @@ class TestValidateMimeTypes:
             _file(file_name="c.wmv", mime_type="video/x-ms-wmv", extension="wmv"),
         ]
         validate_mime_types(files)  # 예외 없음
+
+    def test_audio_mp4_supported(self):
+        """`.m4a`(audio/mp4)는 Gemini 가 실제로 받아준다 — 공식 목록에 없어도 통과시킨다.
+
+        증거: quickstarts/handler_client/04_files.ipynb 가 handler_client 경로로
+        test_audio.m4a 를 보내 정상 응답을 받는다 (화이트리스트를 거치지 않는 경로).
+        """
+        assert "audio/mp4" in SUPPORTED_MIME_TYPES
+        validate_mime_types([_file(file_name="a.m4a", mime_type="audio/mp4", extension="m4a")])
+
+
+# ── normalize_mime_types ──────────────────────────────────────
+
+
+class TestNormalizeMimeTypes:
+    """화이트리스트는 정규화된 이름으로 적혀 있으므로, 검증 전에 정규화해야 한다."""
+
+    def test_aliases_rewritten_to_canonical(self):
+        """mimetypes.guess_type 이 내놓는 별칭이 표준형으로 바뀐다."""
+        files = [
+            _file(file_name="a.mp3", mime_type="audio/mpeg", extension="mp3"),
+            _file(file_name="b.wav", mime_type="audio/x-wav", extension="wav"),
+            _file(file_name="c.aiff", mime_type="audio/x-aiff", extension="aiff"),
+            _file(file_name="d.mov", mime_type="video/quicktime", extension="mov"),
+        ]
+
+        normalize_mime_types(files)
+
+        assert [f.mime_type for f in files] == [
+            "audio/mp3",
+            "audio/wav",
+            "audio/aiff",
+            "video/mov",
+        ]
+
+    def test_canonical_types_untouched(self):
+        """정규화 맵은 별칭 교정표일 뿐이다 — 이미 표준형인 mime 을 파괴하면 안 된다.
+
+        맵에 없는 값의 기본값을 빈 문자열로 두면 pdf·png·aac 가 전부 망가진다.
+        """
+        originals = ["application/pdf", "image/png", "audio/aac", "text/plain", "audio/mp4"]
+        files = [_file(mime_type=mt) for mt in originals]
+
+        normalize_mime_types(files)
+
+        assert [f.mime_type for f in files] == originals
+
+    def test_mutates_in_place_and_returns_none(self):
+        """호출부(resolve_stored_files)가 같은 placeholder 를 계속 쓰므로 제자리 변형이다."""
+        fi = _file(file_name="a.mp3", mime_type="audio/mpeg", extension="mp3")
+
+        assert normalize_mime_types([fi]) is None
+        assert fi.mime_type == "audio/mp3"
+
+    def test_normalized_aliases_then_pass_validation(self):
+        """정규화 후에는 화이트리스트를 통과한다 — 이것이 거짓 거부의 해소다."""
+        files = [
+            _file(file_name="a.mp3", mime_type="audio/mpeg", extension="mp3"),
+            _file(file_name="b.wav", mime_type="audio/x-wav", extension="wav"),
+        ]
+
+        normalize_mime_types(files)
+        validate_mime_types(files)  # 예외 없음
+
+    def test_unknown_mime_passes_through_unchanged(self):
+        """맵에 없는 미지의 mime 은 그대로 둔다 — 판정은 화이트리스트가 한다."""
+        fi = _file(file_name="a.bin", mime_type="application/octet-stream", extension="bin")
+
+        normalize_mime_types([fi])
+
+        assert fi.mime_type == "application/octet-stream"
+        with pytest.raises(UnsupportedFileTypeError):
+            validate_mime_types([fi])
+
+    def test_empty_list_passes(self):
+        """빈 리스트는 통과."""
+        normalize_mime_types([])
 
 
 # ── validate_file_sizes ───────────────────────────────────────

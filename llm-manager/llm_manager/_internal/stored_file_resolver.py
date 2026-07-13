@@ -18,6 +18,7 @@ from file_manager import FileManagerHandler
 from file_manager.exceptions import FMServiceError, MetadataNotFoundError
 
 from llm_manager._internal.file_processing.validators import (
+    normalize_mime_types,
     validate_file_sizes,
     validate_mime_types,
 )
@@ -48,7 +49,9 @@ async def resolve_stored_files(refs: list[StoredFile]) -> list[FileInput]:
         for ref in refs
     ]
 
-    # fail-fast: file-manager 호출 전 mime/size 검증
+    # fail-fast: file-manager 호출 전 mime/size 검증.
+    # 화이트리스트가 정규화된 이름으로 적혀 있으므로 검증 전에 제자리 정규화한다.
+    normalize_mime_types(placeholders)
     validate_mime_types(placeholders)
     validate_file_sizes(placeholders)
 
