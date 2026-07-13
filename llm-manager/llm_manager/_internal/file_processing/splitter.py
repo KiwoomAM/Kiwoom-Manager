@@ -231,6 +231,12 @@ def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str
     크기 분할(페이지별 바이트 기여도 추정 → 그룹핑 → 초과 시 이등분 재귀)을 먼저 하고,
     결과 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡을 적용한다.
 
+    결정적(deterministic): 무작위·시간 의존이 없어 같은 PDF 바이트(+같은 PyMuPDF 버전)는
+    항상 같은 페이지 경계에서 분할된다 — 분할점은 페이지별 추정/실제 바이트 크기의 순수 함수다.
+    (분기 판단이 save 결과 크기에 의존하므로 PyMuPDF 버전이 바뀌면 경계가 밀릴 수는 있다.)
+    그래서 pdf_part_ranges 를 파일당 한 번만 계산해 Redis 에 저장·재사용해도 안전하다 —
+    호출마다 재분할할 필요가 없다(YAGNI).
+
     Args:
         path: PDF 파일 경로.
         target_mb: 파트당 최대 크기 (MB). 기본 50.

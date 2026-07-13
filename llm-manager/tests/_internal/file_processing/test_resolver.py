@@ -1386,3 +1386,134 @@ class Test404RecoveryExpansion:
 
         # spilled part(big_b)의 files_api checksum이 무효화 목록에 있어야 함
         assert make_file_checksum(big_b) in deleted
+
+
+class TestContextCacheHitRestoresMeta:
+    """분기 A(context_cache HIT)도 files_api Redis에서 pdf_part_ranges 등 파일 메타를
+    복원해야 한다 — 안 그러면 HIT 응답에서 조용히 누락 (이슈 #70).
+
+    files_api HIT 경로(_reuse_files_api_uris)와 대칭. 복원 소스는 files_api Redis 한 곳(SSOT).
+    context cache HIT 은 과거에 files_api 를 저장했다는 뜻이라, files_api 엔트리 부재(만료 엣지)나
+    Redis 조회 예외는 '조용히 None' 대신 CacheError 로 터뜨린다(FAIL-LOUD, 사용자 결정).
+    """
+
+    def _seed_files_api(self, checksum, *, pdf_part_ranges, page_count):
+        from llm_manager._internal.file_processing import cache_store
+        cache_store.save_files_api(
+            checksum,
+            {
+                "file_checksum": checksum,
+                "file_name": "big.pdf",
+                "file_size": 60 * 1024 * 1024,
+                "mime_type": "application/pdf",
+                "uris": ["https://example.com/p1", "https://example.com/p2"],
+                "split": True,
+                "page_count": page_count,
+                "image_tokens": None,
+                "pdf_part_ranges": pdf_part_ranges,
+            },
+        )
+
+    def _seed_context_cache(self, checksum, *, name="cachedContents/hit"):
+        from llm_manager._internal.file_processing import cache_store
+        hash_key = cache_store.make_context_cache_key(
+            [checksum], model="gemini-2.5-flash", system_instruction=None,
+            tools=None, tool_config=None,
+        )
+        cache_store.save_context_cache(
+            hash_key,
+            {
+                "file_checksums": [checksum],
+                "model": "gemini-2.5-flash",
+                "system_instruction": None,
+                "tools": None,
+                "tool_config": None,
+                "cached_content_name": name,
+                "files_api_uris": ["https://example.com/p1", "https://example.com/p2"],
+            },
+        )
+        return hash_key
+
+    async def _run(self, fi, checksum):
+        return await resolver._process_files_api(
+            [fi], checksums=[checksum],
+            model="gemini-2.5-flash", system_instruction=None,
+            context_cache_ttl=3600, standby_ttl_seconds=10,
+        )
+
+    async def test_hit_restores_pdf_part_ranges_and_page_count(self):
+        """context cache HIT 이어도 분할 PDF 파트 범위·페이지수가 fi 에 복원돼야 한다."""
+        checksum = "cs-hit-split"
+        self._seed_files_api(checksum, pdf_part_ranges=[[1, 52], [53, 217]], page_count=217)
+        self._seed_context_cache(checksum)
+        fi = _file(file_name="big.pdf", mime_type="application/pdf",
+                   file_size=60 * 1024 * 1024)
+
+        uri_parts, cached_content, _hk = await self._run(fi, checksum)
+
+        assert cached_content == "cachedContents/hit"   # 분기 A HIT 경로 확인
+        assert uri_parts == []                            # HIT 은 uri_parts 비움
+        # 핵심 — HIT 이어도 파트 범위/페이지수가 복원돼 file_meta 로 나가야 함 (Redis JSON 튜플→리스트→튜플)
+        assert fi.pdf_part_ranges == [(1, 52), (53, 217)]
+        assert fi.page_count == 217
+
+    async def test_hit_non_split_file_keeps_none(self):
+        """비분할 파일은 pdf_part_ranges 가 정당하게 None — 엔트리만 있으면 raise 하지 않는다."""
+        from llm_manager._internal.file_processing import cache_store
+        checksum = "cs-hit-nonsplit"
+        cache_store.save_files_api(
+            checksum,
+            {
+                "file_checksum": checksum,
+                "file_name": "small.pdf",
+                "file_size": 1024,
+                "mime_type": "application/pdf",
+                "uris": ["https://example.com/only"],
+                "split": False,
+                "page_count": 3,
+                "image_tokens": None,
+                "pdf_part_ranges": None,
+            },
+        )
+        self._seed_context_cache(checksum)
+        fi = _file(file_name="small.pdf", mime_type="application/pdf", file_size=1024)
+
+        _uri, cached_content, _hk = await self._run(fi, checksum)
+
+        assert cached_content == "cachedContents/hit"
+        assert fi.pdf_part_ranges is None   # 비분할 = 정상값, 에러 아님
+        assert fi.page_count == 3
+
+    async def test_hit_missing_files_api_entry_raises_cache_error(self):
+        """만료 엣지(files_api 부재, context cache 만 잔존) → 조용한 None 대신 CacheError."""
+        from llm_manager.exceptions import CacheError
+        checksum = "cs-hit-orphan"
+        # files_api 엔트리는 저장 안 함 — 만료 엣지(정상 운영선 도달 불가, 안전망)
+        self._seed_context_cache(checksum)
+        fi = _file(file_name="big.pdf", mime_type="application/pdf",
+                   file_size=60 * 1024 * 1024)
+
+        with pytest.raises(CacheError):
+            await self._run(fi, checksum)
+
+    async def test_hit_files_api_lookup_error_raises_cache_error(self, monkeypatch):
+        """HIT 경로 files_api 조회가 예외(Redis 장애)면 CacheError 로 전파."""
+        from llm_manager.exceptions import CacheError
+        checksum = "cs-hit-redis-down"
+        self._seed_files_api(checksum, pdf_part_ranges=[[1, 52], [53, 217]], page_count=217)
+        self._seed_context_cache(checksum)
+        fi = _file(file_name="big.pdf", mime_type="application/pdf",
+                   file_size=60 * 1024 * 1024)
+
+        call = {"n": 0}
+
+        def boom(cs):
+            call["n"] += 1
+            raise RuntimeError("redis handler down")
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.resolver.cache_store.find_files_api",
+            boom)
+
+        with pytest.raises(CacheError):
+            await self._run(fi, checksum)
+        assert call["n"] >= 1
