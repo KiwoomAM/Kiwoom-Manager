@@ -260,6 +260,23 @@ async def _expand_pdfs_over_page_limit(pool: list[FileInput]) -> list[FileInput]
     return out
 
 
+def _restore_file_meta(fi: FileInput, existing: dict) -> None:
+    """Redis files_api 레코드의 파일 메타를 fi 에 복원 (page_count / image_tokens / pdf_part_ranges).
+
+    files_api HIT(_reuse_files_api_uris)과 context_cache HIT(_process_files_api 분기 A)이 공유하는
+    SSOT 복원부 — 파일 메타의 주인은 files_api Redis 한 곳이라 두 HIT 경로 모두 여기서 꺼낸다.
+    안 그러면 HIT 응답에서 pdf_part_ranges 등이 사라져 소비자의 절대페이지 환산이 조용히 깨진다(이슈 #70).
+
+    - page_count / image_tokens: too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작하게.
+    - pdf_part_ranges: Redis JSON 은 튜플→리스트라 다시 list[tuple] 로 재구성(계약 유지).
+      비분할/레거시 레코드(pdf_part_ranges 없음)면 None.
+    """
+    fi.page_count = existing.get("page_count")
+    fi.image_tokens = existing.get("image_tokens")
+    _ranges = existing.get("pdf_part_ranges")
+    fi.pdf_part_ranges = [tuple(r) for r in _ranges] if _ranges else None
+
+
 def _reuse_files_api_uris(
     fi: FileInput,
     existing: dict,
@@ -276,13 +293,7 @@ def _reuse_files_api_uris(
         "[route] file=%s mode=files_api source=cached uris=%d",
         fi.file_name, len(existing["uris"]),
     )
-    # Redis 에 stash 된 PDF 페이지 수 / 이미지 토큰 복원 → too-small 게이트(§4.4.1)가 HIT/병렬 재호출에서도 동작
-    fi.page_count = existing.get("page_count")
-    fi.image_tokens = existing.get("image_tokens")
-    # 분할 PDF 파트별 원본 페이지 범위 복원 (page_count 와 대칭) — 없으면 HIT 응답에 사라져 소비자의
-    # 절대페이지 환산이 조용히 깨진다(PR #62 리뷰). Redis JSON 은 튜플→리스트라 다시 list[tuple] 로 재구성(계약 유지).
-    _ranges = existing.get("pdf_part_ranges")
-    fi.pdf_part_ranges = [tuple(r) for r in _ranges] if _ranges else None
+    _restore_file_meta(fi, existing)  # 파일 메타 복원 (SSOT — context_cache HIT 과 공유)
     fi.data = b""  # Files API 경로(cache HIT) — bytes 더 이상 불필요 (docs/16 §3.2)
 
 
@@ -678,6 +689,26 @@ async def _process_files_api(
 
     if cached:
         logger.info("[route] mode=context_cache source=cached name=%s", cached["cached_content_name"])
+        # context_cache HIT 이어도 파일 메타(pdf_part_ranges 등)를 files_api Redis 에서 복원한다 —
+        # files_api HIT(_reuse_files_api_uris)과 대칭. 안 하면 HIT 응답에서 pdf_part_ranges 가 조용히
+        # 누락돼 소비자의 절대페이지 환산이 깨진다(이슈 #70). context_cache HIT 은 과거 files_api 저장을
+        # 전제하므로(먼저 업로드·저장해야 캐시 생성 가능), 엔트리 부재(만료 엣지)·조회 예외를 None 으로
+        # 삼키지 않고 CacheError 로 터뜨린다(FAIL-LOUD — 조용한 데이터 누락이 이 이슈의 원인이었다).
+        for fi, checksum in zip(files_api_pool, checksums):
+            try:
+                existing = cache_store.find_files_api(checksum)
+            except Exception as e:
+                logger.exception(
+                    "Redis files_api 조회 실패(context_cache HIT 메타 복원): checksum=%s",
+                    checksum[:16],
+                )
+                raise CacheError(f"Redis files_api 조회 실패: {e}") from e
+            if existing is None:
+                raise CacheError(
+                    "context_cache HIT 인데 files_api 엔트리 부재 — 파일 메타 복원 불가"
+                    f" (만료 엣지): checksum={checksum[:16]}"
+                )
+            _restore_file_meta(fi, existing)
         return [], cached["cached_content_name"], hash_key
 
     # ── ②③ 분기 B/C: 각 파일별 Redis files_api 조회 → MISS 시 standby → 업로드 ──
