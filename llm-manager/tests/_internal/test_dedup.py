@@ -48,28 +48,28 @@ class TestMakeStandbyKey:
 class TestTryAcquireStandby:
     async def test_first_acquire_returns_true(self, fake_redis):
         ok = await try_acquire_standby("files_api", "checksum1", ttl_seconds=60)
-        assert ok is True
+        assert ok is not None  # 소유자 토큰
         # 실제 키 저장 확인
         assert fake_redis.get("file_cache:files_api_standby:checksum1") is not None
 
-    async def test_second_acquire_returns_false(self, fake_redis):
+    async def test_second_acquire_returns_none(self, fake_redis):
         ok1 = await try_acquire_standby("files_api", "checksum1", ttl_seconds=60)
         ok2 = await try_acquire_standby("files_api", "checksum1", ttl_seconds=60)
-        assert ok1 is True
-        assert ok2 is False
+        assert ok1 is not None
+        assert ok2 is None
 
     async def test_different_keys_both_acquire(self, fake_redis):
         ok1 = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
         ok2 = await try_acquire_standby("files_api", "k2", ttl_seconds=60)
-        assert ok1 is True
-        assert ok2 is True
+        assert ok1 is not None
+        assert ok2 is not None
 
     async def test_different_prefix_no_conflict(self, fake_redis):
         """같은 key라도 prefix 다르면 네임스페이스 분리."""
         ok1 = await try_acquire_standby("files_api", "shared", ttl_seconds=60)
         ok2 = await try_acquire_standby("context_cache", "shared", ttl_seconds=60)
         ok3 = await try_acquire_standby("agent_llm", "shared", ttl_seconds=60)
-        assert (ok1, ok2, ok3) == (True, True, True)
+        assert all(t is not None for t in (ok1, ok2, ok3))
 
     async def test_redis_unavailable_raises(self, no_redis):
         with pytest.raises(RuntimeError, match="Redis 미연결"):
@@ -117,11 +117,11 @@ class TestWaitForStandbyRelease:
 
     async def test_failure_record_returns_failed_with_error(self, fake_redis, fast_backoff):
         """standby 사라짐 + 실패 기록 존재 → FAILED verdict + 원본 에러 재구성."""
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        token = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
         # leader 실패 시나리오: 실패 기록 후 standby 해제
         await record_failure("files_api", "k1", PdfPageTooLargeError(page=3, size_mb=97.1))
-        await release_standby("files_api", "k1")
+        await release_standby("files_api", "k1", token)
 
         result = await wait_for_standby_release(
             "files_api", "k1", timeout=5,
@@ -135,11 +135,11 @@ class TestWaitForStandbyRelease:
 
     async def test_standby_vanished_no_record_reacquires_lead(self, fake_redis, fast_backoff):
         """standby 사라짐 + 실패 기록 없음(eviction) → SETNX 재획득 성공 → LEAD."""
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        token = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
         async def _releaser():
             await asyncio.sleep(0.03)
-            await release_standby("files_api", "k1")  # 기록 없이 사라짐
+            await release_standby("files_api", "k1", token)  # 기록 없이 사라짐
 
         _ = asyncio.create_task(_releaser())
 
@@ -224,9 +224,9 @@ class TestAntiHerdInvariant:
 
         101MB 재다운로드 0번 — 28건 herd 의 정상 경로 해소.
         """
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        token = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
         await record_failure("files_api", "k1", PdfPageTooLargeError(page=3, size_mb=97.1))
-        await release_standby("files_api", "k1")
+        await release_standby("files_api", "k1", token)
 
         async def _waiter():
             r = await wait_for_standby_release(
@@ -243,8 +243,8 @@ class TestAntiHerdInvariant:
         SETNX 폴백 안전망 — TTL 과 무관하게 불변식 유지(docs/31 §3-2).
         """
         # leader 가 기록 없이 사라진 상태
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
-        await release_standby("files_api", "k1")
+        token0 = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        await release_standby("files_api", "k1", token0)
 
         cache: dict = {}
 
@@ -254,9 +254,9 @@ class TestAntiHerdInvariant:
                 find_cache_fn=lambda: cache.get("doc"),
             )
             if r.kind == "lead":
-                # 승자가 작업 완료 시뮬레이션: 캐시 저장 후 standby 해제
+                # 승자가 작업 완료 시뮬레이션: 캐시 저장 후 자기 토큰으로 해제
                 cache["doc"] = {"uris": ["u"]}
-                await release_standby("files_api", "k1")
+                await release_standby("files_api", "k1", r.token)
             return r.kind
 
         kinds = await asyncio.gather(*[_waiter() for _ in range(10)])
@@ -273,7 +273,7 @@ class TestAntiHerdInvariant:
         전원에게 LEAD 를 주면 27개가 동시에 101MB 를 받는다(고치려던 herd 그대로).
         """
         # 다른 leader 가 standby 를 계속 들고 있다 (느린 작업 중 — 실패도, 완료도 안 함)
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        token_leader = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
         cache: dict = {}
 
@@ -281,7 +281,7 @@ class TestAntiHerdInvariant:
             # 대기자들의 timeout(1초) 을 넘겨 완료 — timeout 경로를 실제로 밟게 한다
             await asyncio.sleep(1.5)
             cache["doc"] = {"uris": ["u"]}
-            await release_standby("files_api", "k1")
+            await release_standby("files_api", "k1", token_leader)
 
         async def _waiter():
             r = await wait_for_standby_release(
@@ -315,25 +315,26 @@ class TestFailureRecordDoesNotPoisonRerun:
 
         acquired = await try_acquire_standby("files_api", "ck", ttl_seconds=60)
 
-        assert acquired is True
+        assert acquired is not None
         assert await dedup._find_failure("files_api", "ck") is None, "낡은 기록이 남아있음"
 
     async def test_rerun_waiters_see_new_leader_not_old_failure(self, fake_redis, fast_backoff):
         """1차 실패 후 재실행 — 새 leader 가 성공하면 대기자도 그 결과를 받아야 한다."""
         # 1차: leader 실패 → 기록 남기고 해제
-        await try_acquire_standby("files_api", "ck", ttl_seconds=60)
+        token1 = await try_acquire_standby("files_api", "ck", ttl_seconds=60)
         await record_failure("files_api", "ck", RuntimeError("peer closed connection"))
-        await release_standby("files_api", "ck")
+        await release_standby("files_api", "ck", token1)
 
         # 2차(재실행): 파일·서버 정상. 새 leader 가 선점해 작업 중.
-        assert await try_acquire_standby("files_api", "ck", ttl_seconds=60) is True
+        token2 = await try_acquire_standby("files_api", "ck", ttl_seconds=60)
+        assert token2 is not None
 
         cache: dict = {}
 
         async def _new_leader():
             await asyncio.sleep(0.05)  # 101MB 받는 중 — 이번엔 성공
             cache["doc"] = {"uris": ["u"]}
-            await release_standby("files_api", "ck")
+            await release_standby("files_api", "ck", token2)
 
         async def _waiter():
             v = await wait_for_standby_release(
@@ -351,25 +352,91 @@ class TestFailureRecordDoesNotPoisonRerun:
 
 class TestReleaseStandby:
     async def test_release_removes_key(self, fake_redis):
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        token = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
         assert fake_redis.get("file_cache:files_api_standby:k1") is not None
 
-        await release_standby("files_api", "k1")
+        await release_standby("files_api", "k1", token)
         assert fake_redis.get("file_cache:files_api_standby:k1") is None
 
     async def test_release_nonexistent_is_safe(self, fake_redis):
         """없는 키 release도 예외 없이 통과."""
-        await release_standby("files_api", "nonexistent")  # no-op
+        await release_standby("files_api", "nonexistent", "some-token")  # no-op
 
     async def test_redis_unavailable_does_not_raise(self, no_redis):
         """Redis 미연결 시 조용히 return (finally 블록 보호)."""
-        await release_standby("files_api", "k1")  # no raise
+        await release_standby("files_api", "k1", "tok")  # no raise
+
+    async def test_no_token_is_noop(self, fake_redis):
+        """토큰 없이(=락 없이 진행한 경우) 해제하면 아무것도 지우지 않는다."""
+        other = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        assert other is not None
+
+        await release_standby("files_api", "k1", None)  # 락을 못 잡고 일한 요청
+
+        assert fake_redis.get("file_cache:files_api_standby:k1") is not None, (
+            "토큰 없는 해제가 남의 락을 지웠다"
+        )
 
     async def test_redis_exception_swallowed(self, monkeypatch):
         """Redis 장애 시 예외 삼킴 (원본 예외 마스킹 방지)."""
         class ExplodingClient:
-            def delete(self, *args, **kwargs):
+            def compare_and_delete(self, *args, **kwargs):
                 raise ConnectionError("redis down")
 
         monkeypatch.setattr(dedup, "RedisManager", lambda: ExplodingClient())
-        await release_standby("files_api", "k1")  # no raise
+        await release_standby("files_api", "k1", "tok")  # no raise
+
+
+# ── M5: 락 소유권(fencing) ────────────────────────────────────
+
+
+class TestStandbyOwnership:
+    """standby 해제는 **내 토큰일 때만** 이뤄져야 한다.
+
+    소유권 검사 없이 DEL 하면, TTL 만료로 락이 넘어간 뒤 늦게 끝난 옛 leader 가
+    **새 leader 의 락을 지운다.** 그 순간 새로 도착한 요청들이 줄줄이 leader 가 되어
+    herd 가 자기증식한다.
+    """
+
+    async def test_acquire_returns_owner_token(self, fake_redis):
+        """선점 성공 시 소유자 토큰을 돌려주고, 실패 시 None."""
+        token = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        assert isinstance(token, str) and token
+
+        second = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        assert second is None
+
+    async def test_stale_leader_cannot_delete_new_leaders_lock(self, fake_redis):
+        """TTL 만료로 락이 넘어간 뒤, 늦게 끝난 옛 leader 가 새 leader 의 락을 못 지운다."""
+        # A 가 선점 (느린 작업 시작)
+        token_a = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+
+        # A 의 standby 가 TTL 로 만료됐다고 가정 (fake 는 TTL 만료가 없어 직접 제거)
+        fake_redis.data.pop("file_cache:files_api_standby:k1")
+
+        # B 가 승격해 새 leader 가 됨 (새 토큰)
+        token_b = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        assert token_b is not None and token_b != token_a
+
+        # A 가 뒤늦게 끝나 자기 finally 에서 해제를 시도한다
+        await release_standby("files_api", "k1", token_a)
+
+        # B 의 락은 살아있어야 한다
+        assert fake_redis.get("file_cache:files_api_standby:k1") is not None, (
+            "옛 leader(A) 가 새 leader(B) 의 락을 지웠다"
+        )
+        # 그리고 B 는 자기 락을 정상적으로 해제할 수 있다
+        await release_standby("files_api", "k1", token_b)
+        assert fake_redis.get("file_cache:files_api_standby:k1") is None
+
+    async def test_waiter_promoted_carries_its_own_token(self, fake_redis, fast_backoff):
+        """대기 중 재획득으로 승격한 waiter 는 LEAD 판정과 함께 자기 토큰을 받는다."""
+        token_a = await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        await release_standby("files_api", "k1", token_a)  # 기록 없이 사라짐(eviction)
+
+        verdict = await wait_for_standby_release(
+            "files_api", "k1", timeout=5, find_cache_fn=lambda: None,
+        )
+        assert verdict.kind == "lead"
+        assert isinstance(verdict.token, str) and verdict.token
+        assert verdict.token != token_a  # 새로 잡은 락이므로 새 토큰

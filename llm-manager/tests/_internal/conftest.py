@@ -96,6 +96,14 @@ class FakeRedisHandler:
         self.ttls.pop(key, None)
         return 1 if self.data.pop(key, None) is not None else 0
 
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        """소유자 토큰 일치 시에만 삭제 (분산 락 release). 불일치/부재면 False."""
+        if self.data.get(key) != expected:
+            return False
+        self.ttls.pop(key, None)
+        del self.data[key]
+        return True
+
 
 @pytest.fixture()
 def fake_redis(monkeypatch):
@@ -133,6 +141,10 @@ def no_redis(monkeypatch):
 
         def delete(self, *a, **kw):
             return 0
+
+        def compare_and_delete(self, *a, **kw):
+            # NX/XX 와 동일하게 폴백 차단 — 미도달 시 raise (락 정합성 보호)
+            raise RedisUnavailableError("test: Redis down")
 
     monkeypatch.setattr(dedup, "RedisManager", lambda: _DownHandler())
 

@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import json
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -61,11 +62,14 @@ class WaitResult:
         "cached" — leader 성공, 캐시 HIT. `data` 에 캐시 dict.
         "failed" — leader 실패 기록 발견. `error` 에 재구성된 예외 (호출자가 raise).
         "lead"   — standby 사라짐/timeout 후 SETNX 재획득 성공 → 자기가 작업.
+                   `token` 에 소유자 토큰 (해제 시 release_standby 에 넘긴다).
+                   Redis 장애로 락 없이 진행하는 경우엔 token=None.
     """
 
     kind: str
     data: Any = None
     error: Exception | None = None
+    token: str | None = None
 
 
 # ── 키 빌더 ──────────────────────────────────────────────────
@@ -102,12 +106,18 @@ async def try_acquire_standby(
     prefix: str,
     key: str,
     ttl_seconds: int,
-) -> bool:
+) -> str | None:
     """Redis SETNX 로 standby 선점 시도.
 
     Returns:
-        True  — 자기가 선점 (작업 시작)
-        False — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
+        str  — 선점 성공. **소유자 토큰**(standby 값 전체). 해제 시 release_standby 에
+               그대로 돌려줘야 한다.
+        None — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
+
+    소유자 토큰을 두는 이유(docs/31 §3-6): standby TTL 이 만료돼 락이 다른 요청으로
+    넘어간 뒤, 늦게 끝난 옛 leader 가 `finally` 에서 해제를 시도한다. 소유권 검사가
+    없으면 그때 **새 leader 의 락을 지워버리고**, 뒤이어 도착한 요청들이 줄줄이 leader 가
+    되어 herd 가 자기증식한다.
 
     선점에 성공하면 = **새 시도가 시작됐다**는 뜻이므로, 같은 key 의 낡은 실패 기록을
     지운다. 실패 기록은 "그 시도가 실패했다"이지 "이 key 는 영영 안 된다"가 아니다.
@@ -119,7 +129,12 @@ async def try_acquire_standby(
             RedisUnavailableError / RedisRetryExhausted raise).
     """
     standby_key = _make_standby_key(prefix, key)
-    value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
+    # 토큰 = standby 값 전체. compare_and_delete 가 값 전체를 비교하므로, 우리가 SET 한
+    # 문자열을 그대로 들고 있다가 돌려줘야 한다 (재직렬화하면 키 순서 등으로 어긋날 수 있다).
+    value = json.dumps({
+        "owner": uuid.uuid4().hex,
+        "started_at": datetime.now(UTC).isoformat(),
+    })
     try:
         acquired = await asyncio.to_thread(
             RedisManager().setnx, standby_key, value, ttl=ttl_seconds,
@@ -127,9 +142,10 @@ async def try_acquire_standby(
     except (RedisUnavailableError, RedisRetryExhausted) as e:
         raise RuntimeError("Redis 미연결 — standby 불가") from e
 
-    if acquired:
-        await _clear_failure(prefix, key)  # 새 시도 시작 → 이전 실패 기록 무효
-    return acquired
+    if not acquired:
+        return None
+    await _clear_failure(prefix, key)  # 새 시도 시작 → 이전 실패 기록 무효
+    return value  # 소유자 토큰
 
 
 async def _clear_failure(prefix: str, key: str) -> None:
@@ -274,8 +290,9 @@ async def wait_for_standby_release(
             if await asyncio.to_thread(RedisManager().get, standby_key) is None:
                 # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
                 # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
-                if await _try_reacquire(prefix, key, timeout):
-                    return WaitResult(kind="lead")
+                ok, token = await _try_reacquire(prefix, key, timeout)
+                if ok:
+                    return WaitResult(kind="lead", token=token)
                 # 다른 대기자가 leader 가 됨 → 계속 대기
 
             # 다음 대기 간격
@@ -286,12 +303,13 @@ async def wait_for_standby_release(
         # 재획득에 실패했다면 **다른 대기자가 방금 leader 가 된 것**이므로, 곧장 자기가
         # 일하지 말고(=herd) 그 leader 를 기다린다. 재획득 결과를 버리고 전원 LEAD 를
         # 주던 것이 C2 herd 의 원인이었다.
-        if await _try_reacquire(prefix, key, timeout):
+        ok, token = await _try_reacquire(prefix, key, timeout)
+        if ok:
             logger.warning(
                 "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
                 timeout, standby_key,
             )
-            return WaitResult(kind="lead")
+            return WaitResult(kind="lead", token=token)
         logger.info(
             "standby timeout(%d초) — 다른 대기자가 leader 로 승격, 계속 대기 (round %d/%d)",
             timeout, round_no, _MAX_TIMEOUT_ROUNDS,
@@ -306,28 +324,56 @@ async def wait_for_standby_release(
     return WaitResult(kind="lead")
 
 
-async def _try_reacquire(prefix: str, key: str, ttl_seconds: int) -> bool:
-    """standby 재획득 시도. Redis 미연결이면 True(자기가 작업) — graceful degradation.
+async def _try_reacquire(
+    prefix: str, key: str, ttl_seconds: int,
+) -> tuple[bool, str | None]:
+    """standby 재획득 시도 → (자기가 작업할지, 소유자 토큰).
+
+    반환:
+        (True,  token) — 재획득 성공. 토큰으로 해제한다.
+        (False, None)  — 다른 요청이 잡고 있음 → 호출자는 계속 대기.
+        (True,  None)  — Redis 미연결. 락 없이 진행한다(graceful degradation).
 
     try_acquire_standby 는 Redis 미연결 시 RuntimeError 를 올리는데, 대기 경로에서는
     그걸 호출자에게 터뜨리는 대신 "혼자 일한다"로 강등한다(기존 None 폴백과 동일한 취지).
+    이때 잡은 락이 없으므로 토큰도 없다 — 해제는 no-op 이 된다.
     """
     try:
-        return await try_acquire_standby(prefix, key, ttl_seconds)
+        token = await try_acquire_standby(prefix, key, ttl_seconds)
     except RuntimeError:
-        logger.warning("standby 재획득 불가(Redis 미연결) — 자기가 작업: prefix=%s", prefix)
-        return True
+        logger.warning("standby 재획득 불가(Redis 미연결) — 락 없이 자기가 작업: prefix=%s", prefix)
+        return True, None
+    return (token is not None), token
 
 
-async def release_standby(prefix: str, key: str) -> None:
-    """standby DEL. finally 블록용.
+async def release_standby(prefix: str, key: str, token: str | None) -> None:
+    """standby 해제 — **내 토큰일 때만** 삭제한다 (compare_and_delete). finally 블록용.
 
-    Redis 미연결/장애 시 예외는 삼킴 — 호출자 흐름 방해 방지.
-    남은 standby는 TTL로 자연 정리됨.
+    소유권 검사가 필요한 이유(docs/31 §3-6): standby TTL 만료로 락이 다른 요청에 넘어간
+    뒤 옛 leader 가 늦게 끝나면, 무조건 DEL 은 **새 leader 의 락을 지운다**. 그 순간
+    뒤이어 도착한 요청들이 줄줄이 leader 가 되어 herd 가 자기증식한다.
+
+    token=None 이면 no-op — 락 없이 진행한 요청(Redis 장애 폴백)은 지울 락이 없다.
+
+    compare_and_delete 의 False 는 "해제 실패"가 아니라 "이미 내 소유가 아님"(TTL 만료
+    후 남이 잡음 / 이미 해제됨)이다. 정상 상황이므로 에러로 다루지 않는다.
+
+    Redis 미연결/장애 시 예외는 삼킴 — 호출자 흐름(원본 예외 전파) 방해 방지.
+    남은 standby 는 TTL 로 자연 정리된다.
     """
+    if token is None:
+        return
     try:
         standby_key = _make_standby_key(prefix, key)
-        await asyncio.to_thread(RedisManager().delete, standby_key)
+        deleted = await asyncio.to_thread(
+            RedisManager().compare_and_delete, standby_key, token,
+        )
+        if not deleted:
+            logger.info(
+                "standby 이미 내 소유가 아님 (TTL 만료 후 승계 / 이미 해제) — 건너뜀: "
+                "prefix=%s, key=%s",
+                prefix, key[:16] if key else "",
+            )
     except Exception:
         logger.exception(
             "standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s",

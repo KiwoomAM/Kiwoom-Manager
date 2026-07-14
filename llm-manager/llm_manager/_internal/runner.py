@@ -552,10 +552,10 @@ async def llm_request_async(
 
     # cache miss — agent_llm standby 선점 시도
     cache_key = prep.dc.cache_key
-    acquired = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
-    if not acquired:
+    if token is None:
         # 다른 요청이 처리 중 → 대기 후 판정 (docs/31 §3-4)
         t_wait = time.monotonic()
         verdict = await dedup.wait_for_standby_release(
@@ -570,8 +570,9 @@ async def llm_request_async(
             # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
             logger.info("[dedup] role=waiter wait_ms=%d leader_failed=true", wait_ms)
             raise verdict.error
-        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
         logger.info("[dedup] role=waiter_promoted wait_ms=%d", wait_ms)
+        token = verdict.token
     else:
         logger.info("[dedup] role=leader key=%s", cache_key[:16])
 
@@ -583,7 +584,7 @@ async def llm_request_async(
         await dedup.record_failure("agent_llm", cache_key, e)
         raise
     finally:
-        await dedup.release_standby("agent_llm", cache_key)
+        await dedup.release_standby("agent_llm", cache_key, token)
 
 
 def llm_request(
@@ -693,10 +694,10 @@ async def llm_request_stream_async(
 
     # cache miss — agent_llm standby 선점 시도
     cache_key = prep.dc.cache_key
-    acquired = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
-    if not acquired:
+    if token is None:
         # 다른 요청이 처리 중 → 대기 후 판정 (docs/31 §3-4)
         t_wait = time.monotonic()
         verdict = await dedup.wait_for_standby_release(
@@ -716,13 +717,15 @@ async def llm_request_stream_async(
             # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
             logger.info("[dedup] role=waiter wait_ms=%d leader_failed=true", wait_ms)
             raise verdict.error
-        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
         logger.info("[dedup] role=waiter_promoted wait_ms=%d", wait_ms)
+        token = verdict.token
     else:
         logger.info("[dedup] role=leader key=%s", cache_key[:16])
 
     # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
     meta = _build_live_meta(prep)
+    leader_token = token  # 제너레이터가 늦게 소비돼도 자기 토큰으로만 해제하도록 고정
 
     async def _leader_stream() -> AsyncIterator[StreamChunk]:
         try:
@@ -733,7 +736,7 @@ async def llm_request_stream_async(
             await dedup.record_failure("agent_llm", cache_key, e)
             raise
         finally:
-            await dedup.release_standby("agent_llm", cache_key)
+            await dedup.release_standby("agent_llm", cache_key, leader_token)
 
     return _leader_stream(), meta
 

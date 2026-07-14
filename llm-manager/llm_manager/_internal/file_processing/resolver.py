@@ -413,10 +413,10 @@ async def _resolve_one_files_api(
         return uri_parts, file_refs
 
     # MISS — standby 선점 시도
-    acquired = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "files_api", checksum, standby_ttl_seconds,
     )
-    if not acquired:
+    if token is None:
         # 다른 요청이 업로드 중 → 대기 후 판정 (docs/31 §3-4)
         verdict = await dedup.wait_for_standby_release(
             "files_api", checksum, standby_ttl_seconds,
@@ -428,7 +428,8 @@ async def _resolve_one_files_api(
         if verdict.kind == "failed":
             # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
             raise verdict.error
-        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
+        token = verdict.token
 
     # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
     try:
@@ -438,7 +439,7 @@ async def _resolve_one_files_api(
         await dedup.record_failure("files_api", checksum, e)
         raise
     finally:
-        await dedup.release_standby("files_api", checksum)
+        await dedup.release_standby("files_api", checksum, token)
     return uri_parts, file_refs
 
 
@@ -583,10 +584,10 @@ async def _resolve_or_create_context_cache(
             "context cache 생성에는 model이 필요합니다 — "
             "llm_input에 'model' 키를 포함하세요"
         )
-    acquired_cc = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "context_cache", hash_key, standby_ttl_seconds,
     )
-    if not acquired_cc:
+    if token is None:
         # 다른 요청이 생성 중 → 대기 후 판정 (docs/31 §3-4)
         verdict = await dedup.wait_for_standby_release(
             "context_cache", hash_key, standby_ttl_seconds,
@@ -601,7 +602,8 @@ async def _resolve_or_create_context_cache(
         if verdict.kind == "failed":
             # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
             raise verdict.error
-        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
+        token = verdict.token
 
     # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
     try:
@@ -619,7 +621,7 @@ async def _resolve_or_create_context_cache(
         await dedup.record_failure("context_cache", hash_key, e)
         raise
     finally:
-        await dedup.release_standby("context_cache", hash_key)
+        await dedup.release_standby("context_cache", hash_key, token)
 
 
 def _build_labeled_cache_contents(
