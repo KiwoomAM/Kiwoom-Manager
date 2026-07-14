@@ -8,6 +8,7 @@ import tempfile
 import fitz  # PyMuPDF
 import pytest
 
+from llm_manager._internal.file_processing import splitter as splitter_mod
 from llm_manager._internal.file_processing.splitter import split_pdf
 from llm_manager.exceptions import PdfPageTooLargeError
 
@@ -231,6 +232,44 @@ class TestSplitPdf:
             if part_path != pdf_path:
                 os.unlink(part_path)
 
+    @pytest.mark.parametrize("indirect", [False, True], ids=["direct", "indirect"])
+    def test_empty_annots_array_skips_retry(self, tmp_path, monkeypatch, indirect):
+        """뗄 주석이 실제로 없으면(빈 /Annots 배열) 사본을 만들지 않고 바로 거부한다.
+
+        /Annots 는 직접 배열('[]')로도, 간접 참조('9 0 R')로도 온다. 키 존재만 보면
+        둘 다 '주석 있음'이 되어 사본을 뜨고 재분할하는 한 바퀴를 헛돈다 (PR #73 리뷰).
+        """
+        pdf_path = str(tmp_path / "empty_annots.pdf")
+        _create_pdf(pdf_path, num_pages=1)
+
+        doc = fitz.open(pdf_path)
+        try:
+            if indirect:
+                xref = doc.get_new_xref()
+                doc.update_object(xref, "[]")
+                doc.xref_set_key(doc[0].xref, "Annots", f"{xref} 0 R")
+            else:
+                doc.xref_set_key(doc[0].xref, "Annots", "[]")
+            doc.saveIncr()
+        finally:
+            doc.close()
+
+        assert not splitter_mod._has_annots(pdf_path), "빈 배열은 '주석 없음'이어야 함"
+
+        strip_calls: list[str] = []
+        original_strip = splitter_mod._strip_annots_copy
+
+        def spying_strip(path: str, created_temps: list[str]) -> str:
+            strip_calls.append(path)
+            return original_strip(path, created_temps)
+
+        monkeypatch.setattr(splitter_mod, "_strip_annots_copy", spying_strip)
+
+        with pytest.raises(PdfPageTooLargeError):
+            split_pdf(pdf_path, target_mb=0.00001)
+
+        assert strip_calls == [], "뗄 주석이 없으면 사본을 만들지 않아야 함"
+
     def test_oversized_group_bisects_to_fit(self, tmp_path, monkeypatch):
         """추정이 실제보다 작아 여러 페이지가 한 그룹으로 묶여도, 저장 후 한도를 넘으면
         페이지를 이등분해 모든 파트를 한도 이하로 맞춘다 (단일 페이지가 종료 floor).
@@ -352,6 +391,56 @@ class TestSplitPdfLeakPrevention:
         for part_path in result:
             if part_path != pdf_path:
                 os.unlink(part_path)
+
+    def test_strip_annots_save_failure_cleans_up_temp_files(self, tmp_path, monkeypatch):
+        """주석 제거 사본의 save 가 실패해도 임시 파일이 남지 않는다 (PR #73 리뷰).
+
+        _strip_annots_copy 는 save 이전에 임시 파일을 등록하므로, 사본 생성이 정리 루프
+        바깥에 있으면 save 실패 시 빈 파일이 디스크에 남는다.
+        """
+        pdf_path = str(tmp_path / "nav_fail.pdf")
+        _create_nav_widget_pdf(pdf_path, num_pages=3)
+        target_mb = (os.path.getsize(pdf_path) / (1024 * 1024)) / 2
+
+        # _has_annots 가 True 를 돌려준 시점 = 주석 제거 사본을 만들기 직전
+        stripping = {"now": False}
+        original_has_annots = splitter_mod._has_annots
+
+        def flagging_has_annots(path: str) -> bool:
+            result = original_has_annots(path)
+            stripping["now"] = result
+            return result
+
+        monkeypatch.setattr(splitter_mod, "_has_annots", flagging_has_annots)
+
+        original_save = fitz.Document.save
+
+        def failing_save(self, *args, **kwargs):
+            if stripping["now"]:  # 사본 save 에서만 실패
+                raise RuntimeError("simulated strip save failure")
+            return original_save(self, *args, **kwargs)
+
+        monkeypatch.setattr(fitz.Document, "save", failing_save)
+
+        created_paths: list[str] = []
+        original_tmpfile = tempfile.NamedTemporaryFile
+
+        def tracking_tmpfile(*args, **kwargs):
+            f = original_tmpfile(*args, **kwargs)
+            created_paths.append(f.name)
+            return f
+
+        monkeypatch.setattr(
+            "llm_manager._internal.file_processing.splitter.tempfile.NamedTemporaryFile",
+            tracking_tmpfile,
+        )
+
+        with pytest.raises(RuntimeError, match="simulated strip save failure"):
+            split_pdf(pdf_path, target_mb=target_mb)
+
+        assert created_paths, "테스트 전제: 임시 파일이 최소 하나 생성되어야 함"
+        for p in created_paths:
+            assert not os.path.exists(p), f"임시 파일 leak: {p}"
 
 
 # ── 변경 C — 페이지 캡 (max_pages) ──────────────────────────────

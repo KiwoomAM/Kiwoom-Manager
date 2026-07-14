@@ -239,10 +239,24 @@ def _cleanup(temps: list[str], keep: str) -> None:
 
 
 def _has_annots(path: str) -> bool:
-    """주석을 가진 페이지가 하나라도 있는지 — 주석 제거 재시도가 의미 있는지 판단."""
+    """주석을 실제로 가진 페이지가 하나라도 있는지 — 주석 제거 재시도가 의미 있는지 판단.
+
+    /Annots 는 키 부재("null")·직접 배열("array")·간접 참조("xref") 셋 다로 온다.
+    키 존재만 보면 빈 배열도 "주석 있음"이 되어, 뗄 게 없는데도 사본을 뜨고 재분할하는
+    한 바퀴를 헛돈다. 간접 참조는 드문 경우가 아니라 실물 보고서가 쓰는 형태다
+    (예: `/Annots 1844 0 R`).
+    """
     doc = fitz.open(path)
     try:
-        return any(doc.xref_get_key(p.xref, "Annots")[0] != "null" for p in doc)
+        for page in doc:
+            kind, value = doc.xref_get_key(page.xref, "Annots")
+            if kind == "null":
+                continue
+            if kind == "xref":  # 간접 참조 → 배열 실물을 열어본다
+                value = doc.xref_object(int(value.split()[0]), compressed=True)
+            if value.strip() not in ("[]", ""):
+                return True
+        return False
     finally:
         doc.close()
 
@@ -308,9 +322,11 @@ def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str
             raise  # 주석이 없으니 떼어내도 달라질 게 없다 — 진짜 분할 불가
         logger.warning("단일 페이지 한도 초과 — 주석 제거 후 재분할 시도: %s", path)
 
+    # 사본 생성도 정리 루프 안에 둔다 — _strip_annots_copy 는 save 이전에 임시 파일을
+    # 등록하므로, 밖에 두면 save 실패 시 그 파일을 아무도 회수하지 않는다.
     temps: list[str] = []
-    cleaned = _strip_annots_copy(path, temps)
     try:
+        cleaned = _strip_annots_copy(path, temps)
         parts = _split_once(cleaned, target_mb, max_pages)
     except Exception:
         _cleanup(temps, keep=path)
