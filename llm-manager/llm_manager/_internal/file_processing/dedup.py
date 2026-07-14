@@ -5,10 +5,17 @@
 - context_cache: file_cache:context_cache_standby:{hash_key}
 - agent_llm:     agent_llm_standby:{cache_key}
 
-redis-handler v3 의 RedisManager API 사용 — 선점(setnx)/해제(delete)는 NX 폴백 차단으로
-분산 의미론 보호, standby 폴링(get)은 일반 명령 폴백 정책을 따른다(v3 설계상 read 는
-항상 폴백 허용, strict-read 미지원). 대기 중 단절 시 get 이 None 폴백 → 호출자가 자기
-작업 수행(timeout 폴백과 동일 경로). 상세 설계: docs/08.dedup-design-and-impl.md
+redis-handler v3 의 RedisManager API 사용 — 선점(setnx)/해제(compare_and_delete)는 폴백
+차단으로 분산 의미론 보호, standby 폴링(get)은 일반 명령 폴백 정책을 따른다(v3 설계상
+read 는 항상 폴백 허용, strict-read 미지원).
+
+**Redis 가 없으면 dedup 은 성립하지 않는다** — 진입·대기 어느 경로든 RuntimeError 로
+실패한다(docs/31 §3-7). 대기 중 단절 시 get 은 None 을 돌려주므로 코드는 "standby 가
+사라졌다"로 보고 재획득을 시도하는데, 그 SETNX 가 폴백 차단이라 RuntimeError 를 올린다.
+예전엔 이걸 삼키고 "락 없이 자기가 작업"으로 강등했으나, 그러면 Redis 블립 한 번에
+대기자 전원이 leader 가 되어 herd 가 부활했다.
+
+상세 설계: docs/08.dedup-design-and-impl.md, docs/31.dedup-leader-failure-succession.md
 """
 
 from __future__ import annotations
@@ -231,9 +238,10 @@ async def wait_for_standby_release(
 ) -> WaitResult:
     """standby 사라질 때까지 exponential backoff 대기 → 판정(WaitResult) 반환.
 
-    standby 폴링은 RedisManager().get 사용 — v3 는 strict-read 를 지원하지 않으므로
-    (read 는 항상 메모리 폴백) 대기 중 단절 시 get 이 None 을 반환하고, 호출자는
-    timeout 폴백과 동일하게 자기 작업을 수행한다(graceful degradation).
+    Redis 미연결이면 RuntimeError 를 올린다(M3 — 진입 경로와 같은 계약). 대기 중 단절 시
+    get 은 None 을 돌려주므로 3번(standby 사라짐)으로 들어가고, 거기서 SETNX 가 폴백
+    차단으로 RuntimeError 를 올린다. 이를 삼키고 "락 없이 자기가 작업"으로 강등하면
+    Redis 블립 한 번에 대기자 전원이 leader 가 된다(herd 부활) — docs/31 §3-7.
 
     폴링 1회의 판단 순서 (docs/31 §3-2):
       1. 본 캐시 HIT           → CACHED (leader 성공)
@@ -290,8 +298,8 @@ async def wait_for_standby_release(
             if await asyncio.to_thread(RedisManager().get, standby_key) is None:
                 # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
                 # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
-                ok, token = await _try_reacquire(prefix, key, timeout)
-                if ok:
+                token = await _try_reacquire(prefix, key, timeout)
+                if token is not None:
                     return WaitResult(kind="lead", token=token)
                 # 다른 대기자가 leader 가 됨 → 계속 대기
 
@@ -303,8 +311,8 @@ async def wait_for_standby_release(
         # 재획득에 실패했다면 **다른 대기자가 방금 leader 가 된 것**이므로, 곧장 자기가
         # 일하지 말고(=herd) 그 leader 를 기다린다. 재획득 결과를 버리고 전원 LEAD 를
         # 주던 것이 C2 herd 의 원인이었다.
-        ok, token = await _try_reacquire(prefix, key, timeout)
-        if ok:
+        token = await _try_reacquire(prefix, key, timeout)
+        if token is not None:
             logger.warning(
                 "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
                 timeout, standby_key,
@@ -324,26 +332,18 @@ async def wait_for_standby_release(
     return WaitResult(kind="lead")
 
 
-async def _try_reacquire(
-    prefix: str, key: str, ttl_seconds: int,
-) -> tuple[bool, str | None]:
-    """standby 재획득 시도 → (자기가 작업할지, 소유자 토큰).
+async def _try_reacquire(prefix: str, key: str, ttl_seconds: int) -> str | None:
+    """standby 재획득 시도 → 소유자 토큰 / None(다른 요청이 잡고 있음 → 계속 대기).
 
-    반환:
-        (True,  token) — 재획득 성공. 토큰으로 해제한다.
-        (False, None)  — 다른 요청이 잡고 있음 → 호출자는 계속 대기.
-        (True,  None)  — Redis 미연결. 락 없이 진행한다(graceful degradation).
+    Redis 미연결이면 `try_acquire_standby` 의 RuntimeError 를 **그대로 올린다**(M3).
+    예전엔 이걸 삼키고 "락 없이 자기가 작업"으로 강등했는데, 그러면 Redis 블립 한 번에
+    대기자 전원이 leader 가 되어 herd 가 부활한다 — 정확히 없애려던 그 사고다.
 
-    try_acquire_standby 는 Redis 미연결 시 RuntimeError 를 올리는데, 대기 경로에서는
-    그걸 호출자에게 터뜨리는 대신 "혼자 일한다"로 강등한다(기존 None 폴백과 동일한 취지).
-    이때 잡은 락이 없으므로 토큰도 없다 — 해제는 no-op 이 된다.
+    진입 경로(`try_acquire_standby`)는 이미 Redis 미연결 시 RuntimeError 로 요청을
+    실패시킨다. 즉 "Redis 가 없으면 llm-manager 는 못 쓴다"가 이미 계약이고, 대기 경로만
+    관대할 이유가 없다 — Redis 없이는 dedup 자체가 성립하지 않는다(docs/31 §3-7).
     """
-    try:
-        token = await try_acquire_standby(prefix, key, ttl_seconds)
-    except RuntimeError:
-        logger.warning("standby 재획득 불가(Redis 미연결) — 락 없이 자기가 작업: prefix=%s", prefix)
-        return True, None
-    return (token is not None), token
+    return await try_acquire_standby(prefix, key, ttl_seconds)
 
 
 async def release_standby(prefix: str, key: str, token: str | None) -> None:

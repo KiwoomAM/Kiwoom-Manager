@@ -161,13 +161,31 @@ class TestWaitForStandbyRelease:
         )
         assert result.kind == "lead"
 
-    async def test_redis_unavailable_returns_lead(self, no_redis, fast_backoff):
-        """대기 중 Redis 미연결 → get None 폴백 → LEAD(자기 작업).
+    async def test_redis_unavailable_raises(self, no_redis, fast_backoff):
+        """대기 중 Redis 미연결 → RuntimeError (M3 — 진입 경로와 같은 계약).
 
-        v3 graceful degradation: 단절을 예외로 올리지 않고 자기가 작업한다.
+        (계약 변경) 예전엔 "락 없이 자기가 작업"으로 강등했다. 그러면 Redis 블립 한 번에
+        **대기자 전원이 leader** 가 되어 herd 가 부활한다. 진입 경로(try_acquire_standby)는
+        이미 Redis 미연결 시 RuntimeError 를 올려 요청을 실패시키므로, 대기 경로만 관대할
+        이유가 없다 — Redis 가 없으면 dedup 이 성립하지 않는다.
         """
-        result = await wait_for_standby_release("files_api", "k1", timeout=1)
-        assert result.kind == "lead"
+        with pytest.raises(RuntimeError, match="Redis 미연결"):
+            await wait_for_standby_release("files_api", "k1", timeout=1)
+
+    async def test_redis_unavailable_no_waiter_becomes_leader(self, no_redis, fast_backoff):
+        """M3 anti-herd — Redis 장애 시 대기자 중 **아무도** 자기 작업을 시작하지 않는다."""
+
+        async def _waiter():
+            try:
+                r = await wait_for_standby_release(
+                    "files_api", "k1", timeout=1, find_cache_fn=lambda: None,
+                )
+                return r.kind
+            except RuntimeError:
+                return "raised"
+
+        kinds = await asyncio.gather(*[_waiter() for _ in range(10)])
+        assert kinds == ["raised"] * 10, f"Redis 장애 시 herd 발생: {kinds}"
 
 
 # ── 실패 기록 (negative cache) ────────────────────────────────
