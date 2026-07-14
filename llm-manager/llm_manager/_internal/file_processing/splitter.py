@@ -225,14 +225,65 @@ def _cap_pages(
     return out
 
 
+def _cleanup(temps: list[str], keep: str) -> None:
+    """임시 파일을 회수한다. keep(원본)은 호출자 소유라 건드리지 않는다."""
+    for t in set(temps):
+        if t == keep:
+            continue
+        try:
+            os.unlink(t)
+        except FileNotFoundError:
+            pass  # 이미 unlink 된 항목 (재분할/병합 중 제거) — 정상
+        except OSError:
+            logger.warning("임시 파일 정리 실패: %s", t, exc_info=True)
+
+
+def _has_annots(path: str) -> bool:
+    """주석을 가진 페이지가 하나라도 있는지 — 주석 제거 재시도가 의미 있는지 판단."""
+    doc = fitz.open(path)
+    try:
+        return any(doc.xref_get_key(p.xref, "Annots")[0] != "null" for p in doc)
+    finally:
+        doc.close()
+
+
+def _strip_annots_copy(path: str, created_temps: list[str]) -> str:
+    """모든 페이지의 /Annots 를 떼어낸 소스 사본을 만들어 경로를 반환한다.
+
+    select() 는 남긴 페이지에서 참조로 닿는 객체를 모두 가져온다. 페이지마다 다른
+    페이지로 점프하는 GoTo 위젯(인터랙티브 목차·네비게이션 버튼)이 있으면
+        page → /Annots → Widget → /AA → GoTo → 다른 page → 그 page 의 이미지
+    사슬을 타고 문서 전체가 딸려와, 어느 한 페이지만 남겨도 원본 크기가 된다
+    (mupdf 는 Link 주석과 목적지는 재작성해 정리하지만 Widget 의 /AA 는 손대지 않는다).
+    그래서 사슬을 select() 이전에 끊는다. docs/25 §3 참고.
+    """
+    doc = fitz.open(path)
+    try:
+        for page in doc:
+            doc.xref_set_key(page.xref, "Annots", "null")
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        created_temps.append(tmp.name)
+        doc.save(tmp.name, garbage=_GARBAGE, deflate=True)
+    finally:
+        doc.close()
+    return tmp.name
+
+
 def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str]:
     """PDF를 target_mb 이하 AND max_pages 이하 파트로 분할한다.
 
-    크기 분할(페이지별 바이트 기여도 추정 → 그룹핑 → 초과 시 이등분 재귀)을 먼저 하고,
-    결과 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡을 적용한다.
+    먼저 원본 그대로 분할을 시도한다(정상 PDF는 여기서 끝나며 동작이 바뀌지 않는다).
+    단일 페이지가 한도를 넘어 분할 불가로 판정되면 — 주석 참조 사슬로 페이지가 부풀었을
+    가능성이 크므로 — 주석을 모두 떼어낸 소스 사본으로 한 번 더 분할한다. 이 병에 걸린
+    PDF는 한 페이지가 아니라 거의 모든 페이지가 같은 사슬을 갖고 있어, 페이지별로 고치면
+    전 페이지를 한 장까지 이등분하게 되므로 문서 단위로 처방한다.
+
+    그래도 한도를 넘으면(주석과 무관하게 진짜로 큰 페이지) PdfPageTooLargeError.
 
     결정적(deterministic): 무작위·시간 의존이 없어 같은 PDF 바이트(+같은 PyMuPDF 버전)는
     항상 같은 페이지 경계에서 분할된다 — 분할점은 페이지별 추정/실제 바이트 크기의 순수 함수다.
+    주석 제거도 페이지 순서·내용을 바꾸지 않아 경계에 영향을 주지 않는다.
     (분기 판단이 save 결과 크기에 의존하므로 PyMuPDF 버전이 바뀌면 경계가 밀릴 수는 있다.)
     그래서 pdf_part_ranges 를 파일당 한 번만 계산해 Redis 에 저장·재사용해도 안전하다 —
     호출마다 재분할할 필요가 없다(YAGNI).
@@ -247,7 +298,33 @@ def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str
         분할된 임시 파일은 호출자(uploader)가 삭제 책임.
 
     Raises:
-        PdfPageTooLargeError: 단일 페이지가 target_mb를 초과해 분할로도 처리 불가.
+        PdfPageTooLargeError: 단일 페이지가 target_mb를 초과해 분할로도 처리 불가
+            (주석 제거 후에도 한도 초과).
+    """
+    try:
+        return _split_once(path, target_mb, max_pages)
+    except PdfPageTooLargeError:
+        if not _has_annots(path):
+            raise  # 주석이 없으니 떼어내도 달라질 게 없다 — 진짜 분할 불가
+        logger.warning("단일 페이지 한도 초과 — 주석 제거 후 재분할 시도: %s", path)
+
+    temps: list[str] = []
+    cleaned = _strip_annots_copy(path, temps)
+    try:
+        parts = _split_once(cleaned, target_mb, max_pages)
+    except Exception:
+        _cleanup(temps, keep=path)
+        raise
+    if cleaned not in parts:  # 사본이 파트로 그대로 반환된 경우가 아니면 회수
+        _cleanup(temps, keep=path)
+    return parts
+
+
+def _split_once(path: str, target_mb: int, max_pages: int) -> list[str]:
+    """주석을 손대지 않고 path 를 한 번 분할한다 (split_pdf 의 본체).
+
+    크기 분할(페이지별 바이트 기여도 추정 → 그룹핑 → 초과 시 이등분 재귀)을 먼저 하고,
+    결과 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡을 적용한다.
     """
     file_size = os.path.getsize(path)
     target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
@@ -275,20 +352,15 @@ def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str
         else:
             result = [path]  # 크기 OK, 페이지만 초과 → 페이지 캡만
         return _cap_pages(result, path, max_pages, limit_bytes, created_temps)
-    except Exception:
-        # raise(예: PdfPageTooLargeError, save 실패) → 만든 임시 파일 모두 정리 (원본 제외)
-        logger.exception(
-            "split_pdf 실패 — 임시 파일 정리 (created=%d, result=%d)",
-            len(created_temps),
-            len(result),
-        )
-        for t in set(created_temps) | set(result):
-            if t == path:
-                continue  # 원본은 호출자 소유
-            try:
-                os.unlink(t)
-            except FileNotFoundError:
-                pass  # 이미 unlink 된 항목 (재분할/병합 중 제거) — 정상
-            except OSError:
-                logger.warning("임시 파일 정리 실패: %s", t, exc_info=True)
+    except Exception as e:
+        # raise(예: PdfPageTooLargeError, save 실패) → 만든 임시 파일 모두 정리 (원본 제외).
+        # PdfPageTooLargeError 는 split_pdf 가 주석 제거로 복구를 시도하는 신호라 조용히
+        # 정리만 하고, 그 외 진짜 실패만 스택트레이스와 함께 남긴다.
+        msg = "분할 실패 — 임시 파일 정리 (created=%d, result=%d)"
+        args = (len(created_temps), len(result))
+        if isinstance(e, PdfPageTooLargeError):
+            logger.debug(msg, *args)
+        else:
+            logger.exception(msg, *args)
+        _cleanup(created_temps + result, keep=path)
         raise
