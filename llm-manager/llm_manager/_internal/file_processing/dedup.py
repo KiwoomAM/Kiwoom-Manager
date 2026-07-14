@@ -39,6 +39,10 @@ _BACKOFF_INITIAL = 0.5
 _BACKOFF_MULTIPLIER = 2.0
 _BACKOFF_CAP = 10.0
 
+# timeout 후 "다른 대기자가 leader 로 승격" 을 몇 라운드까지 기다려 줄지 (liveness 탈출구).
+# 소진하면 중복을 감수하고 자기가 작업한다(구 Y' Hybrid).
+_MAX_TIMEOUT_ROUNDS = 3
+
 
 # ── 실패 기록 TTL (계층별, docs/31 §3-1) ──────────────────────
 # 폴링 cap(_BACKOFF_CAP)보다 커야 만료 전에 모든 대기자가 기록을 본다.
@@ -105,6 +109,11 @@ async def try_acquire_standby(
         True  — 자기가 선점 (작업 시작)
         False — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
 
+    선점에 성공하면 = **새 시도가 시작됐다**는 뜻이므로, 같은 key 의 낡은 실패 기록을
+    지운다. 실패 기록은 "그 시도가 실패했다"이지 "이 key 는 영영 안 된다"가 아니다.
+    안 지우면, 실패 후 TTL 안에 재실행할 때 새 leader 는 정상 작업하는데 대기자들만
+    낡은 기록을 보고 죽는다(docs/31 §3-5).
+
     Raises:
         RuntimeError: Redis 미연결 또는 retry 소진 (RedisManager 가
             RedisUnavailableError / RedisRetryExhausted raise).
@@ -112,11 +121,25 @@ async def try_acquire_standby(
     standby_key = _make_standby_key(prefix, key)
     value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
     try:
-        return await asyncio.to_thread(
+        acquired = await asyncio.to_thread(
             RedisManager().setnx, standby_key, value, ttl=ttl_seconds,
         )
     except (RedisUnavailableError, RedisRetryExhausted) as e:
         raise RuntimeError("Redis 미연결 — standby 불가") from e
+
+    if acquired:
+        await _clear_failure(prefix, key)  # 새 시도 시작 → 이전 실패 기록 무효
+    return acquired
+
+
+async def _clear_failure(prefix: str, key: str) -> None:
+    """실패 기록 삭제. Redis 장애 시 예외는 삼킨다(선점 흐름을 막지 않는다)."""
+    try:
+        await asyncio.to_thread(RedisManager().delete, _make_failed_key(prefix, key))
+    except Exception:
+        logger.exception(
+            "실패 기록 삭제 실패 (무시): prefix=%s, key=%s", prefix, key[:16] if key else "",
+        )
 
 
 async def record_failure(prefix: str, key: str, error: Exception) -> None:
@@ -200,9 +223,10 @@ async def wait_for_standby_release(
       1. 본 캐시 HIT           → CACHED (leader 성공)
       2. 실패 기록 존재        → FAILED (leader 실패 — 재시도 없이 즉시 전파)
       3. standby 사라짐        → **SETNX 재획득** → 성공하면 LEAD, 실패하면 계속 대기
-      4. timeout               → SETNX 재획득 시도 후 LEAD (Y' Hybrid)
+      4. timeout               → **SETNX 재획득** → 성공하면 LEAD, 실패하면 다음 라운드 대기
+                                 (_MAX_TIMEOUT_ROUNDS 소진 시에만 LEAD — 구 Y' Hybrid)
 
-    3번이 핵심이다. 예전엔 여기서 곧장 `None` 을 돌려줘 **깨어난 대기자 전원이 동시에**
+    3·4번이 핵심이다. 예전엔 여기서 곧장 `None` 을 돌려줘 **깨어난 대기자 전원이 동시에**
     자기 작업을 시작했다(herd). 이제는 깨어나면 항상 SETNX 를 거치므로 하나만 leader 가
     되고 나머지는 재대기한다 — 실패 기록이 (TTL 만료·eviction 으로) 없어도 불변식
     "동시 작업 ≤ 1" 이 유지된다.
@@ -220,47 +244,64 @@ async def wait_for_standby_release(
         WaitResult — kind 가 "cached" / "failed" / "lead" 중 하나.
     """
     standby_key = _make_standby_key(prefix, key)
-    delay = _BACKOFF_INITIAL
-    elapsed = 0.0
 
-    while elapsed < timeout:
-        await asyncio.sleep(delay)
-        elapsed += delay
+    for round_no in range(1, _MAX_TIMEOUT_ROUNDS + 1):
+        delay = _BACKOFF_INITIAL
+        elapsed = 0.0
 
-        # 1. 본 캐시 재조회 (HIT면 종료 — leader 성공)
-        if find_cache_fn is not None:
-            result = find_cache_fn()
-            if inspect.isawaitable(result):
-                result = await result
-            if result:
-                return WaitResult(kind="cached", data=result)
+        while elapsed < timeout:
+            await asyncio.sleep(delay)
+            elapsed += delay
 
-        # 2. leader 실패 기록 — 재시도 없이 원본 에러 전파
-        failure = await _find_failure(prefix, key)
-        if failure:
-            logger.info(
-                "leader 실패 기록 감지 — 재시도 없이 전파: prefix=%s, key=%s, error=%s",
-                prefix, key[:16] if key else "", failure.get("class"),
+            # 1. 본 캐시 재조회 (HIT면 종료 — leader 성공)
+            if find_cache_fn is not None:
+                result = find_cache_fn()
+                if inspect.isawaitable(result):
+                    result = await result
+                if result:
+                    return WaitResult(kind="cached", data=result)
+
+            # 2. leader 실패 기록 — 재시도 없이 원본 에러 전파
+            failure = await _find_failure(prefix, key)
+            if failure:
+                logger.info(
+                    "leader 실패 기록 감지 — 재시도 없이 전파: prefix=%s, key=%s, error=%s",
+                    prefix, key[:16] if key else "", failure.get("class"),
+                )
+                return WaitResult(kind="failed", error=_reconstruct_error(failure))
+
+            # 3. standby 폴링 — 단절 시 None 폴백(strict-read 미지원)
+            if await asyncio.to_thread(RedisManager().get, standby_key) is None:
+                # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
+                # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
+                if await _try_reacquire(prefix, key, timeout):
+                    return WaitResult(kind="lead")
+                # 다른 대기자가 leader 가 됨 → 계속 대기
+
+            # 다음 대기 간격
+            delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
+
+        # 4. timeout — leader 가 실패도 완료도 못 한 채 매달렸다.
+        # standby TTL 도 timeout 과 같으므로 대개 만료됐다 → 재획득되면 내가 새 leader.
+        # 재획득에 실패했다면 **다른 대기자가 방금 leader 가 된 것**이므로, 곧장 자기가
+        # 일하지 말고(=herd) 그 leader 를 기다린다. 재획득 결과를 버리고 전원 LEAD 를
+        # 주던 것이 C2 herd 의 원인이었다.
+        if await _try_reacquire(prefix, key, timeout):
+            logger.warning(
+                "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
+                timeout, standby_key,
             )
-            return WaitResult(kind="failed", error=_reconstruct_error(failure))
+            return WaitResult(kind="lead")
+        logger.info(
+            "standby timeout(%d초) — 다른 대기자가 leader 로 승격, 계속 대기 (round %d/%d)",
+            timeout, round_no, _MAX_TIMEOUT_ROUNDS,
+        )
 
-        # 3. standby 폴링 — 단절 시 None 폴백(strict-read 미지원)
-        if await asyncio.to_thread(RedisManager().get, standby_key) is None:
-            # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
-            # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
-            if await _try_reacquire(prefix, key, timeout):
-                return WaitResult(kind="lead")
-            # 다른 대기자가 leader 가 됨 → 계속 대기
-
-        # 다음 대기 간격
-        delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
-
-    # timeout — Y' Hybrid (호출자가 작업). 여기서도 재획득을 먼저 시도한다.
-    await _try_reacquire(prefix, key, timeout)
+    # 라운드 소진 — liveness 탈출구. 여기까지 오면 leader 가 연달아 매달린 것이라
+    # 중복을 감수하고 진행한다(구 Y' Hybrid). 잦으면 standby_ttl_seconds 를 늘려야 한다.
     logger.warning(
-        "standby 대기 timeout(%d초) 초과 — 호출자가 작업 시작. "
-        "standby_key=%s, 중복 발생 가능. 빈도 높으면 standby_ttl_seconds 늘리세요.",
-        timeout, standby_key,
+        "standby %d 라운드(%d초×%d) 대기 후에도 미완료 — 자기가 작업 (중복 가능). standby_key=%s",
+        _MAX_TIMEOUT_ROUNDS, timeout, _MAX_TIMEOUT_ROUNDS, standby_key,
     )
     return WaitResult(kind="lead")
 

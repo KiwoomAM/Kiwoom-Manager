@@ -91,10 +91,17 @@ class TestFilesApiStandby:
         uri_b = results[1][0][0].file_uri
         assert uri_a == uri_b == "https://example.com/concurrent-1"
 
-    async def test_timeout_falls_back_to_own_upload(
-        self, fake_redis, fast_backoff, monkeypatch,
+    async def test_timeout_waits_for_slow_leader_instead_of_duplicating(
+        self, fake_redis, fast_backoff, patient_waiter, monkeypatch,
     ):
-        """A가 standby를 오래 잡으면 B는 timeout 후 자기가 upload (Y' Hybrid)."""
+        """A가 standby를 오래 잡고 있으면 B는 timeout 후에도 **중복 업로드하지 않는다**.
+
+        (계약 변경 — docs/31 C2) 예전엔 timeout 즉시 자기가 업로드했다(Y' Hybrid).
+        그러면 대기자 27명이 동시에 timeout 에 도달할 때 27개가 동시에 101MB 를 받는다.
+        이제는 timeout 에서도 SETNX 재획득을 거쳐, 성공한 하나만 leader 가 된다.
+        여기선 A 가 standby 를 계속 들고 있어 B 의 재획득이 실패하므로, B 는 자기가
+        일하지 않고 A 를 기다렸다가 결과를 재사용한다.
+        """
         fi = _pdf_input("slow_upload.pdf")
         checksum = make_file_checksum(fi)
 
@@ -119,7 +126,7 @@ class TestFilesApiStandby:
 
         await asyncio.gather(_run(), _run())
 
-        assert upload_count == 2, f"timeout 후 양쪽 upload 예상, 실제={upload_count}"
+        assert upload_count == 1, f"timeout 후 중복 업로드 발생(herd), 실제={upload_count}"
 
     async def test_different_checksums_upload_in_parallel(
         self, fake_redis, fast_backoff, monkeypatch,
@@ -206,8 +213,8 @@ class TestContextCacheStandby:
         # 양쪽 task의 cached_content_name 동일
         assert results[0][1] == results[1][1] == "cachedContents/ctx-1"
 
-    async def test_timeout_falls_back_to_own_create(
-        self, fake_redis, fast_backoff, monkeypatch,
+    async def test_timeout_waits_for_slow_leader_instead_of_duplicating_create(
+        self, fake_redis, fast_backoff, patient_waiter, monkeypatch,
     ):
         """A가 create를 오래 잡으면 B는 timeout 후 자기가 create (Y' Hybrid)."""
         fi = _pdf_input("ctx_slow.pdf")
@@ -244,4 +251,6 @@ class TestContextCacheStandby:
 
         await asyncio.gather(_run(), _run())
 
-        assert create_count == 2
+        # (계약 변경 — docs/31 C2) timeout 즉시 자기가 생성하던 Y' Hybrid 대신,
+        # SETNX 재획득에 실패하면 느린 leader 를 기다려 결과를 재사용한다.
+        assert create_count == 1, f"timeout 후 중복 생성 발생(herd), 실제={create_count}"

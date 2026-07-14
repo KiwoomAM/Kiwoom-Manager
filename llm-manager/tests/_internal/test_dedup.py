@@ -263,6 +263,88 @@ class TestAntiHerdInvariant:
         assert kinds.count("lead") == 1  # 정확히 하나만 작업
         assert kinds.count("cached") == 9  # 나머지는 승자 결과 재사용
 
+    async def test_timeout_does_not_hand_lead_to_everyone(
+        self, fake_redis, fast_backoff, patient_waiter,
+    ):
+        """C2 회귀 — leader 가 실패하지 않고 '매달려' timeout 에 걸려도 herd 가 되면 안 된다.
+
+        leader 가 standby 를 든 채 느리게 진행하면 실패 기록이 없다. 대기자들은 같은 시각에
+        대기를 시작했으므로 timeout 에 **동시에** 도달한다. 이때 재획득 결과를 무시하고
+        전원에게 LEAD 를 주면 27개가 동시에 101MB 를 받는다(고치려던 herd 그대로).
+        """
+        # 다른 leader 가 standby 를 계속 들고 있다 (느린 작업 중 — 실패도, 완료도 안 함)
+        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+
+        cache: dict = {}
+
+        async def _slow_leader():
+            # 대기자들의 timeout(1초) 을 넘겨 완료 — timeout 경로를 실제로 밟게 한다
+            await asyncio.sleep(1.5)
+            cache["doc"] = {"uris": ["u"]}
+            await release_standby("files_api", "k1")
+
+        async def _waiter():
+            r = await wait_for_standby_release(
+                "files_api", "k1", timeout=1, find_cache_fn=lambda: cache.get("doc"),
+            )
+            return r.kind
+
+        results = await asyncio.gather(_slow_leader(), *[_waiter() for _ in range(10)])
+        kinds = results[1:]
+        # 아무도 자기가 일하지 않고, 느린 leader 의 결과를 재사용해야 한다
+        assert kinds.count("lead") == 0, f"timeout 경로에서 herd 발생: {kinds}"
+        assert kinds.count("cached") == 10
+
+
+# ── C1 회귀 — 낡은 실패 기록이 재실행을 오염시키면 안 된다 ────
+
+
+class TestFailureRecordDoesNotPoisonRerun:
+    """leader 가 새로 standby 를 잡으면 그 키의 낡은 실패 기록은 무효다.
+
+    실패 기록은 '그 시도가 실패했다'는 뜻이지 '이 파일은 영영 안 된다'가 아니다.
+    지우지 않으면, 실패 후 TTL(60초) 안에 재실행할 때 새 leader 는 정상 작업하는데
+    대기자들만 낡은 기록을 보고 죽는다 — 실패한 배치를 곧바로 다시 돌리는 ESG 의
+    정상 패턴에서 27건이 실패한다.
+    """
+
+    async def test_acquire_clears_stale_failure(self, fake_redis):
+        """standby 획득에 성공하면 = 새 시도 시작 → 낡은 실패 기록을 지운다."""
+        await record_failure("files_api", "ck", RuntimeError("이전 시도 실패"))
+        assert await dedup._find_failure("files_api", "ck") is not None
+
+        acquired = await try_acquire_standby("files_api", "ck", ttl_seconds=60)
+
+        assert acquired is True
+        assert await dedup._find_failure("files_api", "ck") is None, "낡은 기록이 남아있음"
+
+    async def test_rerun_waiters_see_new_leader_not_old_failure(self, fake_redis, fast_backoff):
+        """1차 실패 후 재실행 — 새 leader 가 성공하면 대기자도 그 결과를 받아야 한다."""
+        # 1차: leader 실패 → 기록 남기고 해제
+        await try_acquire_standby("files_api", "ck", ttl_seconds=60)
+        await record_failure("files_api", "ck", RuntimeError("peer closed connection"))
+        await release_standby("files_api", "ck")
+
+        # 2차(재실행): 파일·서버 정상. 새 leader 가 선점해 작업 중.
+        assert await try_acquire_standby("files_api", "ck", ttl_seconds=60) is True
+
+        cache: dict = {}
+
+        async def _new_leader():
+            await asyncio.sleep(0.05)  # 101MB 받는 중 — 이번엔 성공
+            cache["doc"] = {"uris": ["u"]}
+            await release_standby("files_api", "ck")
+
+        async def _waiter():
+            v = await wait_for_standby_release(
+                "files_api", "ck", timeout=5, find_cache_fn=lambda: cache.get("doc"),
+            )
+            return v.kind
+
+        results = await asyncio.gather(_new_leader(), *[_waiter() for _ in range(5)])
+        kinds = results[1:]
+        assert kinds == ["cached"] * 5, f"낡은 실패 기록이 재실행을 오염시킴: {kinds}"
+
 
 # ── release_standby ───────────────────────────────────────────
 

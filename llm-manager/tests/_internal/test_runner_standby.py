@@ -95,10 +95,16 @@ class TestAgentLlmStandby:
         cache_keys = {r[1]["cache_key"] for r in results}
         assert len(cache_keys) == 1
 
-    async def test_timeout_falls_back_to_own_call(
-        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    async def test_timeout_waits_for_slow_leader_instead_of_duplicating(
+        self, mock_collection, fake_redis, fast_backoff, patient_waiter, monkeypatch,
     ):
-        """A가 LLM을 오래 잡으면 B는 timeout 후 자기가 호출 (Y' Hybrid)."""
+        """A가 LLM을 오래 잡고 있으면 B는 timeout 후에도 **중복 호출하지 않는다**.
+
+        (계약 변경 — docs/31 C2) 예전엔 timeout 즉시 자기가 호출했다(Y' Hybrid).
+        이제는 timeout 에서도 SETNX 재획득을 거쳐, 성공한 하나만 leader 가 된다.
+        여기선 A 가 standby 를 계속 들고 있어 B 의 재획득이 실패하므로, B 는 A 를
+        기다렸다가 결과를 재사용한다.
+        """
         call_count = 0
 
         async def very_slow_call(**kwargs):
@@ -124,7 +130,7 @@ class TestAgentLlmStandby:
 
         await asyncio.gather(_run(), _run())
 
-        assert call_count == 2, f"timeout 후 양쪽 호출 예상, 실제={call_count}"
+        assert call_count == 1, f"timeout 후 중복 LLM 호출 발생(herd), 실제={call_count}"
 
     async def test_cache_off_save_off_skips_standby(
         self, mock_collection, fake_redis, fast_backoff, monkeypatch,
