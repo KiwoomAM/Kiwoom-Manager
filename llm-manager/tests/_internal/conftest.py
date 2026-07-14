@@ -74,17 +74,26 @@ class FakeRedisHandler:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}  # 마지막 set/setnx 의 ttl (검증용)
 
     def setnx(self, key: str, value: str, *, ttl: int | None = None) -> bool:
         if key in self.data:
             return False
         self.data[key] = value
+        self.ttls[key] = ttl
+        return True
+
+    def set(self, key: str, value: str, ttl: int | None = None, **kwargs) -> bool:
+        # record_failure 용 — 덮어쓰기 허용(setnx 아님). ttl 은 검증 위해 보관.
+        self.data[key] = value
+        self.ttls[key] = ttl
         return True
 
     def get(self, key: str) -> str | None:
         return self.data.get(key)
 
     def delete(self, key: str) -> int:
+        self.ttls.pop(key, None)
         return 1 if self.data.pop(key, None) is not None else 0
 
 

@@ -416,26 +416,29 @@ async def _resolve_one_files_api(
     acquired = await dedup.try_acquire_standby(
         "files_api", checksum, standby_ttl_seconds,
     )
-    if acquired:
-        try:
-            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
-        finally:
-            await dedup.release_standby("files_api", checksum)
-    else:
-        # 다른 요청이 업로드 중 → 대기
-        cached_file = await dedup.wait_for_standby_release(
+    if not acquired:
+        # 다른 요청이 업로드 중 → 대기 후 판정 (docs/31 §3-4)
+        verdict = await dedup.wait_for_standby_release(
             "files_api", checksum, standby_ttl_seconds,
             find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
         )
-        if cached_file:
-            _reuse_files_api_uris(fi, cached_file, uri_parts, file_refs)
-        else:
-            # timeout → 자기가 업로드 (Y' Hybrid)
-            logger.warning(
-                "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
-                checksum[:16],
-            )
-            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+        if verdict.kind == "cached":
+            _reuse_files_api_uris(fi, verdict.data, uri_parts, file_refs)
+            return uri_parts, file_refs
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            raise verdict.error
+        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    try:
+        await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+    except Exception as e:
+        # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+        await dedup.record_failure("files_api", checksum, e)
+        raise
+    finally:
+        await dedup.release_standby("files_api", checksum)
     return uri_parts, file_refs
 
 
@@ -583,41 +586,40 @@ async def _resolve_or_create_context_cache(
     acquired_cc = await dedup.try_acquire_standby(
         "context_cache", hash_key, standby_ttl_seconds,
     )
-    if acquired_cc:
-        try:
-            return await _create_and_save_context_cache(
-                hash_key, checksums, file_refs,
-                cache_contents=cache_contents,
-                model=model,
-                system_instruction=system_instruction,
-                ttl=context_cache_ttl,
-                tools=tools,
-                tool_config=tool_config,
+    if not acquired_cc:
+        # 다른 요청이 생성 중 → 대기 후 판정 (docs/31 §3-4)
+        verdict = await dedup.wait_for_standby_release(
+            "context_cache", hash_key, standby_ttl_seconds,
+            find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
+        )
+        if verdict.kind == "cached":
+            logger.info(
+                "[route] mode=context_cache source=cached name=%s",
+                verdict.data["cached_content_name"],
             )
-        finally:
-            await dedup.release_standby("context_cache", hash_key)
-    # 다른 요청이 생성 중 → 대기
-    cached_cc = await dedup.wait_for_standby_release(
-        "context_cache", hash_key, standby_ttl_seconds,
-        find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
-    )
-    if cached_cc:
-        logger.info("[route] mode=context_cache source=cached name=%s", cached_cc["cached_content_name"])
-        return cached_cc["cached_content_name"]
-    # timeout → 자기가 생성 (Y' Hybrid)
-    logger.warning(
-        "context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s",
-        hash_key[:16],
-    )
-    return await _create_and_save_context_cache(
-        hash_key, checksums, file_refs,
-        cache_contents=cache_contents,
-        model=model,
-        system_instruction=system_instruction,
-        ttl=context_cache_ttl,
-        tools=tools,
-        tool_config=tool_config,
-    )
+            return verdict.data["cached_content_name"]
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            raise verdict.error
+        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    try:
+        return await _create_and_save_context_cache(
+            hash_key, checksums, file_refs,
+            cache_contents=cache_contents,
+            model=model,
+            system_instruction=system_instruction,
+            ttl=context_cache_ttl,
+            tools=tools,
+            tool_config=tool_config,
+        )
+    except Exception as e:
+        # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+        await dedup.record_failure("context_cache", hash_key, e)
+        raise
+    finally:
+        await dedup.release_standby("context_cache", hash_key)
 
 
 def _build_labeled_cache_contents(

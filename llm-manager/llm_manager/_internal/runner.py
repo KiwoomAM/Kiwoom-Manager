@@ -555,26 +555,35 @@ async def llm_request_async(
     acquired = await dedup.try_acquire_standby(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
-    if acquired:
+    if not acquired:
+        # 다른 요청이 처리 중 → 대기 후 판정 (docs/31 §3-4)
+        t_wait = time.monotonic()
+        verdict = await dedup.wait_for_standby_release(
+            "agent_llm", cache_key, standby_ttl_seconds,
+            find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
+        )
+        wait_ms = int((time.monotonic() - t_wait) * 1000)
+        if verdict.kind == "cached":
+            logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
+            return verdict.data
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            logger.info("[dedup] role=waiter wait_ms=%d leader_failed=true", wait_ms)
+            raise verdict.error
+        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        logger.info("[dedup] role=waiter_promoted wait_ms=%d", wait_ms)
+    else:
         logger.info("[dedup] role=leader key=%s", cache_key[:16])
-        try:
-            return await _do_llm_call(prep, database)
-        finally:
-            await dedup.release_standby("agent_llm", cache_key)
 
-    # 다른 요청이 처리 중 → 대기
-    t_wait = time.monotonic()
-    cached = await dedup.wait_for_standby_release(
-        "agent_llm", cache_key, standby_ttl_seconds,
-        find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
-    )
-    wait_ms = int((time.monotonic() - t_wait) * 1000)
-    if cached:
-        logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
-        return cached
-    # timeout → 자기가 LLM 호출 (Y' Hybrid)
-    logger.warning("[dedup] role=standby_timeout wait_ms=%d", wait_ms)
-    return await _do_llm_call(prep, database)
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    try:
+        return await _do_llm_call(prep, database)
+    except Exception as e:
+        # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+        await dedup.record_failure("agent_llm", cache_key, e)
+        raise
+    finally:
+        await dedup.release_standby("agent_llm", cache_key)
 
 
 def llm_request(
@@ -687,38 +696,46 @@ async def llm_request_stream_async(
     acquired = await dedup.try_acquire_standby(
         "agent_llm", cache_key, standby_ttl_seconds,
     )
-    if acquired:
+    if not acquired:
+        # 다른 요청이 처리 중 → 대기 후 판정 (docs/31 §3-4)
+        t_wait = time.monotonic()
+        verdict = await dedup.wait_for_standby_release(
+            "agent_llm", cache_key, standby_ttl_seconds,
+            find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
+        )
+        wait_ms = int((time.monotonic() - t_wait) * 1000)
+        if verdict.kind == "cached":
+            logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
+            response, cached_meta = verdict.data
+
+            async def _cached_stream() -> AsyncIterator[StreamChunk]:
+                yield _to_stream_chunk(response)
+
+            return _cached_stream(), cached_meta
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            logger.info("[dedup] role=waiter wait_ms=%d leader_failed=true", wait_ms)
+            raise verdict.error
+        # verdict.kind == "lead" — standby 재획득 성공 → 아래 leader 경로로 진입
+        logger.info("[dedup] role=waiter_promoted wait_ms=%d", wait_ms)
+    else:
         logger.info("[dedup] role=leader key=%s", cache_key[:16])
-        meta = _build_live_meta(prep)
 
-        async def _leader_stream() -> AsyncIterator[StreamChunk]:
-            try:
-                async for chunk in _do_llm_stream(prep, database):
-                    yield chunk
-            finally:
-                await dedup.release_standby("agent_llm", cache_key)
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    meta = _build_live_meta(prep)
 
-        return _leader_stream(), meta
+    async def _leader_stream() -> AsyncIterator[StreamChunk]:
+        try:
+            async for chunk in _do_llm_stream(prep, database):
+                yield chunk
+        except Exception as e:
+            # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+            await dedup.record_failure("agent_llm", cache_key, e)
+            raise
+        finally:
+            await dedup.release_standby("agent_llm", cache_key)
 
-    # 다른 요청이 처리 중 → 대기
-    t_wait = time.monotonic()
-    cached = await dedup.wait_for_standby_release(
-        "agent_llm", cache_key, standby_ttl_seconds,
-        find_cache_fn=lambda: _recheck_agent_llm_cache(prep, database),
-    )
-    wait_ms = int((time.monotonic() - t_wait) * 1000)
-    if cached:
-        logger.info("[dedup] role=waiter wait_ms=%d leader_completed=true", wait_ms)
-        response, cached_meta = cached
-
-        async def _cached_stream() -> AsyncIterator[StreamChunk]:
-            yield _to_stream_chunk(response)
-
-        return _cached_stream(), cached_meta
-
-    # timeout → 자기가 stream (Y' Hybrid)
-    logger.warning("[dedup] role=standby_timeout wait_ms=%d", wait_ms)
-    return _do_llm_stream(prep, database), _build_live_meta(prep)
+    return _leader_stream(), meta
 
 
 def llm_request_stream(

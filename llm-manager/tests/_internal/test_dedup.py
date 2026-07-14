@@ -15,11 +15,14 @@ import pytest
 
 from llm_manager._internal.file_processing import dedup
 from llm_manager._internal.file_processing.dedup import (
+    WaitResult,
     _make_standby_key,
+    record_failure,
     release_standby,
     try_acquire_standby,
     wait_for_standby_release,
 )
+from llm_manager.exceptions import LLMManagerError, PdfPageTooLargeError
 
 # ── _make_standby_key ────────────────────────────────────────
 
@@ -77,8 +80,15 @@ class TestTryAcquireStandby:
 
 
 class TestWaitForStandbyRelease:
-    async def test_sync_find_cache_fn_hit_returns_immediately(self, fake_redis, fast_backoff):
-        """sync find_cache_fn 이 HIT 반환 시 즉시 종료."""
+    """wait_for_standby_release 는 이제 WaitResult(verdict) 를 돌려준다.
+
+    kind: "cached"(HIT) / "failed"(leader 실패 기록) / "lead"(자기가 작업).
+    None → 곧장 자기가 작업하던 옛 herd 경로는 사라지고, 깨어나면 항상 SETNX 를
+    거쳐 하나만 leader 가 된다(docs/31 §3-2).
+    """
+
+    async def test_sync_find_cache_fn_hit_returns_cached(self, fake_redis, fast_backoff):
+        """sync find_cache_fn 이 HIT 반환 시 CACHED verdict."""
         await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
         cached_doc = {"uris": ["u1"]}
@@ -86,9 +96,10 @@ class TestWaitForStandbyRelease:
             "files_api", "k1", timeout=5,
             find_cache_fn=lambda: cached_doc,
         )
-        assert result == cached_doc
+        assert result.kind == "cached"
+        assert result.data == cached_doc
 
-    async def test_async_find_cache_fn_hit_returns_immediately(self, fake_redis, fast_backoff):
+    async def test_async_find_cache_fn_hit_returns_cached(self, fake_redis, fast_backoff):
         """async find_cache_fn 도 동일하게 지원."""
         await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
@@ -101,60 +112,156 @@ class TestWaitForStandbyRelease:
             "files_api", "k1", timeout=5,
             find_cache_fn=_find,
         )
-        assert result == cached_doc
+        assert result.kind == "cached"
+        assert result.data == cached_doc
 
-    async def test_standby_released_miss_returns_none(self, fake_redis, fast_backoff):
-        """standby 삭제 + 캐시 MISS → None 반환 (호출자가 작업)."""
+    async def test_failure_record_returns_failed_with_error(self, fake_redis, fast_backoff):
+        """standby 사라짐 + 실패 기록 존재 → FAILED verdict + 원본 에러 재구성."""
         await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
-        # 다른 태스크가 standby 해제 + 캐시는 여전히 MISS (실패 시나리오)
+        # leader 실패 시나리오: 실패 기록 후 standby 해제
+        await record_failure("files_api", "k1", PdfPageTooLargeError(page=3, size_mb=97.1))
+        await release_standby("files_api", "k1")
+
+        result = await wait_for_standby_release(
+            "files_api", "k1", timeout=5,
+            find_cache_fn=lambda: None,  # 캐시는 계속 MISS
+        )
+        assert result.kind == "failed"
+        assert isinstance(result.error, LLMManagerError)
+        assert "p.3" in str(result.error)  # 원본 message 보존
+        assert result.error.error_type == "pdf_page_too_large"
+        assert result.error.status_code == 422
+
+    async def test_standby_vanished_no_record_reacquires_lead(self, fake_redis, fast_backoff):
+        """standby 사라짐 + 실패 기록 없음(eviction) → SETNX 재획득 성공 → LEAD."""
+        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+
         async def _releaser():
             await asyncio.sleep(0.03)
-            await release_standby("files_api", "k1")
+            await release_standby("files_api", "k1")  # 기록 없이 사라짐
 
         _ = asyncio.create_task(_releaser())
 
         result = await wait_for_standby_release(
             "files_api", "k1", timeout=5,
-            find_cache_fn=lambda: None,  # 계속 MISS
-        )
-        assert result is None
-
-    async def test_timeout_returns_none(self, fake_redis, fast_backoff):
-        """timeout 도달 시 None + warning (release 안 되고 계속 MISS)."""
-        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
-
-        # 짧은 timeout — backoff 몇 번 후 만료
-        result = await wait_for_standby_release(
-            "files_api", "k1", timeout=1,  # 1초 timeout
             find_cache_fn=lambda: None,
         )
-        assert result is None
+        assert result.kind == "lead"
+        # 재획득했으므로 standby 를 다시 들고 있어야 함
+        assert fake_redis.get("file_cache:files_api_standby:k1") is not None
 
-    async def test_no_find_cache_fn_waits_for_standby(self, fake_redis, fast_backoff):
-        """find_cache_fn 없이 standby 해제만 감지."""
+    async def test_timeout_returns_lead(self, fake_redis, fast_backoff):
+        """timeout 도달 시 LEAD (Y' Hybrid — 자기가 작업)."""
         await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
-        async def _releaser():
-            await asyncio.sleep(0.03)
-            await release_standby("files_api", "k1")
-
-        _ = asyncio.create_task(_releaser())
-
         result = await wait_for_standby_release(
-            "files_api", "k1", timeout=5,
-            find_cache_fn=None,
+            "files_api", "k1", timeout=1,
+            find_cache_fn=lambda: None,
         )
-        assert result is None
+        assert result.kind == "lead"
 
-    async def test_redis_unavailable_returns_none(self, no_redis, fast_backoff):
-        """대기 중 Redis 미연결 → get이 None 폴백 → None 반환(호출자가 자기 작업).
+    async def test_redis_unavailable_returns_lead(self, no_redis, fast_backoff):
+        """대기 중 Redis 미연결 → get None 폴백 → LEAD(자기 작업).
 
-        v3 graceful degradation: strict-read 미지원이라 단절을 예외로 올리지 않고
-        timeout 폴백과 동일하게 None을 반환한다.
+        v3 graceful degradation: 단절을 예외로 올리지 않고 자기가 작업한다.
         """
         result = await wait_for_standby_release("files_api", "k1", timeout=1)
-        assert result is None
+        assert result.kind == "lead"
+
+
+# ── 실패 기록 (negative cache) ────────────────────────────────
+
+
+class TestRecordAndReconstructFailure:
+    async def test_llm_error_preserves_contract(self, fake_redis):
+        """LLMManagerError 하위는 status_code·error_type·message 를 보존."""
+        await record_failure("files_api", "k1", PdfPageTooLargeError(page=3, size_mb=97.1))
+
+        info = await dedup._find_failure("files_api", "k1")
+        assert info is not None
+        assert info["status_code"] == 422
+        assert info["error_type"] == "pdf_page_too_large"
+        assert "p.3" in info["message"]
+
+        err = dedup._reconstruct_error(info)
+        assert isinstance(err, LLMManagerError)
+        assert err.status_code == 422
+        assert err.error_type == "pdf_page_too_large"
+        assert str(err) == info["message"]  # verbatim, 마스킹 없음
+
+    async def test_non_llm_error_defaults(self, fake_redis):
+        """라이브러리 예외(httpx 등)는 502 / leader_failed 로, message 는 verbatim."""
+        await record_failure(
+            "files_api", "k1",
+            RuntimeError("peer closed connection without sending complete message body"),
+        )
+        info = await dedup._find_failure("files_api", "k1")
+        assert info["status_code"] == 502
+        assert info["error_type"] == "leader_failed"
+        assert "peer closed connection" in info["message"]
+        assert info["class"] == "RuntimeError"  # 원본 클래스명 진단용 보존
+
+    async def test_per_layer_ttl(self, fake_redis):
+        """실패 기록 TTL 은 계층별 — files_api 60초, agent_llm 15초."""
+        await record_failure("files_api", "k1", RuntimeError("x"))
+        await record_failure("agent_llm", "k2", RuntimeError("y"))
+        assert fake_redis.ttls["file_cache:files_api_failed:k1"] == 60
+        assert fake_redis.ttls["agent_llm_failed:k2"] == 15
+
+    async def test_find_failure_absent_returns_none(self, fake_redis):
+        assert await dedup._find_failure("files_api", "nope") is None
+
+
+# ── anti-herd 불변식 (docs/31 §2) ─────────────────────────────
+
+
+class TestAntiHerdInvariant:
+    """leader 실패가 herd 로 번지지 않는지 — 동시 작업은 항상 ≤ 1."""
+
+    async def test_failure_record_makes_all_waiters_fail(self, fake_redis, fast_backoff):
+        """leader 가 실패 기록을 남기면, 대기자 전원이 재시도 없이 즉시 실패한다.
+
+        101MB 재다운로드 0번 — 28건 herd 의 정상 경로 해소.
+        """
+        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        await record_failure("files_api", "k1", PdfPageTooLargeError(page=3, size_mb=97.1))
+        await release_standby("files_api", "k1")
+
+        async def _waiter():
+            r = await wait_for_standby_release(
+                "files_api", "k1", timeout=5, find_cache_fn=lambda: None,
+            )
+            return r.kind
+
+        kinds = await asyncio.gather(*[_waiter() for _ in range(10)])
+        assert kinds == ["failed"] * 10  # 아무도 자기가 작업하지 않음
+
+    async def test_eviction_only_one_becomes_leader(self, fake_redis, fast_backoff):
+        """실패 기록이 없어도(eviction) 동시에 깨어난 대기자 중 하나만 LEAD.
+
+        SETNX 폴백 안전망 — TTL 과 무관하게 불변식 유지(docs/31 §3-2).
+        """
+        # leader 가 기록 없이 사라진 상태
+        await try_acquire_standby("files_api", "k1", ttl_seconds=60)
+        await release_standby("files_api", "k1")
+
+        cache: dict = {}
+
+        async def _waiter():
+            r = await wait_for_standby_release(
+                "files_api", "k1", timeout=5,
+                find_cache_fn=lambda: cache.get("doc"),
+            )
+            if r.kind == "lead":
+                # 승자가 작업 완료 시뮬레이션: 캐시 저장 후 standby 해제
+                cache["doc"] = {"uris": ["u"]}
+                await release_standby("files_api", "k1")
+            return r.kind
+
+        kinds = await asyncio.gather(*[_waiter() for _ in range(10)])
+        assert kinds.count("lead") == 1  # 정확히 하나만 작업
+        assert kinds.count("cached") == 9  # 나머지는 승자 결과 재사용
 
 
 # ── release_standby ───────────────────────────────────────────
