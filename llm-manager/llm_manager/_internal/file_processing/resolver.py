@@ -42,8 +42,11 @@ logger = logging.getLogger(__name__)
 
 # ── 합계 한도 상수 (§4.1 Step 2 — 모달리티 인지) ──────────────
 
-_INLINE_LIMIT_WITH_IMAGE_AUDIO = 20 * 1024 * 1024  # 20 MB
-_INLINE_LIMIT_PDF_OR_TEXT_ONLY = 50 * 1024 * 1024  # 50 MB
+# 두 한도는 지금 값이 같지만 근거가 다르다 — 합치지 말 것 (docs/33 §2.1).
+#   WITH_IMAGE_AUDIO : Gemini 가 문서화한 강제 상한 (요청 총 20MB) — 못 올린다.
+#   PDF_OR_TEXT_ONLY : 우리 메모리 정책 — 되돌릴 수 있다.
+_INLINE_LIMIT_WITH_IMAGE_AUDIO = 20 * 1024 * 1024  # 20 MB — Gemini 강제 상한
+_INLINE_LIMIT_PDF_OR_TEXT_ONLY = 20 * 1024 * 1024  # 20 MB — 정책. 50MB 에서 인하 (docs/33)
 
 # Files API 경로 — Gemini PDF 공식 한도, 초과 시 splitter.split_pdf로 분할
 _PDF_SPLIT_LIMIT = 50 * 1024 * 1024  # 50 MB
@@ -58,9 +61,12 @@ _IMAGE_TILE_PX = 768  # 이미지는 768×768 타일로 분할 (작은 이미지
 def _inline_total_limit(pool: list[FileInput]) -> int:
     """inline 후보 합계 한도 — image/audio/video 포함 여부에 따라 결정.
 
-    image·audio·video 중 하나라도 inline 후보에 있으면 엄격한 20MB
-    (Gemini 인라인 미디어는 요청 총 20MB 권장 — 비디오 포함),
-    PDF/텍스트만이면 완화된 50MB.
+    image·audio·video 중 하나라도 inline 후보에 있으면 20MB
+    (Gemini 인라인 미디어는 요청 총 20MB 상한 — 비디오 포함),
+    PDF/텍스트만이어도 20MB (메모리 정책 — 종전 50MB 에서 인하, docs/33).
+
+    두 값이 같아 분기가 지금은 같은 수를 돌려주지만, 근거가 다르므로 분기를 남긴다
+    (위는 못 올리는 스펙 상한, 아래는 되돌릴 수 있는 정책 — docs/33 §2.1).
     """
     has_media = any(
         fi.mime_type.startswith(("image/", "audio/", "video/")) for fi in pool
@@ -97,11 +103,11 @@ def classify_files(
 ) -> tuple[list[FileInput], list[FileInput]]:
     """FileInput 리스트를 inline_pool / files_api_pool로 분류 (부분 섞기).
 
-    모든 파일이 inline 후보다. 합계 한도(모달리티 인지 — 미디어 있으면 20MB,
-    PDF/텍스트만 50MB)를 작은 것부터 채우고, 넘치는 파일은 files_api_pool로 민다.
+    모든 파일이 inline 후보다. 합계 한도(모달리티 인지 — 미디어든 PDF/텍스트든 20MB,
+    docs/33)를 작은 것부터 채우고, 넘치는 파일은 files_api_pool로 민다.
     20MB 초과 비디오·대형 PDF는 자연히 합계를 초과해 files_api로 밀리므로 별도
     선분리가 필요 없다. PDF 50MB 초과 분할은 이후 Files API 업로드 단계에서
-    splitter가 처리.
+    splitter가 처리(그 50MB 는 Gemini per-file 상한이라 이 한도와 별개다).
     """
     inline_pool: list[FileInput] = list(files)
     files_api_pool: list[FileInput] = []
@@ -142,6 +148,7 @@ async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
         inline_parts.append(
             Part.from_bytes(data=fi.data, mime_type=fi.mime_type)
         )
+        fi.data = b""  # inline 경로 — bytes 가 base64 Part 로 옮겨졌으니 메모리 회수 (docs/16 §3.2, docs/32)
         logger.info("[route] file=%s mode=inline", fi.file_name)
     return inline_parts
 
