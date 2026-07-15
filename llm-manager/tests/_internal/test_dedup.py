@@ -22,7 +22,7 @@ from llm_manager._internal.file_processing.dedup import (
     try_acquire_standby,
     wait_for_standby_release,
 )
-from llm_manager.exceptions import LLMManagerError, PdfPageTooLargeError
+from llm_manager.exceptions import CacheError, LLMManagerError, PdfPageTooLargeError
 
 # ── _make_standby_key ────────────────────────────────────────
 
@@ -151,15 +151,21 @@ class TestWaitForStandbyRelease:
         # 재획득했으므로 standby 를 다시 들고 있어야 함
         assert fake_redis.get("file_cache:files_api_standby:k1") is not None
 
-    async def test_timeout_returns_lead(self, fake_redis, fast_backoff):
-        """timeout 도달 시 LEAD (Y' Hybrid — 자기가 작업)."""
+    async def test_timeout_exhaustion_raises(self, fake_redis, fast_backoff, monkeypatch):
+        """라운드 소진 시 CacheError raise (fail-fast — 구 Y' Hybrid 의 '자기 작업'을 대체).
+
+        leader 가 standby 를 잡고 놓지 않아 재획득이 매 라운드 실패하면, 라운드를 소진한다.
+        예전엔 여기서 lead(자기 작업)를 돌려줘 여러 대기자가 함께 herd 가 됐다. 이제는
+        즉시 실패시키고 사용자가 재시도한다(docs/31 §3-9). 정상 경우(승격 1회 후 성공)는
+        이 경로에 오지 않는다.
+        """
+        monkeypatch.setattr(dedup, "_MAX_TIMEOUT_ROUNDS", 1)  # 소진을 빠르게
         await try_acquire_standby("files_api", "k1", ttl_seconds=60)
 
-        result = await wait_for_standby_release(
-            "files_api", "k1", timeout=1,
-            find_cache_fn=lambda: None,
-        )
-        assert result.kind == "lead"
+        with pytest.raises(CacheError, match="라운드"):
+            await wait_for_standby_release(
+                "files_api", "k1", timeout=1, find_cache_fn=lambda: None,
+            )
 
     async def test_redis_unavailable_raises(self, no_redis, fast_backoff):
         """대기 중 Redis 미연결 → RuntimeError (M3 — 진입 경로와 같은 계약).

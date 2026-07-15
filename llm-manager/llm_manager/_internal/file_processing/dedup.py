@@ -36,7 +36,7 @@ from redis_manager import (
     RedisUnavailableError,
 )
 
-from llm_manager.exceptions import LLMManagerError
+from llm_manager.exceptions import CacheError, LLMManagerError
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ async def wait_for_standby_release(
       2. 실패 기록 존재        → FAILED (leader 실패 — 재시도 없이 즉시 전파)
       3. standby 사라짐        → **SETNX 재획득** → 성공하면 LEAD, 실패하면 계속 대기
       4. timeout               → **SETNX 재획득** → 성공하면 LEAD, 실패하면 다음 라운드 대기
-                                 (_MAX_TIMEOUT_ROUNDS 소진 시에만 LEAD — 구 Y' Hybrid)
+                                 (_MAX_TIMEOUT_ROUNDS 소진 시 CacheError raise — fail-fast, herd 방지)
 
     3·4번이 핵심이다. 예전엔 여기서 곧장 `None` 을 돌려줘 **깨어난 대기자 전원이 동시에**
     자기 작업을 시작했다(herd). 이제는 깨어나면 항상 SETNX 를 거치므로 하나만 leader 가
@@ -266,6 +266,10 @@ async def wait_for_standby_release(
 
     Returns:
         WaitResult — kind 가 "cached" / "failed" / "lead" 중 하나.
+
+    Raises:
+        CacheError: _MAX_TIMEOUT_ROUNDS 를 소진하도록 leader 가 매달려 완료 못 함(fail-fast).
+        RuntimeError: 대기 중 Redis 미연결(M3).
     """
     standby_key = _make_standby_key(prefix, key)
 
@@ -322,13 +326,19 @@ async def wait_for_standby_release(
             timeout, round_no, _MAX_TIMEOUT_ROUNDS,
         )
 
-    # 라운드 소진 — liveness 탈출구. 여기까지 오면 leader 가 연달아 매달린 것이라
-    # 중복을 감수하고 진행한다(구 Y' Hybrid). 잦으면 standby_ttl_seconds 를 늘려야 한다.
+    # 라운드 소진 — leader 가 연달아 매달렸다. 정상 경우(승격 1회 후 성공)는 여기 오지 않는다;
+    # 여기까지 오려면 leader 가 라운드마다 연속으로 조용히 매달려야 한다(극히 드문 꼬리).
+    # 구 Y' Hybrid 는 여기서 lead(자기 작업)를 돌려줬는데, 여러 대기자가 함께 소진하면 herd 가
+    # 됐다. 이제는 fail-fast — 정말 막힌 자원은 즉시 실패시키고 사용자가 재시도한다(docs/31 §3-9).
+    # 이로써 herd 는 어떤 경로에서도 0 이 된다.
     logger.warning(
-        "standby %d 라운드(%d초×%d) 대기 후에도 미완료 — 자기가 작업 (중복 가능). standby_key=%s",
+        "standby %d 라운드(%d초×%d) 대기 후에도 미완료 — 실패 전파(중복 방지). standby_key=%s",
         _MAX_TIMEOUT_ROUNDS, timeout, _MAX_TIMEOUT_ROUNDS, standby_key,
     )
-    return WaitResult(kind="lead")
+    raise CacheError(
+        f"dedup: leader 가 {_MAX_TIMEOUT_ROUNDS} 라운드"
+        f"({timeout}초×{_MAX_TIMEOUT_ROUNDS}) 안에 완료하지 못했습니다 — 재시도하세요."
+    )
 
 
 async def _check_cache(find_cache_fn: Callable[[], Any] | None) -> Any:
