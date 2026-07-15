@@ -8,6 +8,7 @@ dedup standby 통합 테스트는 test_resolver_standby.py 참고.
 
 from __future__ import annotations
 
+from base64 import b64decode
 from unittest.mock import MagicMock
 
 import pytest
@@ -187,11 +188,11 @@ class TestClassifyFiles:
         assert image in inline
         assert pdf in files_api
 
-    def test_pdf_text_only_uses_50mb_limit(self):
-        """PDF/text만 있으면 inline 한도 50MB로 완화."""
-        pdf_a = _file(file_name="a.pdf", mime_type="application/pdf", file_size=20 * 1024 * 1024)
-        pdf_b = _file(file_name="b.pdf", mime_type="application/pdf", file_size=20 * 1024 * 1024)
-        # 합계 40MB ≤ 50MB → 둘 다 inline
+    def test_pdf_text_only_fits_under_20mb_limit(self):
+        """PDF/text 만이면 한도 20MB — 합계가 그 안이면 둘 다 inline (docs/33 인하 반영)."""
+        pdf_a = _file(file_name="a.pdf", mime_type="application/pdf", file_size=8 * 1024 * 1024)
+        pdf_b = _file(file_name="b.pdf", mime_type="application/pdf", file_size=8 * 1024 * 1024)
+        # 합계 16MB ≤ 20MB → 둘 다 inline
 
         inline, files_api = classify_files([pdf_a, pdf_b], llm_input={})
 
@@ -199,11 +200,25 @@ class TestClassifyFiles:
         assert pdf_b in inline
         assert files_api == []
 
+    def test_pdf_over_20mb_goes_to_files_api(self):
+        """PDF/text 만이어도 inline 한도는 20MB — 초과분은 files_api (docs/33).
+
+        예전엔 50MB 완화 한도라 25MB PDF 도 inline 이었다. inline 은 메모리 피크가
+        원본의 약 4배라(docs/32 §6 실측: 44.5MB → 192.9MB) 동시 40건이면 7.7GB 라
+        감당이 안 된다. 한도를 되돌리면 이 테스트가 실패한다.
+        """
+        pdf = _file(file_name="big.pdf", mime_type="application/pdf", file_size=25 * 1024 * 1024)
+
+        inline, files_api = classify_files([pdf], llm_input={})
+
+        assert inline == []
+        assert pdf in files_api
+
     def test_total_over_limit_pushes_largest_to_files_api(self):
         """합계 초과 시 큰 파일이 files_api로 (작은 것부터 순회 후 한도 넘는 순간 그것만)."""
         small = _file(file_name="s.pdf", mime_type="application/pdf", file_size=10 * 1024 * 1024)
         large = _file(file_name="l.pdf", mime_type="application/pdf", file_size=45 * 1024 * 1024)
-        # 정렬 후 small inline → total=10MB. large(+45=55MB) > 50MB → files_api
+        # 정렬 후 small inline → total=10MB. large(+45=55MB) > 20MB → files_api
 
         inline, files_api = classify_files([small, large], llm_input={})
 
@@ -285,6 +300,40 @@ class TestProcessInline:
     async def test_empty_input_returns_empty(self):
         parts = await _process_inline([])
         assert parts == []
+
+
+class TestProcessInlineReleasesBytes:
+    """inline Part 로 옮겨진 원본 bytes 는 회수한다 (docs/32).
+
+    Files API 경로(_reuse_files_api_uris·_upload_and_cache_file)와 같은 정책(docs/16 §3.2).
+    회수 안 하면 원본 bytes + base64(1.33배) 가 요청 끝까지 동시 상주한다
+    (44.5MB PDF 실측: 힙 current 103.9MB, 피크 237.5MB — docs/32 §2).
+    """
+
+    async def test_data_released_after_part_built(self):
+        """Part 생성 후 fi.data 는 b"" — 단, base64 Part 는 원본을 온전히 담는다."""
+        raw = b"%PDF-1.7 payload"
+        fi = _file(file_name="big.pdf", file_size=len(raw))
+        fi.data = raw
+
+        parts = await _process_inline([fi])
+
+        assert fi.data == b""  # 회수됨 — 원본 bytes 를 요청 끝까지 들고 있지 않는다
+        assert b64decode(parts[0].data) == raw  # 무손실 — 전송에 필요한 건 Part 가 갖고 있다
+
+    async def test_all_files_released(self):
+        """파일 N개 모두 루프 안에서 즉시 회수 (마지막까지 쌓아두지 않는다)."""
+        files = [
+            _file(file_name="a.pdf", file_size=3),
+            _file(file_name="b.pdf", file_size=3),
+        ]
+        for fi in files:
+            fi.data = b"abc"
+
+        parts = await _process_inline(files)
+
+        assert all(fi.data == b"" for fi in files)
+        assert len(parts) == 2
 
 
 # ── resolve_files (통합) ──────────────────────────────────────
@@ -438,8 +487,9 @@ class TestResolveFiles:
 
         docs/30 회귀 가드: 승급 조건 완화가 ttl-off 경로로 새지 않아야 한다.
         """
-        small = _file(file_name="a.pdf", file_size=30 * 1024 * 1024, page_count=5)
-        large = _file(file_name="b.pdf", file_size=30 * 1024 * 1024, page_count=5)
+        # 합계 23MB > 20MB 한도(docs/33) → small 만 inline, large 는 files_api 로 갈린다.
+        small = _file(file_name="a.pdf", file_size=5 * 1024 * 1024, page_count=5)
+        large = _file(file_name="b.pdf", file_size=18 * 1024 * 1024, page_count=5)
 
         inline_pool, files_api_pool = await resolver._resolve_pools(
             [small, large], llm_input={}, context_cache_ttl=None,
@@ -796,7 +846,9 @@ class TestProcessInlineLazyFetch:
         parts = await _process_inline([fi])
 
         assert fetch_count == 1
-        assert fi.data == b"\x00\x01\x02"
+        # fetch 한 bytes 는 base64 Part 로 옮겨지고 fi.data 는 회수된다 (docs/32)
+        assert b64decode(parts[0].data) == b"\x00\x01\x02"
+        assert fi.data == b""
         assert len(parts) == 1
 
     async def test_existing_data_skips_fetch(self, monkeypatch):
@@ -820,7 +872,9 @@ class TestProcessInlineLazyFetch:
         parts = await _process_inline([fi])
 
         assert not fetch_called
-        assert fi.data == b"\x10\x20"
+        # 기존 bytes 를 그대로 썼는지는 Part 내용으로 확인 (fi.data 는 회수됨 — docs/32)
+        assert b64decode(parts[0].data) == b"\x10\x20"
+        assert fi.data == b""
         assert len(parts) == 1
 
 
@@ -1321,9 +1375,9 @@ class TestInlinePageSplitIntegration:
     async def test_overflow_parts_spill_to_files_api(self, fake_redis, fast_backoff, monkeypatch):
         """전개 파트 합계가 인라인 한도 초과 → 재분류가 files_api로 폴백."""
         big_a = _file(file_name="d.pdf#part1", mime_type="application/pdf",
-                      file_size=40 * 1024 * 1024, page_count=500)
+                      file_size=5 * 1024 * 1024, page_count=500)
         big_b = _file(file_name="d.pdf#part2", mime_type="application/pdf",
-                      file_size=40 * 1024 * 1024, page_count=500)
+                      file_size=18 * 1024 * 1024, page_count=500)
 
         async def fake_expand(pool):
             return [big_a, big_b]
@@ -1353,10 +1407,12 @@ class Test404RecoveryExpansion:
     async def test_recovery_invalidates_spilled_part_checksum(self, monkeypatch):
         from llm_manager._internal.keying import make_file_checksum
 
+        # 합계 23MB > 20MB 한도(docs/33) → part1 은 inline 에 남고 part2 만 spill.
+        # 둘 다 spill 하면 'spilled 것만 무효화' 라는 이 테스트의 변별력이 사라진다.
         big_a = _file(file_name="d.pdf#part1", mime_type="application/pdf",
-                      file_size=40 * 1024 * 1024, page_count=500)
+                      file_size=5 * 1024 * 1024, page_count=500)
         big_b = _file(file_name="d.pdf#part2", mime_type="application/pdf",
-                      file_size=40 * 1024 * 1024, page_count=500)
+                      file_size=18 * 1024 * 1024, page_count=500)
 
         async def fake_expand(pool):
             return [big_a, big_b]

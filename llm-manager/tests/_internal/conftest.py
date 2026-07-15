@@ -74,18 +74,35 @@ class FakeRedisHandler:
 
     def __init__(self) -> None:
         self.data: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}  # 마지막 set/setnx 의 ttl (검증용)
 
     def setnx(self, key: str, value: str, *, ttl: int | None = None) -> bool:
         if key in self.data:
             return False
         self.data[key] = value
+        self.ttls[key] = ttl
+        return True
+
+    def set(self, key: str, value: str, ttl: int | None = None, **kwargs) -> bool:
+        # record_failure 용 — 덮어쓰기 허용(setnx 아님). ttl 은 검증 위해 보관.
+        self.data[key] = value
+        self.ttls[key] = ttl
         return True
 
     def get(self, key: str) -> str | None:
         return self.data.get(key)
 
     def delete(self, key: str) -> int:
+        self.ttls.pop(key, None)
         return 1 if self.data.pop(key, None) is not None else 0
+
+    def compare_and_delete(self, key: str, expected: str) -> bool:
+        """소유자 토큰 일치 시에만 삭제 (분산 락 release). 불일치/부재면 False."""
+        if self.data.get(key) != expected:
+            return False
+        self.ttls.pop(key, None)
+        del self.data[key]
+        return True
 
 
 @pytest.fixture()
@@ -124,6 +141,10 @@ def no_redis(monkeypatch):
 
         def delete(self, *a, **kw):
             return 0
+
+        def compare_and_delete(self, *a, **kw):
+            # NX/XX 와 동일하게 폴백 차단 — 미도달 시 raise (락 정합성 보호)
+            raise RedisUnavailableError("test: Redis down")
 
     monkeypatch.setattr(dedup, "RedisManager", lambda: _DownHandler())
 

@@ -42,8 +42,11 @@ logger = logging.getLogger(__name__)
 
 # ── 합계 한도 상수 (§4.1 Step 2 — 모달리티 인지) ──────────────
 
-_INLINE_LIMIT_WITH_IMAGE_AUDIO = 20 * 1024 * 1024  # 20 MB
-_INLINE_LIMIT_PDF_OR_TEXT_ONLY = 50 * 1024 * 1024  # 50 MB
+# 두 한도는 지금 값이 같지만 근거가 다르다 — 합치지 말 것 (docs/33 §2.1).
+#   WITH_IMAGE_AUDIO : Gemini 가 문서화한 강제 상한 (요청 총 20MB) — 못 올린다.
+#   PDF_OR_TEXT_ONLY : 우리 메모리 정책 — 되돌릴 수 있다.
+_INLINE_LIMIT_WITH_IMAGE_AUDIO = 20 * 1024 * 1024  # 20 MB — Gemini 강제 상한
+_INLINE_LIMIT_PDF_OR_TEXT_ONLY = 20 * 1024 * 1024  # 20 MB — 정책. 50MB 에서 인하 (docs/33)
 
 # Files API 경로 — Gemini PDF 공식 한도, 초과 시 splitter.split_pdf로 분할
 _PDF_SPLIT_LIMIT = 50 * 1024 * 1024  # 50 MB
@@ -58,9 +61,12 @@ _IMAGE_TILE_PX = 768  # 이미지는 768×768 타일로 분할 (작은 이미지
 def _inline_total_limit(pool: list[FileInput]) -> int:
     """inline 후보 합계 한도 — image/audio/video 포함 여부에 따라 결정.
 
-    image·audio·video 중 하나라도 inline 후보에 있으면 엄격한 20MB
-    (Gemini 인라인 미디어는 요청 총 20MB 권장 — 비디오 포함),
-    PDF/텍스트만이면 완화된 50MB.
+    image·audio·video 중 하나라도 inline 후보에 있으면 20MB
+    (Gemini 인라인 미디어는 요청 총 20MB 상한 — 비디오 포함),
+    PDF/텍스트만이어도 20MB (메모리 정책 — 종전 50MB 에서 인하, docs/33).
+
+    두 값이 같아 분기가 지금은 같은 수를 돌려주지만, 근거가 다르므로 분기를 남긴다
+    (위는 못 올리는 스펙 상한, 아래는 되돌릴 수 있는 정책 — docs/33 §2.1).
     """
     has_media = any(
         fi.mime_type.startswith(("image/", "audio/", "video/")) for fi in pool
@@ -97,11 +103,11 @@ def classify_files(
 ) -> tuple[list[FileInput], list[FileInput]]:
     """FileInput 리스트를 inline_pool / files_api_pool로 분류 (부분 섞기).
 
-    모든 파일이 inline 후보다. 합계 한도(모달리티 인지 — 미디어 있으면 20MB,
-    PDF/텍스트만 50MB)를 작은 것부터 채우고, 넘치는 파일은 files_api_pool로 민다.
+    모든 파일이 inline 후보다. 합계 한도(모달리티 인지 — 미디어든 PDF/텍스트든 20MB,
+    docs/33)를 작은 것부터 채우고, 넘치는 파일은 files_api_pool로 민다.
     20MB 초과 비디오·대형 PDF는 자연히 합계를 초과해 files_api로 밀리므로 별도
     선분리가 필요 없다. PDF 50MB 초과 분할은 이후 Files API 업로드 단계에서
-    splitter가 처리.
+    splitter가 처리(그 50MB 는 Gemini per-file 상한이라 이 한도와 별개다).
     """
     inline_pool: list[FileInput] = list(files)
     files_api_pool: list[FileInput] = []
@@ -142,6 +148,7 @@ async def _process_inline(inline_pool: list[FileInput]) -> list[Part]:
         inline_parts.append(
             Part.from_bytes(data=fi.data, mime_type=fi.mime_type)
         )
+        fi.data = b""  # inline 경로 — bytes 가 base64 Part 로 옮겨졌으니 메모리 회수 (docs/16 §3.2, docs/32)
         logger.info("[route] file=%s mode=inline", fi.file_name)
     return inline_parts
 
@@ -413,29 +420,33 @@ async def _resolve_one_files_api(
         return uri_parts, file_refs
 
     # MISS — standby 선점 시도
-    acquired = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "files_api", checksum, standby_ttl_seconds,
     )
-    if acquired:
-        try:
-            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
-        finally:
-            await dedup.release_standby("files_api", checksum)
-    else:
-        # 다른 요청이 업로드 중 → 대기
-        cached_file = await dedup.wait_for_standby_release(
+    if token is None:
+        # 다른 요청이 업로드 중 → 대기 후 판정 (docs/31 §3-4)
+        verdict = await dedup.wait_for_standby_release(
             "files_api", checksum, standby_ttl_seconds,
             find_cache_fn=lambda c=checksum: cache_store.find_files_api(c),
         )
-        if cached_file:
-            _reuse_files_api_uris(fi, cached_file, uri_parts, file_refs)
-        else:
-            # timeout → 자기가 업로드 (Y' Hybrid)
-            logger.warning(
-                "files_api standby timeout → 자기가 업로드 (중복 가능): checksum=%s",
-                checksum[:16],
-            )
-            await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+        if verdict.kind == "cached":
+            _reuse_files_api_uris(fi, verdict.data, uri_parts, file_refs)
+            return uri_parts, file_refs
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            raise verdict.error
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
+        token = verdict.token
+
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    try:
+        await _upload_and_cache_file(fi, checksum, uri_parts, file_refs)
+    except Exception as e:
+        # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+        await dedup.record_failure("files_api", checksum, e)
+        raise
+    finally:
+        await dedup.release_standby("files_api", checksum, token)
     return uri_parts, file_refs
 
 
@@ -580,44 +591,44 @@ async def _resolve_or_create_context_cache(
             "context cache 생성에는 model이 필요합니다 — "
             "llm_input에 'model' 키를 포함하세요"
         )
-    acquired_cc = await dedup.try_acquire_standby(
+    token = await dedup.try_acquire_standby(
         "context_cache", hash_key, standby_ttl_seconds,
     )
-    if acquired_cc:
-        try:
-            return await _create_and_save_context_cache(
-                hash_key, checksums, file_refs,
-                cache_contents=cache_contents,
-                model=model,
-                system_instruction=system_instruction,
-                ttl=context_cache_ttl,
-                tools=tools,
-                tool_config=tool_config,
+    if token is None:
+        # 다른 요청이 생성 중 → 대기 후 판정 (docs/31 §3-4)
+        verdict = await dedup.wait_for_standby_release(
+            "context_cache", hash_key, standby_ttl_seconds,
+            find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
+        )
+        if verdict.kind == "cached":
+            logger.info(
+                "[route] mode=context_cache source=cached name=%s",
+                verdict.data["cached_content_name"],
             )
-        finally:
-            await dedup.release_standby("context_cache", hash_key)
-    # 다른 요청이 생성 중 → 대기
-    cached_cc = await dedup.wait_for_standby_release(
-        "context_cache", hash_key, standby_ttl_seconds,
-        find_cache_fn=lambda: cache_store.find_context_cache(hash_key),
-    )
-    if cached_cc:
-        logger.info("[route] mode=context_cache source=cached name=%s", cached_cc["cached_content_name"])
-        return cached_cc["cached_content_name"]
-    # timeout → 자기가 생성 (Y' Hybrid)
-    logger.warning(
-        "context_cache standby timeout → 자기가 생성 (중복 가능): hash_key=%s",
-        hash_key[:16],
-    )
-    return await _create_and_save_context_cache(
-        hash_key, checksums, file_refs,
-        cache_contents=cache_contents,
-        model=model,
-        system_instruction=system_instruction,
-        ttl=context_cache_ttl,
-        tools=tools,
-        tool_config=tool_config,
-    )
+            return verdict.data["cached_content_name"]
+        if verdict.kind == "failed":
+            # leader 가 실패 — 재시도 없이 같은 원인으로 즉시 실패 (herd 방지)
+            raise verdict.error
+        # verdict.kind == "lead" — 재획득 성공 → 그 토큰으로 leader 경로 진입
+        token = verdict.token
+
+    # 여기부터는 leader (최초 선점이든, 대기 중 재획득이든 동일)
+    try:
+        return await _create_and_save_context_cache(
+            hash_key, checksums, file_refs,
+            cache_contents=cache_contents,
+            model=model,
+            system_instruction=system_instruction,
+            ttl=context_cache_ttl,
+            tools=tools,
+            tool_config=tool_config,
+        )
+    except Exception as e:
+        # 대기자들이 재시도 없이 같은 원인으로 끝나도록 기록 — release 보다 먼저여야 한다
+        await dedup.record_failure("context_cache", hash_key, e)
+        raise
+    finally:
+        await dedup.release_standby("context_cache", hash_key, token)
 
 
 def _build_labeled_cache_contents(

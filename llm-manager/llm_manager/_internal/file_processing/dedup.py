@@ -5,10 +5,17 @@
 - context_cache: file_cache:context_cache_standby:{hash_key}
 - agent_llm:     agent_llm_standby:{cache_key}
 
-redis-handler v3 의 RedisManager API 사용 — 선점(setnx)/해제(delete)는 NX 폴백 차단으로
-분산 의미론 보호, standby 폴링(get)은 일반 명령 폴백 정책을 따른다(v3 설계상 read 는
-항상 폴백 허용, strict-read 미지원). 대기 중 단절 시 get 이 None 폴백 → 호출자가 자기
-작업 수행(timeout 폴백과 동일 경로). 상세 설계: docs/08.dedup-design-and-impl.md
+redis-handler v3 의 RedisManager API 사용 — 선점(setnx)/해제(compare_and_delete)는 폴백
+차단으로 분산 의미론 보호, standby 폴링(get)은 일반 명령 폴백 정책을 따른다(v3 설계상
+read 는 항상 폴백 허용, strict-read 미지원).
+
+**Redis 가 없으면 dedup 은 성립하지 않는다** — 진입·대기 어느 경로든 RuntimeError 로
+실패한다(docs/31 §3-7). 대기 중 단절 시 get 은 None 을 돌려주므로 코드는 "standby 가
+사라졌다"로 보고 재획득을 시도하는데, 그 SETNX 가 폴백 차단이라 RuntimeError 를 올린다.
+예전엔 이걸 삼키고 "락 없이 자기가 작업"으로 강등했으나, 그러면 Redis 블립 한 번에
+대기자 전원이 leader 가 되어 herd 가 부활했다.
+
+상세 설계: docs/08.dedup-design-and-impl.md, docs/31.dedup-leader-failure-succession.md
 """
 
 from __future__ import annotations
@@ -17,7 +24,9 @@ import asyncio
 import inspect
 import json
 import logging
+import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +36,8 @@ from redis_manager import (
     RedisUnavailableError,
 )
 
+from llm_manager.exceptions import CacheError, LLMManagerError
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +46,37 @@ logger = logging.getLogger(__name__)
 _BACKOFF_INITIAL = 0.5
 _BACKOFF_MULTIPLIER = 2.0
 _BACKOFF_CAP = 10.0
+
+# timeout 후 "다른 대기자가 leader 로 승격" 을 몇 라운드까지 기다려 줄지 (liveness 탈출구).
+# 소진하면 중복을 감수하고 자기가 작업한다(구 Y' Hybrid).
+_MAX_TIMEOUT_ROUNDS = 3
+
+
+# ── 실패 기록 TTL (계층별, docs/31 §3-1) ──────────────────────
+# 폴링 cap(_BACKOFF_CAP)보다 커야 만료 전에 모든 대기자가 기록을 본다.
+# files_api/context_cache 는 재작업이 비싸 60초, agent_llm 은 일시적 실패가 많아 15초.
+_FAILED_TTL_SECONDS = {"files_api": 60, "context_cache": 60, "agent_llm": 15}
+
+
+# ── 대기 판정 (verdict, docs/31 §3-4) ─────────────────────────
+
+
+@dataclass
+class WaitResult:
+    """wait_for_standby_release 의 판정.
+
+    kind:
+        "cached" — leader 성공, 캐시 HIT. `data` 에 캐시 dict.
+        "failed" — leader 실패 기록 발견. `error` 에 재구성된 예외 (호출자가 raise).
+        "lead"   — standby 사라짐/timeout 후 SETNX 재획득 성공 → 자기가 작업.
+                   `token` 에 소유자 토큰 (해제 시 release_standby 에 넘긴다).
+                   Redis 장애로 락 없이 진행하는 경우엔 token=None.
+    """
+
+    kind: str
+    data: Any = None
+    error: Exception | None = None
+    token: str | None = None
 
 
 # ── 키 빌더 ──────────────────────────────────────────────────
@@ -54,6 +96,16 @@ def _make_standby_key(prefix: str, key: str) -> str:
         raise ValueError(f"Unknown standby prefix: {prefix}")
 
 
+def _make_failed_key(prefix: str, key: str) -> str:
+    """실패 기록(negative cache) full Redis 키. standby 와 같은 네임스페이스 규칙."""
+    if prefix in ("files_api", "context_cache"):
+        return f"file_cache:{prefix}_failed:{key}"
+    elif prefix == "agent_llm":
+        return f"agent_llm_failed:{key}"
+    else:
+        raise ValueError(f"Unknown failed prefix: {prefix}")
+
+
 # ── standby API ──────────────────────────────────────────────
 
 
@@ -61,25 +113,121 @@ async def try_acquire_standby(
     prefix: str,
     key: str,
     ttl_seconds: int,
-) -> bool:
+) -> str | None:
     """Redis SETNX 로 standby 선점 시도.
 
     Returns:
-        True  — 자기가 선점 (작업 시작)
-        False — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
+        str  — 선점 성공. **소유자 토큰**(standby 값 전체). 해제 시 release_standby 에
+               그대로 돌려줘야 한다.
+        None — 다른 요청이 이미 작업 중 (호출자는 wait_for_standby_release)
+
+    소유자 토큰을 두는 이유(docs/31 §3-6): standby TTL 이 만료돼 락이 다른 요청으로
+    넘어간 뒤, 늦게 끝난 옛 leader 가 `finally` 에서 해제를 시도한다. 소유권 검사가
+    없으면 그때 **새 leader 의 락을 지워버리고**, 뒤이어 도착한 요청들이 줄줄이 leader 가
+    되어 herd 가 자기증식한다.
+
+    선점에 성공하면 = **새 시도가 시작됐다**는 뜻이므로, 같은 key 의 낡은 실패 기록을
+    지운다. 실패 기록은 "그 시도가 실패했다"이지 "이 key 는 영영 안 된다"가 아니다.
+    안 지우면, 실패 후 TTL 안에 재실행할 때 새 leader 는 정상 작업하는데 대기자들만
+    낡은 기록을 보고 죽는다(docs/31 §3-5).
 
     Raises:
         RuntimeError: Redis 미연결 또는 retry 소진 (RedisManager 가
             RedisUnavailableError / RedisRetryExhausted raise).
     """
     standby_key = _make_standby_key(prefix, key)
-    value = json.dumps({"started_at": datetime.now(UTC).isoformat()})
+    # 토큰 = standby 값 전체. compare_and_delete 가 값 전체를 비교하므로, 우리가 SET 한
+    # 문자열을 그대로 들고 있다가 돌려줘야 한다 (재직렬화하면 키 순서 등으로 어긋날 수 있다).
+    value = json.dumps({
+        "owner": uuid.uuid4().hex,
+        "started_at": datetime.now(UTC).isoformat(),
+    })
     try:
-        return await asyncio.to_thread(
+        acquired = await asyncio.to_thread(
             RedisManager().setnx, standby_key, value, ttl=ttl_seconds,
         )
     except (RedisUnavailableError, RedisRetryExhausted) as e:
         raise RuntimeError("Redis 미연결 — standby 불가") from e
+
+    if not acquired:
+        return None
+    await _clear_failure(prefix, key)  # 새 시도 시작 → 이전 실패 기록 무효
+    return value  # 소유자 토큰
+
+
+async def _clear_failure(prefix: str, key: str) -> None:
+    """실패 기록 삭제. Redis 장애 시 예외는 삼킨다(선점 흐름을 막지 않는다)."""
+    try:
+        await asyncio.to_thread(RedisManager().delete, _make_failed_key(prefix, key))
+    except Exception:
+        logger.exception(
+            "실패 기록 삭제 실패 (무시): prefix=%s, key=%s", prefix, key[:16] if key else "",
+        )
+
+
+async def record_failure(prefix: str, key: str, error: Exception) -> None:
+    """leader 실패를 negative cache 로 기록한다 (docs/31 §3-1).
+
+    대기자들이 이 기록을 보고 **재시도 없이** 같은 에러로 즉시 실패한다 — leader 하나의
+    실패가 27개의 동시 재작업(herd)으로 번지던 것을 막는다.
+
+    호출 순서가 중요하다: leader 는 이 기록을 남긴 **뒤에** standby 를 해제해야 한다.
+    반대로 하면 그 사이에 깨어난 대기자가 기록을 못 보고 자기가 작업을 시작한다.
+
+    원본 예외의 관찰 가능한 계약(message / status_code / error_type)만 보존한다 —
+    클래스 생성자가 제각각이라(`PdfPageTooLargeError(page, size_mb)`) 타입 재구성은
+    취약하고, 소비자는 어차피 이 세 값으로 분기·로깅한다(docs/31 §3-3).
+
+    Redis 장애 시 예외는 삼킨다 — 기록에 실패해도 SETNX 폴백이 herd 를 막으므로
+    원본 예외 전파를 방해하지 않는 게 낫다.
+    """
+    info = {
+        "class": type(error).__name__,  # 진단용 — 재구성에는 안 쓴다
+        "message": str(error),  # verbatim, 마스킹 없음
+        "status_code": getattr(error, "status_code", 502),
+        "error_type": getattr(error, "error_type", "leader_failed"),
+    }
+    try:
+        await asyncio.to_thread(
+            RedisManager().set,
+            _make_failed_key(prefix, key),
+            json.dumps(info),
+            ttl=_FAILED_TTL_SECONDS[prefix],
+        )
+    except Exception:
+        logger.exception(
+            "실패 기록 저장 실패 (무시 — SETNX 폴백이 herd 를 막는다): prefix=%s, key=%s",
+            prefix, key[:16] if key else "",
+        )
+
+
+async def _find_failure(prefix: str, key: str) -> dict | None:
+    """실패 기록 조회. 없거나 파손이면 None (정상 경로로 진행)."""
+    try:
+        raw = await asyncio.to_thread(RedisManager().get, _make_failed_key(prefix, key))
+    except Exception:
+        logger.exception("실패 기록 조회 실패 (무시): prefix=%s", prefix)
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("실패 기록 파손 — 무시: prefix=%s, key=%s", prefix, key[:16])
+        return None
+
+
+def _reconstruct_error(info: dict) -> Exception:
+    """실패 기록 → 대기자가 raise 할 예외.
+
+    원본 클래스가 아니라 `LLMManagerError` 로 재구성하되 message·status_code·error_type
+    을 그대로 실어, 소비자가 보는 계약이 원본과 동일하게 한다 (docs/31 §3-3).
+    """
+    return LLMManagerError(
+        info.get("message", "선행 요청이 실패했습니다"),
+        status_code=info.get("status_code", 502),
+        error_type=info.get("error_type", "leader_failed"),
+    )
 
 
 async def wait_for_standby_release(
@@ -87,70 +235,182 @@ async def wait_for_standby_release(
     key: str,
     timeout: int,
     find_cache_fn: Callable[[], Any] | None = None,
-) -> dict | None:
-    """standby 사라질 때까지 exponential backoff 대기.
+) -> WaitResult:
+    """standby 사라질 때까지 exponential backoff 대기 → 판정(WaitResult) 반환.
 
-    standby 폴링은 RedisManager().get 사용 — v3 는 strict-read 를 지원하지 않으므로
-    (read 는 항상 메모리 폴백) 대기 중 단절 시 get 이 None 을 반환하고, 호출자는
-    timeout 폴백과 동일하게 자기 작업을 수행한다(graceful degradation).
+    Redis 미연결이면 RuntimeError 를 올린다(M3 — 진입 경로와 같은 계약). 대기 중 단절 시
+    get 은 None 을 돌려주므로 3번(standby 사라짐)으로 들어가고, 거기서 SETNX 가 폴백
+    차단으로 RuntimeError 를 올린다. 이를 삼키고 "락 없이 자기가 작업"으로 강등하면
+    Redis 블립 한 번에 대기자 전원이 leader 가 된다(herd 부활) — docs/31 §3-7.
 
-    대기 중 find_cache_fn() 주기적 호출 (sync/async 모두 허용):
-      - HIT → 캐시 dict 반환 (즉시 종료)
-      - MISS + standby 사라짐 → None 반환 (호출자가 작업 시작)
-      - timeout → None 반환 + 경고 로그 (Y' Hybrid)
+    폴링 1회의 판단 순서 (docs/31 §3-2):
+      1. 본 캐시 HIT           → CACHED (leader 성공)
+      2. 실패 기록 존재        → FAILED (leader 실패 — 재시도 없이 즉시 전파)
+      3. standby 사라짐        → **SETNX 재획득** → 성공하면 LEAD, 실패하면 계속 대기
+      4. timeout               → **SETNX 재획득** → 성공하면 LEAD, 실패하면 다음 라운드 대기
+                                 (_MAX_TIMEOUT_ROUNDS 소진 시 CacheError raise — fail-fast, herd 방지)
+
+    3·4번이 핵심이다. 예전엔 여기서 곧장 `None` 을 돌려줘 **깨어난 대기자 전원이 동시에**
+    자기 작업을 시작했다(herd). 이제는 깨어나면 항상 SETNX 를 거치므로 하나만 leader 가
+    되고 나머지는 재대기한다 — 실패 기록이 (TTL 만료·eviction 으로) 없어도 불변식
+    "동시 작업 ≤ 1" 이 유지된다.
 
     backoff 시퀀스: 0.5 → 1 → 2 → 4 → 8 → 10 (cap) → 10 → ...
 
     Args:
         prefix: "files_api" / "context_cache" / "agent_llm"
         key: 해시 값 (checksum / hash_key / cache_key)
-        timeout: 전체 대기 timeout (= standby_ttl_seconds)
+        timeout: 전체 대기 timeout (= standby_ttl_seconds). 재획득 standby 의 TTL 로도 쓴다
+            (호출부가 try_acquire_standby 에 넘기는 값과 동일).
         find_cache_fn: 본 캐시 조회 함수 (sync 또는 async callable)
 
     Returns:
-        HIT → 캐시 dict, MISS/timeout → None
+        WaitResult — kind 가 "cached" / "failed" / "lead" 중 하나.
+
+    Raises:
+        CacheError: _MAX_TIMEOUT_ROUNDS 를 소진하도록 leader 가 매달려 완료 못 함(fail-fast).
+        RuntimeError: 대기 중 Redis 미연결(M3).
     """
     standby_key = _make_standby_key(prefix, key)
-    delay = _BACKOFF_INITIAL
-    elapsed = 0.0
 
-    while elapsed < timeout:
-        await asyncio.sleep(delay)
-        elapsed += delay
+    for round_no in range(1, _MAX_TIMEOUT_ROUNDS + 1):
+        delay = _BACKOFF_INITIAL
+        elapsed = 0.0
 
-        # 본 캐시 재조회 (HIT면 종료)
-        if find_cache_fn is not None:
-            result = find_cache_fn()
-            if inspect.isawaitable(result):
-                result = await result
+        while elapsed < timeout:
+            await asyncio.sleep(delay)
+            elapsed += delay
+
+            # 1. 본 캐시 재조회 (HIT면 종료 — leader 성공)
+            result = await _check_cache(find_cache_fn)
             if result:
-                return result
+                return WaitResult(kind="cached", data=result)
 
-        # standby 폴링 — 단절 시 None 폴백(strict-read 미지원), 호출자가 자기 작업 수행
-        if await asyncio.to_thread(RedisManager().get, standby_key) is None:
-            return None
+            # 2. leader 실패 기록 — 재시도 없이 원본 에러 전파
+            failure = await _find_failure(prefix, key)
+            if failure:
+                logger.info(
+                    "leader 실패 기록 감지 — 재시도 없이 전파: prefix=%s, key=%s, error=%s",
+                    prefix, key[:16] if key else "", failure.get("class"),
+                )
+                return WaitResult(kind="failed", error=_reconstruct_error(failure))
 
-        # 다음 대기 간격
-        delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
+            # 3. standby 폴링 — 단절 시 None 폴백(strict-read 미지원)
+            if await asyncio.to_thread(RedisManager().get, standby_key) is None:
+                # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
+                # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
+                # 재획득 직후 캐시를 한 번 더 본다(방금 leader 가 채웠을 수 있다).
+                verdict = await _reacquire_or_cached(prefix, key, timeout, find_cache_fn)
+                if verdict is not None:
+                    return verdict
+                # 다른 대기자가 leader 가 됨 → 계속 대기
 
-    # timeout — Y' Hybrid (호출자가 작업 시작)
+            # 다음 대기 간격
+            delay = min(delay * _BACKOFF_MULTIPLIER, _BACKOFF_CAP)
+
+        # 4. timeout — leader 가 실패도 완료도 못 한 채 매달렸다.
+        # standby TTL 도 timeout 과 같으므로 대개 만료됐다 → 재획득되면 내가 새 leader.
+        # 재획득에 실패했다면 **다른 대기자가 방금 leader 가 된 것**이므로, 곧장 자기가
+        # 일하지 말고(=herd) 그 leader 를 기다린다. 재획득 결과를 버리고 전원 LEAD 를
+        # 주던 것이 C2 herd 의 원인이었다. 재획득 성공 시에도 캐시를 한 번 더 본다.
+        verdict = await _reacquire_or_cached(prefix, key, timeout, find_cache_fn)
+        if verdict is not None:
+            if verdict.kind == "lead":
+                logger.warning(
+                    "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
+                    timeout, standby_key,
+                )
+            return verdict
+        logger.info(
+            "standby timeout(%d초) — 다른 대기자가 leader 로 승격, 계속 대기 (round %d/%d)",
+            timeout, round_no, _MAX_TIMEOUT_ROUNDS,
+        )
+
+    # 라운드 소진 — leader 가 연달아 매달렸다. 정상 경우(승격 1회 후 성공)는 여기 오지 않는다;
+    # 여기까지 오려면 leader 가 라운드마다 연속으로 조용히 매달려야 한다(극히 드문 꼬리).
+    # 구 Y' Hybrid 는 여기서 lead(자기 작업)를 돌려줬는데, 여러 대기자가 함께 소진하면 herd 가
+    # 됐다. 이제는 fail-fast — 정말 막힌 자원은 즉시 실패시키고 사용자가 재시도한다(docs/31 §3-9).
+    # 이로써 herd 는 어떤 경로에서도 0 이 된다.
     logger.warning(
-        "standby 대기 timeout(%d초) 초과 — 호출자가 작업 시작. "
-        "standby_key=%s, 중복 발생 가능. 빈도 높으면 standby_ttl_seconds 늘리세요.",
-        timeout, standby_key,
+        "standby %d 라운드(%d초×%d) 대기 후에도 미완료 — 실패 전파(중복 방지). standby_key=%s",
+        _MAX_TIMEOUT_ROUNDS, timeout, _MAX_TIMEOUT_ROUNDS, standby_key,
     )
-    return None
+    raise CacheError(
+        f"dedup: leader 가 {_MAX_TIMEOUT_ROUNDS} 라운드"
+        f"({timeout}초×{_MAX_TIMEOUT_ROUNDS}) 안에 완료하지 못했습니다 — 재시도하세요."
+    )
 
 
-async def release_standby(prefix: str, key: str) -> None:
-    """standby DEL. finally 블록용.
+async def _check_cache(find_cache_fn: Callable[[], Any] | None) -> Any:
+    """find_cache_fn 을 호출해 결과를 돌려준다 (sync/async 모두 허용). 없으면 None."""
+    if find_cache_fn is None:
+        return None
+    result = find_cache_fn()
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
-    Redis 미연결/장애 시 예외는 삼킴 — 호출자 흐름 방해 방지.
-    남은 standby는 TTL로 자연 정리됨.
+
+async def _reacquire_or_cached(
+    prefix: str,
+    key: str,
+    timeout: int,
+    find_cache_fn: Callable[[], Any] | None,
+) -> WaitResult | None:
+    """standby 재획득을 시도하되, **락을 잡은 뒤 캐시를 한 번 더 본다**(double-checked locking).
+
+    반환:
+        WaitResult(cached) — 재획득 직전에 leader 가 완주해 캐시를 채운 경우. 방금 잡은
+                             락은 안 쓸 것이므로 반납한다.
+        WaitResult(lead)   — 재획득 성공, 캐시는 여전히 비어 있음. 자기가 작업한다.
+        None               — 재획득 실패(다른 요청이 잡음). 호출자는 계속 대기.
+
+    왜 재확인이 필요한가(docs/31 §3-8): 대기자의 폴링 1회는 캐시(경로 1)와 standby(경로 3)를
+    **다른 시점에** 확인한다. 그 사이에 leader 가 완주(캐시 저장 → 락 해제)하면, 대기자는
+    "캐시도 없고 락도 없다 = 내가 leader"라고 오판한다. "저장이 해제보다 먼저"는 leader 쪽
+    필요조건일 뿐이고, 대기자가 **락을 잡은 뒤** 캐시를 다시 봐야 충분조건이 된다.
+
+    Redis 미연결이면 `try_acquire_standby` 의 RuntimeError 를 그대로 올린다(M3, docs/31 §3-7).
     """
+    token = await try_acquire_standby(prefix, key, timeout)
+    if token is None:
+        return None  # 다른 요청이 leader 가 됨 → 계속 대기
+    # 락을 잡았다 — 그 직전에 leader 가 캐시를 채웠을 수 있으니 한 번 더 확인
+    result = await _check_cache(find_cache_fn)
+    if result:
+        await release_standby(prefix, key, token)  # 안 쓸 락 반납
+        return WaitResult(kind="cached", data=result)
+    return WaitResult(kind="lead", token=token)
+
+
+async def release_standby(prefix: str, key: str, token: str | None) -> None:
+    """standby 해제 — **내 토큰일 때만** 삭제한다 (compare_and_delete). finally 블록용.
+
+    소유권 검사가 필요한 이유(docs/31 §3-6): standby TTL 만료로 락이 다른 요청에 넘어간
+    뒤 옛 leader 가 늦게 끝나면, 무조건 DEL 은 **새 leader 의 락을 지운다**. 그 순간
+    뒤이어 도착한 요청들이 줄줄이 leader 가 되어 herd 가 자기증식한다.
+
+    token=None 이면 no-op — 락 없이 진행한 요청(Redis 장애 폴백)은 지울 락이 없다.
+
+    compare_and_delete 의 False 는 "해제 실패"가 아니라 "이미 내 소유가 아님"(TTL 만료
+    후 남이 잡음 / 이미 해제됨)이다. 정상 상황이므로 에러로 다루지 않는다.
+
+    Redis 미연결/장애 시 예외는 삼킴 — 호출자 흐름(원본 예외 전파) 방해 방지.
+    남은 standby 는 TTL 로 자연 정리된다.
+    """
+    if token is None:
+        return
     try:
         standby_key = _make_standby_key(prefix, key)
-        await asyncio.to_thread(RedisManager().delete, standby_key)
+        deleted = await asyncio.to_thread(
+            RedisManager().compare_and_delete, standby_key, token,
+        )
+        if not deleted:
+            logger.info(
+                "standby 이미 내 소유가 아님 (TTL 만료 후 승계 / 이미 해제) — 건너뜀: "
+                "prefix=%s, key=%s",
+                prefix, key[:16] if key else "",
+            )
     except Exception:
         logger.exception(
             "standby release 실패 (무시, TTL로 자연 정리): prefix=%s, key=%s",
