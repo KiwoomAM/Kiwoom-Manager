@@ -278,12 +278,9 @@ async def wait_for_standby_release(
             elapsed += delay
 
             # 1. 본 캐시 재조회 (HIT면 종료 — leader 성공)
-            if find_cache_fn is not None:
-                result = find_cache_fn()
-                if inspect.isawaitable(result):
-                    result = await result
-                if result:
-                    return WaitResult(kind="cached", data=result)
+            result = await _check_cache(find_cache_fn)
+            if result:
+                return WaitResult(kind="cached", data=result)
 
             # 2. leader 실패 기록 — 재시도 없이 원본 에러 전파
             failure = await _find_failure(prefix, key)
@@ -298,9 +295,10 @@ async def wait_for_standby_release(
             if await asyncio.to_thread(RedisManager().get, standby_key) is None:
                 # leader 가 기록 없이 사라짐(성공했는데 캐시 MISS / eviction / Redis 단절).
                 # 곧장 자기가 일하지 않고 SETNX 부터 — 동시에 깨어나도 하나만 leader.
-                token = await _try_reacquire(prefix, key, timeout)
-                if token is not None:
-                    return WaitResult(kind="lead", token=token)
+                # 재획득 직후 캐시를 한 번 더 본다(방금 leader 가 채웠을 수 있다).
+                verdict = await _reacquire_or_cached(prefix, key, timeout, find_cache_fn)
+                if verdict is not None:
+                    return verdict
                 # 다른 대기자가 leader 가 됨 → 계속 대기
 
             # 다음 대기 간격
@@ -310,14 +308,15 @@ async def wait_for_standby_release(
         # standby TTL 도 timeout 과 같으므로 대개 만료됐다 → 재획득되면 내가 새 leader.
         # 재획득에 실패했다면 **다른 대기자가 방금 leader 가 된 것**이므로, 곧장 자기가
         # 일하지 말고(=herd) 그 leader 를 기다린다. 재획득 결과를 버리고 전원 LEAD 를
-        # 주던 것이 C2 herd 의 원인이었다.
-        token = await _try_reacquire(prefix, key, timeout)
-        if token is not None:
-            logger.warning(
-                "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
-                timeout, standby_key,
-            )
-            return WaitResult(kind="lead", token=token)
+        # 주던 것이 C2 herd 의 원인이었다. 재획득 성공 시에도 캐시를 한 번 더 본다.
+        verdict = await _reacquire_or_cached(prefix, key, timeout, find_cache_fn)
+        if verdict is not None:
+            if verdict.kind == "lead":
+                logger.warning(
+                    "standby 대기 timeout(%d초) 초과 — 재획득 성공, 자기가 작업. standby_key=%s",
+                    timeout, standby_key,
+                )
+            return verdict
         logger.info(
             "standby timeout(%d초) — 다른 대기자가 leader 로 승격, 계속 대기 (round %d/%d)",
             timeout, round_no, _MAX_TIMEOUT_ROUNDS,
@@ -332,18 +331,46 @@ async def wait_for_standby_release(
     return WaitResult(kind="lead")
 
 
-async def _try_reacquire(prefix: str, key: str, ttl_seconds: int) -> str | None:
-    """standby 재획득 시도 → 소유자 토큰 / None(다른 요청이 잡고 있음 → 계속 대기).
+async def _check_cache(find_cache_fn: Callable[[], Any] | None) -> Any:
+    """find_cache_fn 을 호출해 결과를 돌려준다 (sync/async 모두 허용). 없으면 None."""
+    if find_cache_fn is None:
+        return None
+    result = find_cache_fn()
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
-    Redis 미연결이면 `try_acquire_standby` 의 RuntimeError 를 **그대로 올린다**(M3).
-    예전엔 이걸 삼키고 "락 없이 자기가 작업"으로 강등했는데, 그러면 Redis 블립 한 번에
-    대기자 전원이 leader 가 되어 herd 가 부활한다 — 정확히 없애려던 그 사고다.
 
-    진입 경로(`try_acquire_standby`)는 이미 Redis 미연결 시 RuntimeError 로 요청을
-    실패시킨다. 즉 "Redis 가 없으면 llm-manager 는 못 쓴다"가 이미 계약이고, 대기 경로만
-    관대할 이유가 없다 — Redis 없이는 dedup 자체가 성립하지 않는다(docs/31 §3-7).
+async def _reacquire_or_cached(
+    prefix: str,
+    key: str,
+    timeout: int,
+    find_cache_fn: Callable[[], Any] | None,
+) -> WaitResult | None:
+    """standby 재획득을 시도하되, **락을 잡은 뒤 캐시를 한 번 더 본다**(double-checked locking).
+
+    반환:
+        WaitResult(cached) — 재획득 직전에 leader 가 완주해 캐시를 채운 경우. 방금 잡은
+                             락은 안 쓸 것이므로 반납한다.
+        WaitResult(lead)   — 재획득 성공, 캐시는 여전히 비어 있음. 자기가 작업한다.
+        None               — 재획득 실패(다른 요청이 잡음). 호출자는 계속 대기.
+
+    왜 재확인이 필요한가(docs/31 §3-8): 대기자의 폴링 1회는 캐시(경로 1)와 standby(경로 3)를
+    **다른 시점에** 확인한다. 그 사이에 leader 가 완주(캐시 저장 → 락 해제)하면, 대기자는
+    "캐시도 없고 락도 없다 = 내가 leader"라고 오판한다. "저장이 해제보다 먼저"는 leader 쪽
+    필요조건일 뿐이고, 대기자가 **락을 잡은 뒤** 캐시를 다시 봐야 충분조건이 된다.
+
+    Redis 미연결이면 `try_acquire_standby` 의 RuntimeError 를 그대로 올린다(M3, docs/31 §3-7).
     """
-    return await try_acquire_standby(prefix, key, ttl_seconds)
+    token = await try_acquire_standby(prefix, key, timeout)
+    if token is None:
+        return None  # 다른 요청이 leader 가 됨 → 계속 대기
+    # 락을 잡았다 — 그 직전에 leader 가 캐시를 채웠을 수 있으니 한 번 더 확인
+    result = await _check_cache(find_cache_fn)
+    if result:
+        await release_standby(prefix, key, token)  # 안 쓸 락 반납
+        return WaitResult(kind="cached", data=result)
+    return WaitResult(kind="lead", token=token)
 
 
 async def release_standby(prefix: str, key: str, token: str | None) -> None:

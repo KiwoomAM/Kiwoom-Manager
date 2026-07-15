@@ -96,7 +96,7 @@ class TestAgentLlmStandby:
         assert len(cache_keys) == 1
 
     async def test_timeout_waits_for_slow_leader_instead_of_duplicating(
-        self, mock_collection, fake_redis, fast_backoff, patient_waiter, monkeypatch,
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
     ):
         """A가 LLM을 오래 잡고 있으면 B는 timeout 후에도 **중복 호출하지 않는다**.
 

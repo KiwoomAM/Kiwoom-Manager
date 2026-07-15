@@ -154,17 +154,3 @@ def fast_backoff(monkeypatch):
     """backoff 상수를 짧게 조정하여 timeout 테스트를 빠르게."""
     monkeypatch.setattr(dedup, "_BACKOFF_INITIAL", 0.01)
     monkeypatch.setattr(dedup, "_BACKOFF_CAP", 0.02)
-
-
-@pytest.fixture()
-def patient_waiter(monkeypatch):
-    """timeout 라운드 소진(liveness 탈출구)을 사실상 끄는 fixture.
-
-    C2 수정 후 대기자는 timeout 에서 SETNX 재획득에 실패하면 다음 라운드로 계속 기다리고,
-    _MAX_TIMEOUT_ROUNDS 를 소진해야만 중복을 감수하고 자기가 작업한다. "느린 leader 를
-    기다린다"를 검증하는 테스트가 이 탈출구에 **먼저** 걸리면 결과가 벽시계 타이밍에
-    좌우돼 플래키해진다(부하에 따라 라운드 소진 vs leader 완료 순서가 바뀜).
-    라운드 상한을 크게 잡아 그 경쟁을 제거한다 — 검증 대상은 "중복 작업 0" 이지
-    탈출구 발동 시점이 아니다.
-    """
-    monkeypatch.setattr(dedup, "_MAX_TIMEOUT_ROUNDS", 100)

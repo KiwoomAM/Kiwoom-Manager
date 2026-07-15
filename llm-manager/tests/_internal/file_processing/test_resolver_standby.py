@@ -92,7 +92,7 @@ class TestFilesApiStandby:
         assert uri_a == uri_b == "https://example.com/concurrent-1"
 
     async def test_timeout_waits_for_slow_leader_instead_of_duplicating(
-        self, fake_redis, fast_backoff, patient_waiter, monkeypatch,
+        self, fake_redis, fast_backoff, monkeypatch,
     ):
         """A가 standby를 오래 잡고 있으면 B는 timeout 후에도 **중복 업로드하지 않는다**.
 
@@ -214,7 +214,7 @@ class TestContextCacheStandby:
         assert results[0][1] == results[1][1] == "cachedContents/ctx-1"
 
     async def test_timeout_waits_for_slow_leader_instead_of_duplicating_create(
-        self, fake_redis, fast_backoff, patient_waiter, monkeypatch,
+        self, fake_redis, fast_backoff, monkeypatch,
     ):
         """A가 create를 오래 잡으면 B는 timeout 후 자기가 create (Y' Hybrid)."""
         fi = _pdf_input("ctx_slow.pdf")

@@ -282,7 +282,7 @@ class TestAntiHerdInvariant:
         assert kinds.count("cached") == 9  # 나머지는 승자 결과 재사용
 
     async def test_timeout_does_not_hand_lead_to_everyone(
-        self, fake_redis, fast_backoff, patient_waiter,
+        self, fake_redis, fast_backoff,
     ):
         """C2 회귀 — leader 가 실패하지 않고 '매달려' timeout 에 걸려도 herd 가 되면 안 된다.
 
@@ -312,6 +312,75 @@ class TestAntiHerdInvariant:
         # 아무도 자기가 일하지 않고, 느린 leader 의 결과를 재사용해야 한다
         assert kinds.count("lead") == 0, f"timeout 경로에서 herd 발생: {kinds}"
         assert kinds.count("cached") == 10
+
+
+# ── 재획득 후 캐시 재확인 (double-checked locking) ────────────
+
+
+class TestReacquireRechecksCache:
+    """재획득에 성공해도, 그 직전에 leader 가 완주해 캐시를 채웠으면 `cached` 여야 한다.
+
+    폴링 1회는 캐시(경로 1)와 standby(경로 3)를 **다른 시점에** 확인한다. 그 사이에
+    leader 가 완주(캐시 저장 → 락 해제)하면, 대기자는 "캐시도 없고 락도 없다 = 내가
+    leader"라고 오판한다. "저장이 해제보다 먼저"는 필요조건일 뿐, 대기자가 락을 잡은 뒤
+    **한 번 더** 캐시를 봐야 충분조건이 된다(double-checked locking).
+
+    아래 두 테스트는 leader 완주를 대기자의 캐시 읽기 직후로 고정해 타이밍 없이 100%
+    재현한다 — 경로 3(standby 사라짐)·경로 4(timeout) 각각.
+    """
+
+    async def test_path3_reacquire_sees_just_filled_cache(self, fake_redis, fast_backoff):
+        """경로 3 — standby 가 사라졌을 때 재획득 전에 leader 가 캐시를 채웠으면 cached."""
+        token_leader = await try_acquire_standby("files_api", "k", ttl_seconds=60)
+        real_doc = {"uris": ["u"]}
+        state: dict = {}
+
+        async def find_cache():
+            # 이 읽기는 leader 저장 '직전' 시점 → None. 그리고 곧바로 leader 완주.
+            if "cache" not in state:
+                state["cache"] = real_doc                          # leader: 캐시 저장
+                await release_standby("files_api", "k", token_leader)  # leader: 락 해제
+                return None
+            return state.get("cache")
+
+        verdict = await wait_for_standby_release(
+            "files_api", "k", timeout=5, find_cache_fn=find_cache,
+        )
+        assert verdict.kind == "cached", (
+            f"leader 성공했는데 대기자가 중복 실행(lead): {verdict.kind}"
+        )
+        assert verdict.data == real_doc
+
+    async def test_path4_timeout_reacquire_sees_just_filled_cache(
+        self, fake_redis, fast_backoff,
+    ):
+        """경로 4 — timeout 도달 후 재획득 전에 leader 가 캐시를 채웠으면 cached.
+
+        standby 는 leader 가 끝까지 들고 있다가(대기자는 timeout) 완주 시점에 캐시 저장 +
+        해제한다. timeout 재획득 직전에 캐시가 채워진 상황을 결정적으로 만든다.
+        """
+        token_leader = await try_acquire_standby("files_api", "k", ttl_seconds=60)
+        real_doc = {"uris": ["u"]}
+        state: dict = {}
+
+        async def find_cache():
+            # 캐시는 계속 MISS 이다가, 대기자가 timeout 에 이르러 마지막 캐시 확인을 할 때
+            # leader 가 막 완주한다 → 이 읽기는 None, 직후 standby 도 사라진다.
+            if "cache" not in state:
+                state["cache"] = real_doc
+                await release_standby("files_api", "k", token_leader)
+                return None
+            return state.get("cache")
+
+        # timeout 을 짧게(1초) → 몇 번의 폴링 뒤 timeout 경로로 들어가 재획득한다.
+        # 위 find_cache 는 첫 호출에서만 None+완주 이므로, 그 뒤 timeout 재획득 시
+        # 캐시가 이미 채워져 있다.
+        verdict = await wait_for_standby_release(
+            "files_api", "k", timeout=1, find_cache_fn=find_cache,
+        )
+        assert verdict.kind == "cached", (
+            f"timeout 재획득이 채워진 캐시를 못 봄(lead): {verdict.kind}"
+        )
 
 
 # ── C1 회귀 — 낡은 실패 기록이 재실행을 오염시키면 안 된다 ────
