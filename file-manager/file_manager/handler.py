@@ -37,9 +37,13 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
     await fm.close()
 """
 
+import asyncio
 import logging
 import mimetypes
-from pathlib import PurePosixPath
+import tempfile
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from file_manager import _dedup
@@ -50,6 +54,15 @@ from file_manager.exceptions import MetadataNotFoundError
 logger = logging.getLogger(__name__)
 
 _API_PREFIX = "/v1/files"
+
+# 밀리초 epoch 판별 임계값. 초 단위 epoch은 33658년까지도 10^12에 못 미치고,
+# 밀리초 단위는 2001년 이후로 이미 10^12를 넘으므로 둘을 안전하게 가른다.
+_MTIME_MS_THRESHOLD = 1_000_000_000_000
+
+
+def _demillis(n: int) -> int:
+    """10^12 이상이면 밀리초 epoch으로 보고 초로 환산, 아니면 그대로."""
+    return n // 1000 if n >= _MTIME_MS_THRESHOLD else n
 
 
 class FileManagerHandler:
@@ -101,6 +114,47 @@ class FileManagerHandler:
             "mime_type": mime_type,
             "extension": extension,
         }
+
+    @staticmethod
+    def normalize_mtime(value) -> int:
+        """다양한 표현의 file_mtime을 int(epoch seconds)로 통일.
+
+        소비처마다 제각각인 mtime 표현(정수/정수문자열/ISO 문자열)을
+        build_metadata가 요구하는 int로 맞추는 순수 유틸(HTTP 없음).
+
+        - int/float → int (float는 절삭)
+        - 숫자 문자열("1700000000", "1700000000.9") → int로 절삭
+        - 밀리초 epoch(10^12 이상) → 1000으로 나눠 초로 환산
+        - ISO 8601 문자열("2026-05-11", "2026-01-01T00:00:00Z") → epoch seconds
+        - None / 공백 / str 아님 / 변환 실패 → 0 (메타 식별자로만 쓰이는 폴백)
+
+        주의: 타임존이 없는 ISO 문자열은 서버 로컬 타임존으로 해석된다(호스트 TZ에
+        따라 같은 문자열이 다른 epoch이 될 수 있음). 캐시 식별자로만 쓰이므로 무방하다.
+        """
+        if isinstance(value, (int, float)):
+            return _demillis(int(value))
+        if not isinstance(value, str):
+            return 0
+        text = value.strip()
+        if not text:
+            return 0
+        try:
+            return _demillis(int(text))
+        except ValueError:
+            pass
+        try:
+            # 소수점 숫자 문자열("1700000000.9")도 float 값과 동일하게 절삭 (비대칭 제거).
+            # nan/inf는 int()가 ValueError/OverflowError로 걸러 ISO 파싱으로 넘어간다.
+            return _demillis(int(float(text)))
+        except (ValueError, OverflowError):
+            pass
+        try:
+            # 'Z' 접미사를 표준 +00:00으로 정규화 (Python 3.11 미만 fromisoformat 대응;
+            # 3.11+는 'Z'를 네이티브로 파싱하므로 이 치환은 no-op 안전장치)
+            return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            logger.warning("file_mtime 변환 실패, 0으로 대체: %r", value)
+            return 0
 
     async def check_cache(self, metadata: dict) -> dict:
         """캐시 체크. 캐시 키 3개로 mdb-handler에 직접 질의한다.
@@ -252,6 +306,80 @@ class FileManagerHandler:
         )
         file_path = await self.upload_file(bytes_data, metadata)
         return {**metadata, "file_path": file_path}
+
+    async def register_from_bytes(
+        self, data: bytes, *, file_name: str, file_mtime: int
+    ) -> dict:
+        """바이트에서 바로 등록. build_metadata + register_or_get을 한 번에 흡수.
+
+        소비처가 여기저기 복붙하던 (build_metadata → register_or_get) 2줄을 한 줄로
+        줄인다. file_size는 len(data)로 내부 계산하므로 소비처가 따로 챙기지 않는다
+        (클라이언트가 보낸 크기보다 실제 바이트 길이가 정확).
+
+        Args:
+            data: 파일 바이트
+            file_name: 원본 파일명 (확장자 포함 — mime_type/extension 파생에 쓰임)
+            file_mtime: 파일 수정 시간 (epoch seconds) — 바이트에서 도출 불가라 필수
+
+        Returns:
+            6 필드 dict — metadata + {"file_path": ...} (register_or_get 반환 그대로)
+        """
+        metadata = self.build_metadata(file_name, file_mtime, len(data))
+        return await self.register_or_get(data, metadata)
+
+    async def register_from_path(self, path: Path) -> dict:
+        """경로에서 바로 등록. 경로에서 메타를 도출해 register_from_bytes에 위임.
+
+        file_name(=path.name)·file_mtime(=int(mtime))을 경로에서 도출하고,
+        바이트 읽기는 asyncio.to_thread로 off-loop 처리해 이벤트 루프를 막지 않는다.
+
+        Args:
+            path: 읽어서 등록할 파일 경로
+
+        Returns:
+            6 필드 dict — register_from_bytes 반환 그대로
+
+        Raises:
+            FileNotFoundError: path가 존재하지 않으면 번역 없이 전파.
+        """
+        data = await asyncio.to_thread(path.read_bytes)
+        file_mtime = int(path.stat().st_mtime)
+        return await self.register_from_bytes(
+            data, file_name=path.name, file_mtime=file_mtime
+        )
+
+    @asynccontextmanager
+    async def materialize_to_tempfile(self, data: bytes, *, suffix: str = ""):
+        """바이트를 임시파일로 떨궈 Path를 yield하고, 종료 시 unlink.
+
+        file-manager는 파일을 바이트로 돌려주는데 하류 추출기(pandas·PyMuPDF 등)는
+        경로(Path)를 요구한다. 그 "바이트 → 임시 Path → 사용 후 정리" 패턴을 흡수한다.
+        쓰기는 asyncio.to_thread로 off-loop 처리하고, 정리는 정상·예외 경로 모두 보장한다.
+
+        Args:
+            data: 임시파일에 쓸 바이트
+            suffix: 임시파일 확장자 (예: ".pdf") — 확장자 기반 추출기 대응
+
+        Yields:
+            생성된 임시파일 Path (블록을 벗어나면 삭제됨)
+        """
+        def _write() -> str:
+            tf = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            try:
+                with tf:
+                    tf.write(data)
+            except Exception:
+                # 쓰기 실패 시 orphan 방지 — 이름 반환 전이라 바깥 finally가 못 지운다
+                Path(tf.name).unlink(missing_ok=True)
+                raise
+            return tf.name
+
+        name = await asyncio.to_thread(_write)
+        path = Path(name)
+        try:
+            yield path
+        finally:
+            path.unlink(missing_ok=True)
 
     async def close(self) -> None:
         """HTTP 클라이언트 + mdb 클라이언트 연결 종료."""
