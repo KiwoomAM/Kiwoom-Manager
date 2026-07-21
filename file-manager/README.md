@@ -151,6 +151,17 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 | `await upload_file(file_data, metadata)` | `str` | file-handler에 파일 저장 + mdb-handler에 MongoDB 레코드 생성. file-handler가 생성한 `file_path`를 반환 |
 | `await register_or_get(bytes_data, metadata)` | `dict` (6필드) | `check_cache` + `upload_file` 합성 — miss 면 upload, hit 이면 skip. metadata + `{file_path}` 반환 |
 
+#### 편의 메서드 (이슈 #81)
+
+`build_metadata`+`register_or_get` 조합과 임시파일·mtime 처리를 소비처가 매번 재구현하던 보일러플레이트를 흡수합니다.
+
+| 메서드 | 반환값 | 설명 |
+|--------|--------|------|
+| `await register_from_bytes(data, *, file_name, file_mtime)` | `dict` (6필드) | `build_metadata`+`register_or_get`을 한 줄로. `file_size`는 `len(data)`로 내부 계산 |
+| `await register_from_path(path)` | `dict` (6필드) | 경로에서 `file_name`·`file_mtime` 도출 후 등록. 바이트 읽기는 `asyncio.to_thread`로 off-loop. 경로 없으면 `FileNotFoundError` 전파 |
+| `async with materialize_to_tempfile(data, *, suffix="")` | `Path` (context manager) | 바이트를 임시파일로 떨궈 `Path`를 yield, 블록 종료 시(정상·예외 모두) `unlink` |
+| `normalize_mtime(value)` (staticmethod) | `int` | int·float·숫자 문자열(소수점 포함)·ISO 8601을 int epoch seconds로 통일. 10^12 이상은 밀리초로 보고 초 환산, 실패 시 0 |
+
 #### 조회
 
 | 메서드 | 반환값 | 설명 |
@@ -247,6 +258,60 @@ result = await fm.register_or_get(file_data, metadata)
 ```
 
 같은 파일에 여러 작업이 필요할 때 `result` 를 자기 DB 에 저장 후 재사용하면 bytes 재전송 / 재업로드 없이 `file_path` 로만 작업 가능.
+
+### 편의 메서드 — before / after (이슈 #81)
+
+각 서비스 repo에 흩어져 재구현되던 패턴을 SDK 메서드로 흡수합니다.
+
+**바이트 등록** — `build_metadata`+`register_or_get` 2줄을 한 줄로:
+
+```python
+# before
+metadata = fm.build_metadata(file_name, file_mtime, len(data))
+result = await fm.register_or_get(data, metadata)
+
+# after
+result = await fm.register_from_bytes(data, file_name=file_name, file_mtime=file_mtime)
+```
+
+**경로 등록** — `stat()`·`int(mtime)`·off-loop 읽기 조합을 한 줄로:
+
+```python
+# before
+stat = path.stat()
+metadata = fm.build_metadata(path.name, int(stat.st_mtime), stat.st_size)
+data = await asyncio.to_thread(path.read_bytes)
+result = await fm.register_or_get(data, metadata)
+
+# after
+result = await fm.register_from_path(path)
+```
+
+**임시파일화** — 경로를 요구하는 하류 추출기(pandas·PyMuPDF 등)에 넘길 때:
+
+```python
+# before
+with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tf:
+    tf.write(pdf_bytes)
+    tmp_path = Path(tf.name)
+try:
+    result = extractor(tmp_path)
+finally:
+    tmp_path.unlink(missing_ok=True)
+
+# after
+async with fm.materialize_to_tempfile(pdf_bytes, suffix=".pdf") as tmp_path:
+    result = extractor(tmp_path)        # 종료 시 자동 정리 (예외 경로 포함)
+```
+
+**mtime 정규화** — 브라우저발 ISO 문자열·밀리초 epoch을 int 초로:
+
+```python
+# before: 소비처마다 변환 로직 재구현 (MN의 _to_int_mtime 등)
+# after
+file_mtime = FileManagerHandler.normalize_mtime(raw_mtime)   # "2026-01-01T09:00:00" / 1700000000000 → int 초
+result = await fm.register_from_bytes(data, file_name=name, file_mtime=file_mtime)
+```
 
 ## 주의사항
 
