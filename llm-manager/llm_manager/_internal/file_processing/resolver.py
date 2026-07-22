@@ -792,7 +792,9 @@ async def _resolve_pools(
     # inline 분기의 목적(작은 파일을 굳이 Files API 로 안 올림)은 '캐시 안 할 때' 얘기라,
     # 캐시를 켠 경우엔 나누지 않고 전부 캐시 대상으로 보낸다.
     if context_cache_ttl is not None:
-        logger.warning(
+        # ttl 지정 시 매 요청 뜨는 상시 알림이라 warning → debug 강등
+        # (진짜 warning 을 덮었다). 동작 자체는 스킬 문서에 명시.
+        logger.debug(
             "context_cache_ttl=%d 지정 — 크기 분기 없이 전 파일 Files API 경로로 승급",
             context_cache_ttl,
         )
