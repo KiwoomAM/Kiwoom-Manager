@@ -175,6 +175,37 @@ class TestUploadPdfParts:
         assert len(refs) == 1
         assert part_ranges is None
 
+    @pytest.mark.asyncio
+    async def test_cleaned_single_part_returns_ranges_not_none(self, tmp_path):
+        """정리 사본이 단일 파트가 되면 part_ranges 는 None 이 아니라 [(1, N)] 이고,
+        그 임시 사본은 업로드 후 회수된다.
+
+        split_pdf 가 사슬 정리 사본을 만들었는데 임계 아래로 내려가 단일 파트가 되는
+        경로(docs/34 §4·§8-1의 52.9MB 파일). 원본 경로가 아니므로 uploader 의
+        `parts[0] == path` 비분할 분기에 걸리지 않는다.
+        """
+        pdf_path = str(tmp_path / "orig.pdf")
+        _create_pdf(pdf_path, num_pages=7)
+
+        # split_pdf 가 원본이 아닌 단일 임시 파트를 돌려주는 상황을 스텁한다
+        cleaned = str(tmp_path / "cleaned_part.pdf")
+        _create_pdf(cleaned, num_pages=7)
+
+        with patch(
+            "llm_manager._internal.file_processing.uploader.split_pdf",
+            return_value=[cleaned],
+        ), patch(
+            "llm_manager._internal.file_processing.uploader.upload_file",
+            new_callable=AsyncMock,
+            return_value=_fake_file_ref(),
+        ):
+            refs, part_ranges = await upload_pdf_parts(pdf_path)
+
+        assert len(refs) == 1
+        assert part_ranges == [(1, 7)], "정리 사본 단일 파트는 [(1, N)] 이어야 한다"
+        assert not os.path.exists(cleaned), "임시 사본이 회수되어야 한다"
+        assert os.path.exists(pdf_path), "원본은 건드리지 않아야 한다"
+
 
 # ── create_context_cache ─────────────────────────────────────
 

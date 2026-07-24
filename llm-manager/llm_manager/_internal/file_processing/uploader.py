@@ -40,13 +40,19 @@ async def upload_pdf_parts(
     Returns:
         ``(refs, pdf_part_ranges)`` 튜플.
         ``refs``: 업로드된 FileRef 리스트.
-        ``pdf_part_ranges``: 분할된 경우 파트별 원본 페이지 범위(1-based, 끝 포함,
-        업로드 순서). 병합·캡을 거친 **최종 파트 파일**에서 페이지수를 직접 세어 누적하므로
-        경계가 항상 실제와 일치한다. 분할 안 된 경우(단일 파트)는 ``None``.
+        ``pdf_part_ranges``: 파트별 원본 페이지 범위(1-based, 끝 포함, 업로드 순서). 병합·캡을
+        거친 **최종 파트 파일**에서 페이지수를 직접 세어 누적하므로 경계가 항상 실제와 일치한다.
+
+        ``None`` 은 **원본이 그대로 반환된 경우에만** 반환한다(``split_pdf`` 가 ``[path]``).
+        주의 — split_pdf 가 사슬 정리 사본을 만들었는데 그 사본이 임계 아래로 내려가 단일
+        파트가 되면(docs/34 §4·§8-1의 52.9MB 파일 사례), 여기서 ``[(1, N)]`` 이 나온다.
+        값은 정확하다. 다만 "분할되었는가"를 ``pdf_part_ranges is not None`` 으로 판정하면
+        이 경우 오독하므로, 소비처는 ``len(...) >= 2`` 로 분할 여부를 본다(Kiwoom-ESG 관례).
     """
     parts = split_pdf(path, target_mb, max_pages)
 
-    # 원본 그대로 반환된 경우 (분할 불필요)
+    # 원본 그대로 반환된 경우 (분할 불필요) — 정리 사본이 단일 파트가 된 경우는 여기에
+    # 걸리지 않고 아래로 내려가 pdf_part_ranges 를 채운다.
     if len(parts) == 1 and parts[0] == path:
         ref = await upload_file(path, mime_type="application/pdf")
         return [ref], None
