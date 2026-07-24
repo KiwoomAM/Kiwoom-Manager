@@ -581,6 +581,33 @@ class TestSplitPdf:
             doc.close()
         splitter_mod._cleanup(temps, keep=pdf_path)
 
+    def test_annot_xrefs_handles_nonzero_generation(self, tmp_path):
+        """generation 이 0 이 아닌 참조도 잡는다.
+
+        PDF 간접 참조는 `12 3 R` 처럼 generation != 0 일 수 있고, 증분 갱신을 거친
+        파일에서 실제로 나타난다. `(\\d+) 0 R` 로만 잡으면 그 주석이 목록에서 조용히 빠져
+        1단계가 사슬을 끊지 못하고 손실 있는 2단계로 강등된다.
+        """
+        pdf_path = str(tmp_path / "gen.pdf")
+        _create_pdf(pdf_path, num_pages=1)
+
+        doc = fitz.open(pdf_path)
+        try:
+            annot = doc.get_new_xref()
+            doc.update_object(annot, "<</Type/Annot/Subtype/Widget/Rect[0 0 10 10]>>")
+            # generation 을 3 으로 만든 참조를 /Annots 에 넣는다
+            doc.xref_set_key(doc[0].xref, "Annots", f"[{annot} 3 R]")
+            doc.saveIncr()
+        finally:
+            doc.close()
+
+        doc = fitz.open(pdf_path)
+        try:
+            found = splitter_mod._annot_xrefs(doc, doc[0].xref)
+            assert annot in found, f"generation!=0 참조를 놓쳤다 (found={found})"
+        finally:
+            doc.close()
+
     @pytest.mark.parametrize("indirect", [False, True], ids=["direct", "indirect"])
     def test_empty_annots_array_skips_retry(self, tmp_path, monkeypatch, indirect):
         """뗄 주석이 실제로 없으면(빈 /Annots 배열) 사본을 만들지 않고 바로 거부한다.

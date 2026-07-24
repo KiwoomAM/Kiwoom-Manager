@@ -99,7 +99,7 @@ def _estimate_page_sizes(doc: fitz.Document, file_size: int) -> list[float]:
 
 
 def _group_pages(
-    page_sizes: list[float], target_bytes: float, target_mb: int
+    page_sizes: list[float], target_bytes: float, target_mb: float
 ) -> list[list[int]]:
     """누적 추정 크기가 target_bytes를 넘지 않도록 페이지를 그룹으로 묶는다."""
     groups: list[list[int]] = []
@@ -305,13 +305,16 @@ def _annot_xrefs(doc: fitz.Document, page_xref: int) -> list[int]:
 
     /Annots 는 직접 배열("array")로도 간접 참조("xref")로도 온다 — 간접이면 배열 실물을
     열어야 한다(_has_annots 와 같은 이유). 실물 보고서가 쓰는 형태다(예: /Annots 1844 0 R).
+
+    참조의 generation 은 0 이 아닐 수 있다(증분 갱신을 거친 파일). `(\\d+) \\d+ R` 로 넓게
+    잡는다 — 이 문맥은 참조만 담기므로 오탐 위험이 사실상 없다.
     """
     kind, value = doc.xref_get_key(page_xref, "Annots")
     if kind == "null":
         return []
     if kind == "xref":
         value = doc.xref_object(int(value.split()[0]), compressed=True)
-    return [int(m) for m in re.findall(r"(\d+) 0 R", value)]
+    return [int(m) for m in re.findall(r"(\d+) \d+ R", value)]
 
 
 def _strip_chains_copy(path: str, created_temps: list[str]) -> str:
@@ -332,9 +335,12 @@ def _strip_chains_copy(path: str, created_temps: list[str]) -> str:
     doc = fitz.open(path)
     try:
         root = int(doc.xref_get_key(-1, "Root")[1].split()[0])
-        for key in doc.xref_get_keys(root):
-            if key not in _CATALOG_KEEP:
-                doc.xref_set_key(root, key, "null")
+        stripped = [k for k in doc.xref_get_keys(root) if k not in _CATALOG_KEEP]
+        for key in stripped:
+            doc.xref_set_key(root, key, "null")
+        # 어떤 파일의 렌더링이 이상할 때 무엇을 뗐는지 남긴다. 화이트리스트가 과하게 떼면
+        # 거부가 아니라 조용한 손실로 나타나므로(예: /AcroForm + NeedAppearances) 빵부스러기가 된다.
+        logger.debug("카탈로그 정리: %s", stripped)
         for page in doc:
             # 페이지 열기 동작도 다른 페이지로 갈 수 있다 (코퍼스 0건 — 예방, docs/34 §10)
             if doc.xref_get_key(page.xref, "AA")[0] != "null":
@@ -380,7 +386,7 @@ def _strip_annots_copy(path: str, created_temps: list[str]) -> str:
     return tmp.name
 
 
-def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str]:
+def split_pdf(path: str, target_mb: float = 50, max_pages: int = 1000) -> list[str]:
     """PDF를 target_mb 이하 AND max_pages 이하 파트로 분할한다.
 
     분할이 걸리지 않으면(_needs_split) 원본 경로를 그대로 돌려주고 사본을 만들지 않는다.
@@ -443,14 +449,14 @@ def split_pdf(path: str, target_mb: int = 50, max_pages: int = 1000) -> list[str
     return parts
 
 
-def _split_once(path: str, target_mb: int, max_pages: int) -> list[str]:
+def _split_once(path: str, target_mb: float, max_pages: int) -> list[str]:
     """주석을 손대지 않고 path 를 한 번 분할한다 (split_pdf 의 본체).
 
     크기 분할(페이지별 바이트 기여도 추정 → 그룹핑 → 초과 시 이등분 재귀)을 먼저 하고,
     결과 파트가 max_pages를 넘으면 ceil(pages/max_pages) 등분해 페이지 캡을 적용한다.
     """
     file_size = os.path.getsize(path)
-    target_bytes = target_mb * 1024 * 1024 * _SAFETY_MARGIN
+    target_bytes = _target_bytes(target_mb)  # _needs_split 과 같은 식 (SSOT)
     limit_bytes = target_mb * 1024 * 1024
 
     size_over = file_size > target_bytes
