@@ -26,7 +26,9 @@ pip install -e packages/file-manager
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `FILE_HANDLER_URL` | `http://192.7.9.45:8600` | File Handler Service URL |
-| `SERVICE_NAME` | (없음) | 파일을 등록하는 **호출 서비스** 식별자. `upload_file`이 저장하는 `file_cache` 메타에 기록된다. 미설정이면 `FMConfigError` — 조회(`check_cache`/`get_file`)는 없어도 동작 |
+| `SERVICE_NAME` | (없음) | 파일을 등록하는 **호출 서비스** 식별자. `upload_file`이 저장하는 `file_cache` 메타에 기록된다. 미설정이면 `FMConfigError` |
+
+**등록 경로(`register_or_get`·`register_from_*`·`upload_file`)는 `SERVICE_NAME`을 요구하고, 순수 조회(`check_cache`·`get_file`)는 없어도 동작한다.** `register_or_get`은 캐시 히트라 업로드를 타지 않는 경우에도 **진입부에서** 검사한다 — 업로드 안에만 가드가 있으면 히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이 들어오는 순간 요청 도중에 터진다.
 
 `SERVICE_NAME`은 file-manager가 아니라 **SDK를 import한 서비스 프로세스**의 환경변수다. ETF 컨테이너에서 부르면 `kiwoom-etf`, ESG에서 부르면 `kiwoom-esg`가 기록된다(각 서비스 `docker-compose.yml`의 `environment:`). 출처·강제 방식은 llm-manager의 `require_service_name`과 같다.
 

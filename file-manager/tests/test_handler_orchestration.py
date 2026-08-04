@@ -15,6 +15,16 @@ def reset_singleton():
     FileManagerHandler.reset()
 
 
+@pytest.fixture(autouse=True)
+def service_name_env(monkeypatch):
+    """등록 경로(register_or_get·upload_file)의 전제조건을 깔아 둔다.
+
+    부재를 검증하는 테스트는 본문에서 각자 ``monkeypatch.delenv`` 한다 —
+    fixture가 가드 자체를 가리지 않도록.
+    """
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
+
+
 async def test_check_cache_hit(monkeypatch):
     captured = {}
 
@@ -224,6 +234,31 @@ _META = {
     "file_name": "규약.pdf", "file_mtime": 1, "file_size": 2,
     "mime_type": "application/pdf", "extension": "pdf",
 }
+
+
+async def test_register_or_get_requires_service_name_even_on_cache_hit(monkeypatch):
+    """캐시 히트여도 진입부에서 SERVICE_NAME을 요구한다.
+
+    가드가 upload_file 안에만 있으면 히트가 나는 동안은 통과하므로, env를 빠뜨린
+    배포가 "처음 보는 파일이 들어오는 순간"에야 요청 도중 터진다. 진입부에서 한 번
+    더 막아 설정 실수가 배포 직후 결정적으로 드러나게 한다.
+    """
+    from file_manager.exceptions import FMConfigError
+
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    fm = FileManagerHandler()
+    calls = {"check": 0}
+
+    async def fake_check(meta):
+        calls["check"] += 1
+        return {"hit": True, "file_path": "existing.pdf"}
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+
+    with pytest.raises(FMConfigError):
+        await fm.register_or_get(b"X", dict(_META))
+
+    assert calls["check"] == 0
 
 
 async def test_register_or_get_cache_hit_skips_standby(monkeypatch):

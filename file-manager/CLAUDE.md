@@ -34,7 +34,13 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 파이프라인 명세는 [`../file-handler/file-manager-pipeline.md`](../file-handler/file-manager-pipeline.md) 참고.
 
 ## SERVICE_NAME (등록 주체)
-`upload_file`은 env `SERVICE_NAME`을 **강제**한다 — 미설정이면 파일 저장 전에 `FMConfigError`로 막고(저장 후 실패는 메타 없는 orphan을 남긴다), 설정돼 있으면 `file_cache` 메타의 `service_name` 필드에 기록한다. 조회(`check_cache`/`get_file`)는 없어도 동작한다.
+등록 경로는 env `SERVICE_NAME`을 **강제**한다 — 설정돼 있으면 `file_cache` 메타의 `service_name` 필드에 기록하고, 없으면 `FMConfigError`. 순수 조회(`check_cache`/`get_file`)는 없어도 동작한다.
+
+검사 지점이 **둘**인 데는 각각 이유가 있다(규칙 자체는 `_require_service_name()` 하나가 SSOT).
+- `upload_file` 진입부 — 파일 저장(POST) **전에** 막는다. 저장 후 실패하면 메타 없는 orphan이 file-handler에 남는다.
+- `register_or_get` 진입부 — 캐시 히트로 업로드를 타지 않는 경우에도 막는다. 업로드 안에만 가드가 있으면 히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이 들어오는 순간 요청 도중에 터진다. llm-manager가 사용 시점이 아니라 요청 진입부(`runner.prepare`)에서 검증하는 것과 동형.
+
+그래서 등록 계열 테스트는 `SERVICE_NAME`이 깔려 있어야 한다 — `tests/`의 autouse fixture `service_name_env`가 담당하고, 부재를 검증하는 테스트만 본문에서 `monkeypatch.delenv` 한다.
 
 file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 **SDK를 import한 서비스 프로세스**의 것이다(ETF 컨테이너면 `kiwoom-etf`). mdb-manager의 `X-Caller-Service`(SDK 정체성 = 항상 `file-manager`)와는 다른 축이니 혼동하지 말 것.
 

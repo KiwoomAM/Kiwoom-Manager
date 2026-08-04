@@ -295,7 +295,16 @@ class FileManagerHandler:
 
         Returns:
             6 필드 dict — metadata + {"file_path": ...}
+
+        Raises:
+            FMConfigError: env SERVICE_NAME 미설정. 캐시 히트로 upload_file을 타지
+                않는 경우에도 **진입부에서** 막는다 — 가드가 업로드 안에만 있으면
+                히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이
+                들어오는 순간 요청 도중에 터진다. 여기서 한 번 더 검사해 배포 직후
+                결정적으로 드러나게 한다(llm-manager가 요청 진입부에서 검증하는 것과 동형).
         """
+        _require_service_name()
+
         hash_meta = {
             "file_name": metadata["file_name"],
             "file_size": metadata["file_size"],
