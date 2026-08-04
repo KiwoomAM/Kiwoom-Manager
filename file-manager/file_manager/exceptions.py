@@ -45,3 +45,14 @@ class MDBConnectionError(FMError):
 
     def __init__(self, message: str = "MDB Handler 연결 실패") -> None:
         super().__init__(message, status_code=503)
+
+
+class FMConfigError(FMError):
+    """SDK 동작에 필요한 설정 누락.
+
+    런타임 장애가 아니라 배포 설정 실수다(예: 업로드 시 SERVICE_NAME 부재).
+    호출자가 재시도로 복구할 수 없으므로 잡지 말고 터뜨리는 것이 정상이다.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=500)

@@ -20,6 +20,12 @@ def reset_singleton():
     FileManagerHandler.reset()
 
 
+@pytest.fixture(autouse=True)
+def service_name_env(monkeypatch):
+    """등록 경로의 전제조건 — register_or_get이 진입부에서 SERVICE_NAME을 요구한다."""
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
+
+
 def _capture_register_or_get(fm):
     """register_or_get을 캡처용으로 교체하고 captured dict를 돌려준다."""
     captured = {}

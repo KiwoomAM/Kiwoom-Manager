@@ -40,6 +40,7 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
 import asyncio
 import logging
 import mimetypes
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -49,7 +50,7 @@ from typing import Optional
 from file_manager import _dedup
 from file_manager._client import AsyncClient
 from file_manager._mdb import close_mdb, find_metadata, insert_metadata
-from file_manager.exceptions import MetadataNotFoundError
+from file_manager.exceptions import FMConfigError, MetadataNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,45 @@ _API_PREFIX = "/v1/files"
 _MTIME_MS_THRESHOLD = 1_000_000_000_000
 
 
+_SERVICE_NAME_REQUIRED = (
+    "file_cache 메타에는 등록 주체(service_name) 식별이 필요합니다. "
+    "SERVICE_NAME 환경변수를 설정하세요."
+)
+
+# get_file이 내보내는 메타 키 — 저장 문서에는 이보다 많은 필드가 있을 수 있다
+# (service_name 등). 문서를 그대로 내보내면 반환 모양이 **파일 등록 시점에 따라**
+# 달라져(옛 문서 6필드 / 새 문서 7필드), 소비처가 `**meta`로 extra="forbid" 모델에
+# 넣을 때 비결정적으로 깨진다. 그래서 반환은 이 집합으로 고정한다.
+_PUBLIC_METADATA_FIELDS = (
+    "file_name",
+    "file_mtime",
+    "file_size",
+    "file_path",
+    "mime_type",
+    "extension",
+)
+
+
 def _demillis(n: int) -> int:
     """10^12 이상이면 밀리초 epoch으로 보고 초로 환산, 아니면 그대로."""
     return n // 1000 if n >= _MTIME_MS_THRESHOLD else n
+
+
+def _require_service_name() -> str:
+    """env ``SERVICE_NAME``을 강제한다. 미설정/빈 값이면 ``FMConfigError``.
+
+    file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 SDK를 import한 **호출
+    서비스 프로세스**의 것이다(ETF 컨테이너면 ``kiwoom-etf``). 그래서 같은 코드가
+    호출한 서비스마다 다른 값을 읽고, 그 덕에 "누가 등록했는지"가 구분된다.
+
+    mdb-manager의 ``X-Caller-Service``(SDK 정체성 = 항상 "file-manager")와는 다른
+    축이다. 이쪽은 **등록 주체**를 가리킨다. 출처·강제 방식은 llm-manager의
+    ``require_service_name``과 같다.
+    """
+    service_name = os.environ.get("SERVICE_NAME")
+    if not service_name:
+        raise FMConfigError(_SERVICE_NAME_REQUIRED)
+    return service_name
 
 
 class FileManagerHandler:
@@ -185,7 +222,13 @@ class FileManagerHandler:
 
         Returns:
             file-handler가 생성한 file_path (UUID.확장자) 문자열
+
+        Raises:
+            FMConfigError: env SERVICE_NAME 미설정. 파일 저장 **전에** 막는다 —
+                저장 후 터지면 메타 없는 orphan 파일이 file-handler에 남는다.
         """
+        service_name = _require_service_name()
+
         files = {"file": (metadata["file_name"], file_data)}
         data = {"extension": metadata["extension"]}
         resp = await self._client.post(
@@ -203,6 +246,7 @@ class FileManagerHandler:
                 "file_path": file_path,
                 "mime_type": metadata["mime_type"],
                 "extension": metadata["extension"],
+                "service_name": service_name,
             }
         }
         await insert_metadata(document)
@@ -219,11 +263,14 @@ class FileManagerHandler:
         Returns:
             (file_data, metadata)
               metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path}
+              저장 문서에 그 밖의 필드(service_name 등)가 있어도 반환에는 싣지 않는다
+              — 등록 시점에 따라 반환 모양이 달라지지 않게 고정한다.
         """
         doc = await find_metadata({"metadata.file_path": file_path})
         if doc is None:
             raise MetadataNotFoundError(file_path)
-        metadata = doc["metadata"]
+        stored = doc["metadata"]
+        metadata = {k: stored[k] for k in _PUBLIC_METADATA_FIELDS if k in stored}
 
         file_data, _headers = await self._client.get_bytes_with_headers(
             f"{_API_PREFIX}/{file_path}"
@@ -248,7 +295,16 @@ class FileManagerHandler:
 
         Returns:
             6 필드 dict — metadata + {"file_path": ...}
+
+        Raises:
+            FMConfigError: env SERVICE_NAME 미설정. 캐시 히트로 upload_file을 타지
+                않는 경우에도 **진입부에서** 막는다 — 가드가 업로드 안에만 있으면
+                히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이
+                들어오는 순간 요청 도중에 터진다. 여기서 한 번 더 검사해 배포 직후
+                결정적으로 드러나게 한다(llm-manager가 요청 진입부에서 검증하는 것과 동형).
         """
+        _require_service_name()
+
         hash_meta = {
             "file_name": metadata["file_name"],
             "file_size": metadata["file_size"],

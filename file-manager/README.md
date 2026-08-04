@@ -26,6 +26,13 @@ pip install -e packages/file-manager
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `FILE_HANDLER_URL` | `http://192.7.9.45:8600` | File Handler Service URL |
+| `SERVICE_NAME` | (없음) | 파일을 등록하는 **호출 서비스** 식별자. `upload_file`이 저장하는 `file_cache` 메타에 기록된다. 미설정이면 `FMConfigError` |
+
+**등록 경로(`register_or_get`·`register_from_*`·`upload_file`)는 `SERVICE_NAME`을 요구하고, 순수 조회(`check_cache`·`get_file`)는 없어도 동작한다.** `register_or_get`은 캐시 히트라 업로드를 타지 않는 경우에도 **진입부에서** 검사한다 — 업로드 안에만 가드가 있으면 히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이 들어오는 순간 요청 도중에 터진다.
+
+`SERVICE_NAME`은 file-manager가 아니라 **SDK를 import한 서비스 프로세스**의 환경변수다. ETF 컨테이너에서 부르면 `kiwoom-etf`, ESG에서 부르면 `kiwoom-esg`가 기록된다(각 서비스 `docker-compose.yml`의 `environment:`). 출처·강제 방식은 llm-manager의 `require_service_name`과 같다.
+
+mdb-manager의 `X-Caller-Service`와 혼동하지 말 것 — 그쪽은 SDK 정체성이라 항상 `file-manager`로 고정 주입되고, `SERVICE_NAME`은 **등록 주체**를 가리킨다.
 
 ## 디렉터리 구조
 
@@ -166,7 +173,7 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전 |
+| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전. 저장 문서에 그 밖의 필드(`service_name` 등)가 있어도 반환은 6필드로 **고정**한다 |
 
 #### 생명주기
 
@@ -180,8 +187,11 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 ```
 FMError                     # 기본 에러 (message, status_code)
 ├── FMConnectionError       # FM Service 연결 실패 (status_code=0)
-└── FMServiceError          # FM Service 에러 응답 (HTTP 4xx/5xx)
+├── FMServiceError          # FM Service 에러 응답 (HTTP 4xx/5xx)
+└── FMConfigError           # 설정 누락 (예: 업로드 시 SERVICE_NAME 부재)
 ```
+
+`FMConfigError`는 재시도로 복구되지 않는 배포 설정 실수다 — 잡아서 폴백하지 말고 터뜨려 고치는 쪽이 맞다.
 
 ```python
 from file_manager import FMConnectionError, FMServiceError

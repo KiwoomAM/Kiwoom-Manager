@@ -15,6 +15,16 @@ def reset_singleton():
     FileManagerHandler.reset()
 
 
+@pytest.fixture(autouse=True)
+def service_name_env(monkeypatch):
+    """등록 경로(register_or_get·upload_file)의 전제조건을 깔아 둔다.
+
+    부재를 검증하는 테스트는 본문에서 각자 ``monkeypatch.delenv`` 한다 —
+    fixture가 가드 자체를 가리지 않도록.
+    """
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
+
+
 async def test_check_cache_hit(monkeypatch):
     captured = {}
 
@@ -61,6 +71,7 @@ async def test_upload_file_stores_then_records_metadata(monkeypatch):
         inserted["doc"] = document
         return "id-1"
 
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
     fm = FileManagerHandler()
     monkeypatch.setattr(fm._client, "post", fake_post)
     monkeypatch.setattr(handler_mod, "insert_metadata", fake_insert)
@@ -86,8 +97,45 @@ async def test_upload_file_stores_then_records_metadata(monkeypatch):
             "file_path": "uuid123.xlsx",
             "mime_type": "application/vnd.ms-excel",
             "extension": "xlsx",
+            "service_name": "kiwoom-test",
         }
     }
+
+
+async def test_upload_file_without_service_name_raises_before_storing(monkeypatch):
+    """SERVICE_NAME 미설정이면 FMConfigError.
+
+    파일 바이트를 저장하기 **전에** 막는다 — 저장 후에 터지면 메타 없는
+    orphan 파일이 file-handler에 남는다(MetadataNotFoundError의 원인).
+    """
+    from file_manager.exceptions import FMConfigError
+
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    calls = {"post": 0, "insert": 0}
+
+    async def fake_post(path, files=None, data=None):
+        calls["post"] += 1
+        return {"file_path": "uuid123.xlsx"}
+
+    async def fake_insert(document):
+        calls["insert"] += 1
+        return "id-1"
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(fm._client, "post", fake_post)
+    monkeypatch.setattr(handler_mod, "insert_metadata", fake_insert)
+
+    metadata = {
+        "file_name": "r.xlsx",
+        "file_mtime": 1713000000,
+        "file_size": 100,
+        "mime_type": "application/vnd.ms-excel",
+        "extension": "xlsx",
+    }
+    with pytest.raises(FMConfigError):
+        await fm.upload_file(b"BYTES", metadata)
+
+    assert calls == {"post": 0, "insert": 0}
 
 
 async def test_get_file_returns_bytes_and_metadata(monkeypatch):
@@ -115,6 +163,39 @@ async def test_get_file_returns_bytes_and_metadata(monkeypatch):
     data, meta = await fm.get_file("uuid123.xlsx")
     assert data == b"BYTES"
     assert meta["file_path"] == "uuid123.xlsx"
+    assert set(meta.keys()) == {
+        "file_name", "file_mtime", "file_size", "file_path", "mime_type", "extension"
+    }
+
+
+async def test_get_file_drops_fields_outside_the_documented_contract(monkeypatch):
+    """저장 문서에 필드가 늘어도 반환은 문서화된 6키 그대로.
+
+    upload_file이 service_name을 저장하면서 저장 문서는 7필드가 됐지만, 옛 문서는
+    여전히 6필드다. 문서를 그대로 내보내면 반환 모양이 **파일 등록 시점에 따라**
+    달라져, 소비처가 `**meta`로 extra="forbid" 모델에 넣을 때 비결정적으로 깨진다.
+    """
+    async def fake_find(filter):
+        return {
+            "metadata": {
+                "file_name": "r.xlsx",
+                "file_mtime": 1713000000,
+                "file_size": 100,
+                "file_path": "uuid123.xlsx",
+                "mime_type": "application/vnd.ms-excel",
+                "extension": "xlsx",
+                "service_name": "kiwoom-etf",
+            }
+        }
+
+    async def fake_get_bytes(path):
+        return b"BYTES", {}
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    monkeypatch.setattr(fm._client, "get_bytes_with_headers", fake_get_bytes)
+
+    _data, meta = await fm.get_file("uuid123.xlsx")
     assert set(meta.keys()) == {
         "file_name", "file_mtime", "file_size", "file_path", "mime_type", "extension"
     }
@@ -153,6 +234,31 @@ _META = {
     "file_name": "규약.pdf", "file_mtime": 1, "file_size": 2,
     "mime_type": "application/pdf", "extension": "pdf",
 }
+
+
+async def test_register_or_get_requires_service_name_even_on_cache_hit(monkeypatch):
+    """캐시 히트여도 진입부에서 SERVICE_NAME을 요구한다.
+
+    가드가 upload_file 안에만 있으면 히트가 나는 동안은 통과하므로, env를 빠뜨린
+    배포가 "처음 보는 파일이 들어오는 순간"에야 요청 도중 터진다. 진입부에서 한 번
+    더 막아 설정 실수가 배포 직후 결정적으로 드러나게 한다.
+    """
+    from file_manager.exceptions import FMConfigError
+
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    fm = FileManagerHandler()
+    calls = {"check": 0}
+
+    async def fake_check(meta):
+        calls["check"] += 1
+        return {"hit": True, "file_path": "existing.pdf"}
+
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+
+    with pytest.raises(FMConfigError):
+        await fm.register_or_get(b"X", dict(_META))
+
+    assert calls["check"] == 0
 
 
 async def test_register_or_get_cache_hit_skips_standby(monkeypatch):
@@ -206,6 +312,40 @@ async def test_register_or_get_acquire_uploads_and_releases(monkeypatch):
     out = await fm.register_or_get(b"X", dict(_META))
     assert out["file_path"] == "new.pdf"
     assert calls == {"upload": 1, "release": 1}
+
+
+async def test_register_or_get_return_keeps_six_field_contract(monkeypatch):
+    """반환 dict는 5 메타 + file_path = 6 필드. service_name이 새어나가면 안 된다.
+
+    소비처(Kiwoom-ESG source_verify)가 `StoredFile(**out)`으로 펼쳐 넣는데
+    StoredFile은 extra="forbid"라, 필드가 하나라도 늘면 ValidationError로 깨진다.
+    service_name은 저장 문서에만 남기고 반환 계약은 건드리지 않는다.
+    """
+    fm = FileManagerHandler()
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        return "new.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return "tok"
+
+    async def fake_release(key, token):
+        pass
+
+    # upload_file을 목으로 막으므로 SERVICE_NAME은 필요 없다 — 이 테스트가 보는 것은
+    # "업로드 결과를 반환 dict에 합칠 때 필드가 늘지 않는가" 하나뿐이다.
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert set(out.keys()) == {
+        "file_name", "file_mtime", "file_size", "mime_type", "extension", "file_path"
+    }
 
 
 async def test_register_or_get_not_acquired_reuses_winner(monkeypatch):
