@@ -61,6 +61,7 @@ async def test_upload_file_stores_then_records_metadata(monkeypatch):
         inserted["doc"] = document
         return "id-1"
 
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
     fm = FileManagerHandler()
     monkeypatch.setattr(fm._client, "post", fake_post)
     monkeypatch.setattr(handler_mod, "insert_metadata", fake_insert)
@@ -86,8 +87,45 @@ async def test_upload_file_stores_then_records_metadata(monkeypatch):
             "file_path": "uuid123.xlsx",
             "mime_type": "application/vnd.ms-excel",
             "extension": "xlsx",
+            "service_name": "kiwoom-test",
         }
     }
+
+
+async def test_upload_file_without_service_name_raises_before_storing(monkeypatch):
+    """SERVICE_NAME 미설정이면 FMConfigError.
+
+    파일 바이트를 저장하기 **전에** 막는다 — 저장 후에 터지면 메타 없는
+    orphan 파일이 file-handler에 남는다(MetadataNotFoundError의 원인).
+    """
+    from file_manager.exceptions import FMConfigError
+
+    monkeypatch.delenv("SERVICE_NAME", raising=False)
+    calls = {"post": 0, "insert": 0}
+
+    async def fake_post(path, files=None, data=None):
+        calls["post"] += 1
+        return {"file_path": "uuid123.xlsx"}
+
+    async def fake_insert(document):
+        calls["insert"] += 1
+        return "id-1"
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(fm._client, "post", fake_post)
+    monkeypatch.setattr(handler_mod, "insert_metadata", fake_insert)
+
+    metadata = {
+        "file_name": "r.xlsx",
+        "file_mtime": 1713000000,
+        "file_size": 100,
+        "mime_type": "application/vnd.ms-excel",
+        "extension": "xlsx",
+    }
+    with pytest.raises(FMConfigError):
+        await fm.upload_file(b"BYTES", metadata)
+
+    assert calls == {"post": 0, "insert": 0}
 
 
 async def test_get_file_returns_bytes_and_metadata(monkeypatch):
@@ -206,6 +244,39 @@ async def test_register_or_get_acquire_uploads_and_releases(monkeypatch):
     out = await fm.register_or_get(b"X", dict(_META))
     assert out["file_path"] == "new.pdf"
     assert calls == {"upload": 1, "release": 1}
+
+
+async def test_register_or_get_return_keeps_six_field_contract(monkeypatch):
+    """반환 dict는 5 메타 + file_path = 6 필드. service_name이 새어나가면 안 된다.
+
+    소비처(Kiwoom-ESG source_verify)가 `StoredFile(**out)`으로 펼쳐 넣는데
+    StoredFile은 extra="forbid"라, 필드가 하나라도 늘면 ValidationError로 깨진다.
+    service_name은 저장 문서에만 남기고 반환 계약은 건드리지 않는다.
+    """
+    fm = FileManagerHandler()
+
+    async def fake_check(meta):
+        return {"hit": False, "file_path": None}
+
+    async def fake_upload(data, meta):
+        return "new.pdf"
+
+    async def fake_acquire(key, ttl_seconds=None):
+        return "tok"
+
+    async def fake_release(key, token):
+        pass
+
+    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
+    monkeypatch.setattr(fm, "check_cache", fake_check)
+    monkeypatch.setattr(fm, "upload_file", fake_upload)
+    monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)
+    monkeypatch.setattr(dedup_mod, "release_standby", fake_release)
+
+    out = await fm.register_or_get(b"X", dict(_META))
+    assert set(out.keys()) == {
+        "file_name", "file_mtime", "file_size", "mime_type", "extension", "file_path"
+    }
 
 
 async def test_register_or_get_not_acquired_reuses_winner(monkeypatch):

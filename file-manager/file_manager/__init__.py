@@ -30,11 +30,12 @@ File Manager Handler - 파일 저장/캐시/반환 관리 모듈
 """
 
 from .handler import FileManagerHandler
-from .exceptions import FMError, FMConnectionError, FMServiceError
+from .exceptions import FMError, FMConfigError, FMConnectionError, FMServiceError
 
 __all__ = [
     "FileManagerHandler",
     "FMError",
+    "FMConfigError",
     "FMConnectionError",
     "FMServiceError",
 ]

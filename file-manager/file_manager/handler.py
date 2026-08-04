@@ -40,6 +40,7 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
 import asyncio
 import logging
 import mimetypes
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -49,7 +50,7 @@ from typing import Optional
 from file_manager import _dedup
 from file_manager._client import AsyncClient
 from file_manager._mdb import close_mdb, find_metadata, insert_metadata
-from file_manager.exceptions import MetadataNotFoundError
+from file_manager.exceptions import FMConfigError, MetadataNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,32 @@ _API_PREFIX = "/v1/files"
 _MTIME_MS_THRESHOLD = 1_000_000_000_000
 
 
+_SERVICE_NAME_REQUIRED = (
+    "file_cache 메타에는 등록 주체(service_name) 식별이 필요합니다. "
+    "SERVICE_NAME 환경변수를 설정하세요."
+)
+
+
 def _demillis(n: int) -> int:
     """10^12 이상이면 밀리초 epoch으로 보고 초로 환산, 아니면 그대로."""
     return n // 1000 if n >= _MTIME_MS_THRESHOLD else n
+
+
+def _require_service_name() -> str:
+    """env ``SERVICE_NAME``을 강제한다. 미설정/빈 값이면 ``FMConfigError``.
+
+    file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 SDK를 import한 **호출
+    서비스 프로세스**의 것이다(ETF 컨테이너면 ``kiwoom-etf``). 그래서 같은 코드가
+    호출한 서비스마다 다른 값을 읽고, 그 덕에 "누가 등록했는지"가 구분된다.
+
+    mdb-manager의 ``X-Caller-Service``(SDK 정체성 = 항상 "file-manager")와는 다른
+    축이다. 이쪽은 **등록 주체**를 가리킨다. 출처·강제 방식은 llm-manager의
+    ``require_service_name``과 같다.
+    """
+    service_name = os.environ.get("SERVICE_NAME")
+    if not service_name:
+        raise FMConfigError(_SERVICE_NAME_REQUIRED)
+    return service_name
 
 
 class FileManagerHandler:
@@ -185,7 +209,13 @@ class FileManagerHandler:
 
         Returns:
             file-handler가 생성한 file_path (UUID.확장자) 문자열
+
+        Raises:
+            FMConfigError: env SERVICE_NAME 미설정. 파일 저장 **전에** 막는다 —
+                저장 후 터지면 메타 없는 orphan 파일이 file-handler에 남는다.
         """
+        service_name = _require_service_name()
+
         files = {"file": (metadata["file_name"], file_data)}
         data = {"extension": metadata["extension"]}
         resp = await self._client.post(
@@ -203,6 +233,7 @@ class FileManagerHandler:
                 "file_path": file_path,
                 "mime_type": metadata["mime_type"],
                 "extension": metadata["extension"],
+                "service_name": service_name,
             }
         }
         await insert_metadata(document)

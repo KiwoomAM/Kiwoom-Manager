@@ -33,5 +33,12 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 
 파이프라인 명세는 [`../file-handler/file-manager-pipeline.md`](../file-handler/file-manager-pipeline.md) 참고.
 
+## SERVICE_NAME (등록 주체)
+`upload_file`은 env `SERVICE_NAME`을 **강제**한다 — 미설정이면 파일 저장 전에 `FMConfigError`로 막고(저장 후 실패는 메타 없는 orphan을 남긴다), 설정돼 있으면 `file_cache` 메타의 `service_name` 필드에 기록한다. 조회(`check_cache`/`get_file`)는 없어도 동작한다.
+
+file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 **SDK를 import한 서비스 프로세스**의 것이다(ETF 컨테이너면 `kiwoom-etf`). mdb-manager의 `X-Caller-Service`(SDK 정체성 = 항상 `file-manager`)와는 다른 축이니 혼동하지 말 것.
+
+`register_or_get`의 **반환 dict는 6필드 그대로**다 — `service_name`은 저장 문서에만 넣는다. 소비처(Kiwoom-ESG `source_verify`)가 `StoredFile(**out)`으로 펼쳐 넣는데 `StoredFile`이 `extra="forbid"`라, 반환에 필드를 더하면 `ValidationError`로 깨진다.
+
 ## 예외
-`FMError` · `FMConnectionError` · `FMServiceError` (from `file_manager`).
+`FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` (from `file_manager`).
