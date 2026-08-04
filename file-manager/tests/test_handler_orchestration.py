@@ -158,6 +158,39 @@ async def test_get_file_returns_bytes_and_metadata(monkeypatch):
     }
 
 
+async def test_get_file_drops_fields_outside_the_documented_contract(monkeypatch):
+    """저장 문서에 필드가 늘어도 반환은 문서화된 6키 그대로.
+
+    upload_file이 service_name을 저장하면서 저장 문서는 7필드가 됐지만, 옛 문서는
+    여전히 6필드다. 문서를 그대로 내보내면 반환 모양이 **파일 등록 시점에 따라**
+    달라져, 소비처가 `**meta`로 extra="forbid" 모델에 넣을 때 비결정적으로 깨진다.
+    """
+    async def fake_find(filter):
+        return {
+            "metadata": {
+                "file_name": "r.xlsx",
+                "file_mtime": 1713000000,
+                "file_size": 100,
+                "file_path": "uuid123.xlsx",
+                "mime_type": "application/vnd.ms-excel",
+                "extension": "xlsx",
+                "service_name": "kiwoom-etf",
+            }
+        }
+
+    async def fake_get_bytes(path):
+        return b"BYTES", {}
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    monkeypatch.setattr(fm._client, "get_bytes_with_headers", fake_get_bytes)
+
+    _data, meta = await fm.get_file("uuid123.xlsx")
+    assert set(meta.keys()) == {
+        "file_name", "file_mtime", "file_size", "file_path", "mime_type", "extension"
+    }
+
+
 async def test_get_file_missing_metadata_raises(monkeypatch):
     from file_manager.exceptions import MetadataNotFoundError
 
@@ -267,7 +300,8 @@ async def test_register_or_get_return_keeps_six_field_contract(monkeypatch):
     async def fake_release(key, token):
         pass
 
-    monkeypatch.setenv("SERVICE_NAME", "kiwoom-test")
+    # upload_file을 목으로 막으므로 SERVICE_NAME은 필요 없다 — 이 테스트가 보는 것은
+    # "업로드 결과를 반환 dict에 합칠 때 필드가 늘지 않는가" 하나뿐이다.
     monkeypatch.setattr(fm, "check_cache", fake_check)
     monkeypatch.setattr(fm, "upload_file", fake_upload)
     monkeypatch.setattr(dedup_mod, "try_acquire_standby", fake_acquire)

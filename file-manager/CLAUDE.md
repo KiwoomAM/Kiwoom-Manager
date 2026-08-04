@@ -38,7 +38,9 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 
 file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 **SDK를 import한 서비스 프로세스**의 것이다(ETF 컨테이너면 `kiwoom-etf`). mdb-manager의 `X-Caller-Service`(SDK 정체성 = 항상 `file-manager`)와는 다른 축이니 혼동하지 말 것.
 
-`register_or_get`의 **반환 dict는 6필드 그대로**다 — `service_name`은 저장 문서에만 넣는다. 소비처(Kiwoom-ESG `source_verify`)가 `StoredFile(**out)`으로 펼쳐 넣는데 `StoredFile`이 `extra="forbid"`라, 반환에 필드를 더하면 `ValidationError`로 깨진다.
+**반환 계약은 6필드 고정**이다 — `service_name`은 저장 문서에만 넣는다. `register_or_get`은 입력 메타에 `file_path`만 얹고, `get_file`은 저장 문서에서 `_PUBLIC_METADATA_FIELDS`만 골라 담는다(문서를 통째로 내보내면 옛 문서 6필드 / 새 문서 7필드로 **등록 시점에 따라 모양이 달라진다**). 소비처(Kiwoom-ESG `source_verify`)가 `StoredFile(**out)`으로 펼쳐 넣는데 `StoredFile`이 `extra="forbid"`라, 반환에 필드를 더하면 `ValidationError`로 깨진다.
+
+마이그레이션 CLI(`scripts/migrate_smb_to_fm.py`)는 `--dry-run`이 아니면 루프 진입 전에 `SERVICE_NAME`을 한 번 검사한다 — `_process_one`의 blanket `except Exception`이 `FMConfigError`를 파일 단위 `error:` 문자열로 강등해, 전 항목이 실패한 매핑 JSON을 종료코드 0으로 남기는 것을 막는다.
 
 ## 예외
 `FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` (from `file_manager`).

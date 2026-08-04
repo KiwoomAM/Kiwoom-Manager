@@ -4,10 +4,15 @@
 산출물: filename → file_path 매핑 JSON (Phase B 입력 자료).
 
 사용:
-    python -m file_manager.scripts.migrate_smb_to_fm \\
+    SERVICE_NAME=<등록 주체> python -m file_manager.scripts.migrate_smb_to_fm \\
         --source-dir /mnt/file_server \\
         --mapping-out /tmp/fm_migration.json \\
         [--dry-run]
+
+env ``SERVICE_NAME``은 업로드 시 필수다(``upload_file``이 file_cache 메타에 기록).
+compose가 env를 주입해 주는 서비스와 달리 이 CLI는 직접 세워야 하며, 미설정 시
+트리를 걷기 전에 ``FMConfigError``로 중단한다. ``--dry-run``은 업로드를 타지 않아
+필요 없다.
 """
 
 from __future__ import annotations
@@ -44,8 +49,10 @@ async def _process_one(pdf_path: Path, fm, dry_run: bool) -> dict:
 
 try:
     from file_manager import FileManagerHandler  # noqa: E402
+    from file_manager.handler import _require_service_name  # noqa: E402
 except ImportError:  # pragma: no cover — 테스트 monkeypatch 대상으로만 사용
     FileManagerHandler = None  # type: ignore[assignment,misc]
+    _require_service_name = None  # type: ignore[assignment]
 
 
 async def migrate(
@@ -54,6 +61,14 @@ async def migrate(
     """source_dir의 모든 *.pdf를 FM에 업로드. mapping_out에 결과 JSON 저장."""
     if not source_dir.exists():
         raise FileNotFoundError(f"source_dir 없음: {source_dir}")
+
+    # 업로드 전제조건(env SERVICE_NAME)을 트리를 걷기 전에 한 번 검사한다.
+    # _process_one 의 blanket `except Exception` 이 FMConfigError 를 파일 단위
+    # "error:" 문자열로 강등하기 때문에, 이 검사가 없으면 설정 하나가 빠졌을 뿐인데
+    # 전 항목이 실패한 매핑 JSON 을 종료코드 0 으로 남기고 끝난다.
+    # dry_run 은 upload_file 을 타지 않으므로 요구하지 않는다.
+    if not dry_run:
+        _require_service_name()
 
     pdfs = sorted(source_dir.rglob("*.pdf"))
     logger.info("대상 PDF: %d건 (%s)", len(pdfs), source_dir)

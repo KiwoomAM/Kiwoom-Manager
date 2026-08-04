@@ -66,6 +66,19 @@ _SERVICE_NAME_REQUIRED = (
     "SERVICE_NAME 환경변수를 설정하세요."
 )
 
+# get_file이 내보내는 메타 키 — 저장 문서에는 이보다 많은 필드가 있을 수 있다
+# (service_name 등). 문서를 그대로 내보내면 반환 모양이 **파일 등록 시점에 따라**
+# 달라져(옛 문서 6필드 / 새 문서 7필드), 소비처가 `**meta`로 extra="forbid" 모델에
+# 넣을 때 비결정적으로 깨진다. 그래서 반환은 이 집합으로 고정한다.
+_PUBLIC_METADATA_FIELDS = (
+    "file_name",
+    "file_mtime",
+    "file_size",
+    "file_path",
+    "mime_type",
+    "extension",
+)
+
 
 def _demillis(n: int) -> int:
     """10^12 이상이면 밀리초 epoch으로 보고 초로 환산, 아니면 그대로."""
@@ -250,11 +263,14 @@ class FileManagerHandler:
         Returns:
             (file_data, metadata)
               metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path}
+              저장 문서에 그 밖의 필드(service_name 등)가 있어도 반환에는 싣지 않는다
+              — 등록 시점에 따라 반환 모양이 달라지지 않게 고정한다.
         """
         doc = await find_metadata({"metadata.file_path": file_path})
         if doc is None:
             raise MetadataNotFoundError(file_path)
-        metadata = doc["metadata"]
+        stored = doc["metadata"]
+        metadata = {k: stored[k] for k in _PUBLIC_METADATA_FIELDS if k in stored}
 
         file_data, _headers = await self._client.get_bytes_with_headers(
             f"{_API_PREFIX}/{file_path}"

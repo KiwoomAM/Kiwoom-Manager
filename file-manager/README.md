@@ -171,7 +171,7 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전 |
+| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전. 저장 문서에 그 밖의 필드(`service_name` 등)가 있어도 반환은 6필드로 **고정**한다 |
 
 #### 생명주기
 
