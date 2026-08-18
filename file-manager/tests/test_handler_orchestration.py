@@ -201,6 +201,93 @@ async def test_get_file_drops_fields_outside_the_documented_contract(monkeypatch
     }
 
 
+async def test_get_metadata_returns_metadata_without_fetching_bytes(monkeypatch):
+    """메타만 조회하고 파일 바이트는 받지 않는다 — 이 메서드의 존재 이유.
+
+    바이트를 받아버리면 get_file과 다를 게 없으므로, file-handler 호출이 일어나면
+    실패하도록 fake를 심어 둔다.
+    """
+    async def fake_find(filter):
+        assert filter == {"metadata.file_path": "uuid123.xlsx"}
+        return {
+            "metadata": {
+                "file_name": "r.xlsx",
+                "file_mtime": 1713000000,
+                "file_size": 100,
+                "file_path": "uuid123.xlsx",
+                "mime_type": "application/vnd.ms-excel",
+                "extension": "xlsx",
+            }
+        }
+
+    async def forbidden_get_bytes(path):
+        raise AssertionError(f"바이트를 받으면 안 된다: {path}")
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    monkeypatch.setattr(fm._client, "get_bytes_with_headers", forbidden_get_bytes)
+
+    meta = await fm.get_metadata("uuid123.xlsx")
+    assert meta == {
+        "file_name": "r.xlsx",
+        "file_mtime": 1713000000,
+        "file_size": 100,
+        "file_path": "uuid123.xlsx",
+        "mime_type": "application/vnd.ms-excel",
+        "extension": "xlsx",
+    }
+
+
+async def test_get_metadata_drops_fields_outside_the_documented_contract(monkeypatch):
+    """반환 6키 고정 — get_file과 같은 계약(등록 시점에 따라 모양이 달라지지 않게)."""
+    async def fake_find(filter):
+        return {
+            "metadata": {
+                "file_name": "r.xlsx",
+                "file_mtime": 1713000000,
+                "file_size": 100,
+                "file_path": "uuid123.xlsx",
+                "mime_type": "application/vnd.ms-excel",
+                "extension": "xlsx",
+                "service_name": "kiwoom-etf",
+            }
+        }
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+
+    meta = await fm.get_metadata("uuid123.xlsx")
+    assert set(meta.keys()) == {
+        "file_name", "file_mtime", "file_size", "file_path", "mime_type", "extension"
+    }
+
+
+def test_metadata_not_found_error_is_importable_from_package():
+    """README가 사용자에게 약속하는 예외는 top-level에서 잡을 수 있어야 한다.
+
+    `get_metadata`/`get_file`의 실패 계약이 `MetadataNotFoundError`인데, README 관례인
+    `from file_manager import ...`로 꺼낼 수 없으면 소비처가 잡을 방법을 문서에서
+    찾지 못한다(문서가 약속한 계약을 패키지가 안 내주는 상태).
+    """
+    import file_manager
+    from file_manager import MetadataNotFoundError
+
+    assert "MetadataNotFoundError" in file_manager.__all__
+    assert issubclass(MetadataNotFoundError, file_manager.FMError)
+
+
+async def test_get_metadata_missing_raises_same_error_as_get_file(monkeypatch):
+    from file_manager.exceptions import MetadataNotFoundError
+
+    async def fake_find(filter):
+        return None
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    with pytest.raises(MetadataNotFoundError):
+        await fm.get_metadata("missing.xlsx")
+
+
 async def test_get_file_missing_metadata_raises(monkeypatch):
     from file_manager.exceptions import MetadataNotFoundError
 

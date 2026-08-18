@@ -28,7 +28,7 @@ pip install -e packages/file-manager
 | `FILE_HANDLER_URL` | `http://192.7.9.45:8600` | File Handler Service URL |
 | `SERVICE_NAME` | (없음) | 파일을 등록하는 **호출 서비스** 식별자. `upload_file`이 저장하는 `file_cache` 메타에 기록된다. 미설정이면 `FMConfigError` |
 
-**등록 경로(`register_or_get`·`register_from_*`·`upload_file`)는 `SERVICE_NAME`을 요구하고, 순수 조회(`check_cache`·`get_file`)는 없어도 동작한다.** `register_or_get`은 캐시 히트라 업로드를 타지 않는 경우에도 **진입부에서** 검사한다 — 업로드 안에만 가드가 있으면 히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이 들어오는 순간 요청 도중에 터진다.
+**등록 경로(`register_or_get`·`register_from_*`·`upload_file`)는 `SERVICE_NAME`을 요구하고, 순수 조회(`check_cache`·`get_file`·`get_metadata`)는 없어도 동작한다.** `register_or_get`은 캐시 히트라 업로드를 타지 않는 경우에도 **진입부에서** 검사한다 — 업로드 안에만 가드가 있으면 히트가 나는 동안 설정 누락이 조용히 지나가고, 처음 보는 파일이 들어오는 순간 요청 도중에 터진다.
 
 `SERVICE_NAME`은 file-manager가 아니라 **SDK를 import한 서비스 프로세스**의 환경변수다. ETF 컨테이너에서 부르면 `kiwoom-etf`, ESG에서 부르면 `kiwoom-esg`가 기록된다(각 서비스 `docker-compose.yml`의 `environment:`). 출처·강제 방식은 llm-manager의 `require_service_name`과 같다.
 
@@ -171,9 +171,14 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 
 #### 조회
 
+`get_file`은 바이트까지, `get_metadata`는 메타만 가져옵니다. **메타만 필요하면 후자를 쓰세요** — 파일 전체를 받았다가 버리지 않습니다 (이슈 #97).
+
 | 메서드 | 반환값 | 설명 |
 |--------|--------|------|
-| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전. 저장 문서에 그 밖의 필드(`service_name` 등)가 있어도 반환은 6필드로 **고정**한다 |
+| `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전. 저장 문서에 그 밖의 필드(`service_name` 등)가 있어도 반환에 싣지 않는다 |
+| `await get_metadata(file_path)` | `dict` (6필드) | 메타데이터만 조회 — **파일 바이트는 받지 않는다**(mdb-handler만 호출). 반환은 `get_file`의 두 번째 요소와 동일 |
+
+> 💡 없는 `file_path`면 두 메서드 모두 `MetadataNotFoundError`입니다. 다만 `get_metadata`는 file-handler를 부르지 않으므로 **메타는 있는데 바이트가 사라진 파일**을 감지하지 못하고 정상 dict를 돌려줍니다 — 그 경우 `get_file`이 내는 `FMServiceError`(404)가 여기선 나지 않습니다.
 
 #### 생명주기
 
@@ -188,7 +193,8 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 FMError                     # 기본 에러 (message, status_code)
 ├── FMConnectionError       # FM Service 연결 실패 (status_code=0)
 ├── FMServiceError          # FM Service 에러 응답 (HTTP 4xx/5xx)
-└── FMConfigError           # 설정 누락 (예: 업로드 시 SERVICE_NAME 부재)
+├── FMConfigError           # 설정 누락 (예: 업로드 시 SERVICE_NAME 부재)
+└── MetadataNotFoundError   # file_path 에 해당하는 메타가 없음 (get_file·get_metadata)
 ```
 
 `FMConfigError`는 재시도로 복구되지 않는 배포 설정 실수다 — 잡아서 폴백하지 말고 터뜨려 고치는 쪽이 맞다.
