@@ -178,7 +178,9 @@ FileManagerHandler()   # 인자 없음. 환경변수 FILE_HANDLER_URL로 대상 
 | `await get_file(file_path)` | `tuple[bytes, dict]` | `(파일 바이너리, 6필드 메타데이터)` — 메타는 서버의 MongoDB에서 가져온 권위 버전. 저장 문서에 그 밖의 필드(`service_name` 등)가 있어도 반환에 싣지 않는다 |
 | `await get_metadata(file_path)` | `dict` (6필드) | 메타데이터만 조회 — **파일 바이트는 받지 않는다**(mdb-handler만 호출). 반환은 `get_file`의 두 번째 요소와 동일 |
 
-> 💡 없는 `file_path`면 두 메서드 모두 `MetadataNotFoundError`입니다. 다만 `get_metadata`는 file-handler를 부르지 않으므로 **메타는 있는데 바이트가 사라진 파일**을 감지하지 못하고 정상 dict를 돌려줍니다 — 그 경우 `get_file`이 내는 `FMServiceError`(404)가 여기선 나지 않습니다.
+> 💡 `(6필드)`는 **초과 필드를 싣지 않는다**는 뜻이지 6개를 채워 준다는 보장이 아닙니다 — 저장 문서에 필드가 빠져 있으면 그대로 빠진 채 나옵니다. `StoredFile(**meta)`로 펼쳐 넣는다면 그 경우 `ValidationError`가 납니다.
+>
+> 없는 `file_path`면 두 메서드 모두 `MetadataNotFoundError`입니다. 다만 `get_metadata`는 file-handler를 부르지 않으므로 **메타는 있는데 바이트가 사라진 파일**을 감지하지 못하고 정상 dict를 돌려줍니다 — 그 경우 `get_file`이 내는 `FMServiceError`(404)가 여기선 나지 않습니다.
 
 #### 생명주기
 
@@ -194,8 +196,11 @@ FMError                     # 기본 에러 (message, status_code)
 ├── FMConnectionError       # FM Service 연결 실패 (status_code=0)
 ├── FMServiceError          # FM Service 에러 응답 (HTTP 4xx/5xx)
 ├── FMConfigError           # 설정 누락 (예: 업로드 시 SERVICE_NAME 부재)
-└── MetadataNotFoundError   # file_path 에 해당하는 메타가 없음 (get_file·get_metadata)
+├── MDBConnectionError      # mdb-handler 연결/응답 오류 (status_code=503)
+└── MetadataNotFoundError   # file_path 에 해당하는 메타가 없음 (status_code=404)
 ```
+
+`MetadataNotFoundError`는 조회 미스와 정합성 오류를 함께 가리킨다 — `get_metadata`가 임의 경로를 받는 공개 lookup이라 stale한 `file_path` 조회는 정상 흐름이다. 그래서 4xx다. `MDBConnectionError`는 `get_metadata`의 **유일한** 연결 실패 모드다 (file-handler를 부르지 않으므로 `FMConnectionError`는 나지 않는다).
 
 `FMConfigError`는 재시도로 복구되지 않는 배포 설정 실수다 — 잡아서 폴백하지 말고 터뜨려 고치는 쪽이 맞다.
 

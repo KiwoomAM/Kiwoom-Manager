@@ -51,4 +51,6 @@ file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 **SDK를 imp
 마이그레이션 CLI(`scripts/migrate_smb_to_fm.py`)는 `--dry-run`이 아니면 루프 진입 전에 `SERVICE_NAME`을 한 번 검사한다 — `_process_one`의 blanket `except Exception`이 `FMConfigError`를 파일 단위 `error:` 문자열로 강등해, 전 항목이 실패한 매핑 JSON을 종료코드 0으로 남기는 것을 막는다.
 
 ## 예외
-`FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` · `MetadataNotFoundError` (from `file_manager`).
+`FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` · `MDBConnectionError`(503) · `MetadataNotFoundError`(404) (from `file_manager`).
+
+`MetadataNotFoundError`는 4xx다 — `get_metadata`가 임의 `file_path`를 받는 공개 lookup이 되면서 "조회 미스"까지 뜻하게 됐고, 5xx로 두면 소비처가 `status_code >= 500`에 건 알림·재시도가 단순 미스마다 울린다. 소비처는 모두 `isinstance`로 판정하므로(`stored_file_resolver._is_not_found`, Kiwoom-ESG `_is_retryable`) 코드 값 변경에 영향받지 않는다.

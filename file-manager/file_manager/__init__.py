@@ -35,6 +35,7 @@ from .exceptions import (
     FMConfigError,
     FMConnectionError,
     FMServiceError,
+    MDBConnectionError,
     MetadataNotFoundError,
 )
 
@@ -44,5 +45,6 @@ __all__ = [
     "FMConfigError",
     "FMConnectionError",
     "FMServiceError",
+    "MDBConnectionError",
     "MetadataNotFoundError",
 ]

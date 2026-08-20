@@ -270,7 +270,9 @@ class FileManagerHandler:
             — `get_file`이 돌려주는 두 번째 요소와 동일하다(같은 코드가 만든다).
 
         Raises:
-            MetadataNotFoundError: 해당 file_path의 메타데이터가 없음.
+            MetadataNotFoundError: 해당 file_path의 메타데이터가 없음 (404).
+            MDBConnectionError: mdb-handler 조회 실패 (503). `find_metadata`가 SDK
+                예외를 번역해 던진다 — mdb만 부르는 메서드라 이 경로가 잘 드러난다.
         """
         doc = await find_metadata({"metadata.file_path": file_path})
         if doc is None:
@@ -293,6 +295,13 @@ class FileManagerHandler:
               metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path}
               저장 문서에 그 밖의 필드(service_name 등)가 있어도 반환에는 싣지 않는다
               — 등록 시점에 따라 반환 모양이 달라지지 않게 고정한다.
+
+        Raises:
+            MetadataNotFoundError: 해당 file_path의 메타데이터가 없음 (404).
+            MDBConnectionError: mdb-handler 조회 실패 (503).
+            FMServiceError: file-handler가 에러 응답. 404면 **메타는 있는데 바이트가
+                없는** 상태다 — `get_metadata`는 file-handler를 부르지 않아 이 경우를
+                감지하지 못한다는 점이 두 메서드의 실질 차이다.
         """
         metadata = await self.get_metadata(file_path)
         file_data, _headers = await self._client.get_bytes_with_headers(

@@ -276,6 +276,70 @@ def test_metadata_not_found_error_is_importable_from_package():
     assert issubclass(MetadataNotFoundError, file_manager.FMError)
 
 
+def test_mdb_connection_error_is_importable_from_package():
+    """`get_metadata`의 **유일한** 연결 실패 계약 — top-level에서 잡을 수 있어야 한다.
+
+    `get_metadata`는 file-handler를 부르지 않으므로 `FMConnectionError`가 아니라 이쪽만
+    난다. export가 없으면 소비처가 `file_manager.exceptions`를 직접 뚫어야 한다 —
+    실제로 Kiwoom-ESG `backend/LLM/evaluator.py`가 그렇게 하고 있다.
+    """
+    import file_manager
+    from file_manager import MDBConnectionError
+
+    assert "MDBConnectionError" in file_manager.__all__
+    assert issubclass(MDBConnectionError, file_manager.FMError)
+
+
+async def test_get_file_metadata_matches_get_metadata(monkeypatch):
+    """두 메서드의 메타 반환은 하나의 계약이다 — 갈라지는 순간 여기서 깨진다.
+
+    `get_file`이 `get_metadata`에 위임하는 덕에 지금은 자동으로 같지만, 그 구조를
+    되돌려 조회·선별을 다시 인라인해도 개별 테스트는 전부 통과한다(각자 자기 fake만
+    본다). 그래서 "둘이 같다"를 직접 단정해 드리프트를 막는다. 위임이라는 **구조**가
+    아니라 문서가 약속한 **계약**을 잠그는 쪽을 택했다 — 구현을 바꿔도 계약만 지키면
+    통과해야 하기 때문.
+    """
+    stored_doc = {
+        "metadata": {
+            "file_name": "r.xlsx",
+            "file_mtime": 1713000000,
+            "file_size": 100,
+            "file_path": "uuid123.xlsx",
+            "mime_type": "application/vnd.ms-excel",
+            "extension": "xlsx",
+            "service_name": "kiwoom-etf",
+        }
+    }
+
+    async def fake_find(filter):
+        return stored_doc
+
+    async def fake_get_bytes(path):
+        return b"BYTES", {}
+
+    fm = FileManagerHandler()
+    monkeypatch.setattr(handler_mod, "find_metadata", fake_find)
+    monkeypatch.setattr(fm._client, "get_bytes_with_headers", fake_get_bytes)
+
+    _data, from_get_file = await fm.get_file("uuid123.xlsx")
+    from_get_metadata = await fm.get_metadata("uuid123.xlsx")
+
+    assert from_get_file == from_get_metadata
+
+
+def test_metadata_not_found_error_is_a_lookup_miss_not_a_server_fault():
+    """조회 미스는 4xx다 — `get_metadata`가 공개 lookup이 되면서 의미가 넓어졌다.
+
+    `get_file` 안에서만 던져질 때는 "파일은 있는데 메타가 없다"는 정합성 오류(5xx)가
+    맞았다. 이제는 임의 `file_path`로 조회하는 공개 메서드의 실패 계약이라, stale하거나
+    오타 난 경로를 넘기는 **정상 흐름**에서도 나온다. 5xx로 두면 소비처가
+    `status_code >= 500`으로 건 알림·재시도가 단순 조회 미스마다 울린다.
+    """
+    from file_manager import MetadataNotFoundError
+
+    assert MetadataNotFoundError("missing.pdf").status_code == 404
+
+
 async def test_get_metadata_missing_raises_same_error_as_get_file(monkeypatch):
     from file_manager.exceptions import MetadataNotFoundError
 
