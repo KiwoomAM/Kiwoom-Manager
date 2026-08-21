@@ -7,6 +7,7 @@ FileManagerHandler — 파일 캐시 오케스트레이션 (file-handler + mdb-h
   - check_cache    : mdb-handler에 메타데이터 직접 질의
   - upload_file    : 파일 바이트는 file-handler에 저장 + 6필드 메타데이터는 mdb-handler에 기록
   - get_file       : 메타데이터는 mdb-handler 조회 + 파일 바이트는 file-handler 수신
+  - get_metadata   : 메타데이터만 mdb-handler 조회 (파일 바이트를 받지 않음)
   - build_metadata : 로컬에서 mime_type/extension 파생 (HTTP 호출 없음)
 
 사용 예시:
@@ -66,7 +67,8 @@ _SERVICE_NAME_REQUIRED = (
     "SERVICE_NAME 환경변수를 설정하세요."
 )
 
-# get_file이 내보내는 메타 키 — 저장 문서에는 이보다 많은 필드가 있을 수 있다
+# get_metadata가 내보내는 메타 키 (get_file은 그 결과를 그대로 싣는다) — 저장 문서에는
+# 이보다 많은 필드가 있을 수 있다
 # (service_name 등). 문서를 그대로 내보내면 반환 모양이 **파일 등록 시점에 따라**
 # 달라져(옛 문서 6필드 / 새 문서 7필드), 소비처가 `**meta`로 extra="forbid" 모델에
 # 넣을 때 비결정적으로 깨진다. 그래서 반환은 이 집합으로 고정한다.
@@ -252,10 +254,38 @@ class FileManagerHandler:
         await insert_metadata(document)
         return file_path
 
+    async def get_metadata(self, file_path: str) -> dict:
+        """6필드 메타데이터만 조회 — 파일 바이트는 받지 않는다 (mdb-handler만 호출).
+
+        `StoredFile`을 만드는 데 필요한 6필드를 얻는 경로가 `get_file`뿐이면, 메타만
+        필요한 호출부가 **파일 전체를 받았다가 버린다**(리포트 10건이면 PDF 10개).
+        llm-manager는 `StoredFile`을 참조로만 받고 바이트는 lazy fetch하므로
+        (`stored_file_resolver`), 호출부가 바이트를 미리 받을 이유가 없다.
+
+        Args:
+            file_path: file-handler가 반환했던 file_path (예: "a1b2c3.xlsx")
+
+        Returns:
+            {file_name, file_mtime, file_size, file_path, mime_type, extension}
+            — `get_file`이 돌려주는 두 번째 요소와 동일하다(같은 코드가 만든다).
+
+        Raises:
+            MetadataNotFoundError: 해당 file_path의 메타데이터가 없음 (404).
+            MDBConnectionError: mdb-handler 조회 실패 (503). `find_metadata`가 SDK
+                예외를 번역해 던진다 — mdb만 부르는 메서드라 이 경로가 잘 드러난다.
+        """
+        doc = await find_metadata({"metadata.file_path": file_path})
+        if doc is None:
+            raise MetadataNotFoundError(file_path)
+        stored = doc["metadata"]
+        return {k: stored[k] for k in _PUBLIC_METADATA_FIELDS if k in stored}
+
     async def get_file(self, file_path: str) -> tuple[bytes, dict]:
         """(바이너리, 6필드 메타데이터) 튜플 반환.
 
-        메타데이터는 mdb-handler에서 조회하고, 파일 바이트는 file-handler에서 받는다.
+        메타데이터는 `get_metadata`(mdb-handler)에 위임하고, 파일 바이트만 여기서
+        file-handler에서 받는다 — 두 메서드의 메타 반환 계약이 어긋날 수 없게
+        조회 로직은 한 곳에만 둔다.
 
         Args:
             file_path: file-handler가 반환했던 file_path (예: "a1b2c3.xlsx")
@@ -265,13 +295,15 @@ class FileManagerHandler:
               metadata: {file_name, file_mtime, file_size, mime_type, extension, file_path}
               저장 문서에 그 밖의 필드(service_name 등)가 있어도 반환에는 싣지 않는다
               — 등록 시점에 따라 반환 모양이 달라지지 않게 고정한다.
-        """
-        doc = await find_metadata({"metadata.file_path": file_path})
-        if doc is None:
-            raise MetadataNotFoundError(file_path)
-        stored = doc["metadata"]
-        metadata = {k: stored[k] for k in _PUBLIC_METADATA_FIELDS if k in stored}
 
+        Raises:
+            MetadataNotFoundError: 해당 file_path의 메타데이터가 없음 (404).
+            MDBConnectionError: mdb-handler 조회 실패 (503).
+            FMServiceError: file-handler가 에러 응답. 404면 **메타는 있는데 바이트가
+                없는** 상태다 — `get_metadata`는 file-handler를 부르지 않아 이 경우를
+                감지하지 못한다는 점이 두 메서드의 실질 차이다.
+        """
+        metadata = await self.get_metadata(file_path)
         file_data, _headers = await self._client.get_bytes_with_headers(
             f"{_API_PREFIX}/{file_path}"
         )

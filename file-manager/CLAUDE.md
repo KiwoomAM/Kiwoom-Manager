@@ -20,7 +20,7 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 ```
 
 ## 메서드
-`build_metadata`(동기, 로컬 mime/extension 추출) · `check_cache`(mdb-handler 직접 조회) · `upload_file`(file-handler 저장 + mdb 메타데이터 기록) · `get_file`(mdb 메타 조회 + file-handler 바이너리 반환) · `register_or_get` · `register_from_bytes` · `register_from_path` · `materialize_to_tempfile` · `normalize_mtime`.
+`build_metadata`(동기, 로컬 mime/extension 추출) · `check_cache`(mdb-handler 직접 조회) · `upload_file`(file-handler 저장 + mdb 메타데이터 기록) · `get_file`(mdb 메타 조회 + file-handler 바이너리 반환) · `get_metadata`(mdb 메타만 조회, 바이너리 없음) · `register_or_get` · `register_from_bytes` · `register_from_path` · `materialize_to_tempfile` · `normalize_mtime`.
 
 ### 편의 메서드 (이슈 #81)
 > `register_from_bytes(data, *, file_name, file_mtime) -> dict`·`register_from_path(path) -> dict`는 `build_metadata`+`register_or_get`을 한 번에 흡수하는 등록 래퍼다. `file_size`는 `len(data)`로 내부 계산하고, `register_from_path`는 경로에서 `file_name`·`file_mtime`을 도출하며 바이트 읽기를 `asyncio.to_thread`로 off-loop 처리한다. 반환·예외 계약은 `register_or_get`과 동일하며, `register_from_path`는 경로가 없으면 추가로 `FileNotFoundError`를 전파한다.
@@ -34,7 +34,7 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 파이프라인 명세는 [`../file-handler/file-manager-pipeline.md`](../file-handler/file-manager-pipeline.md) 참고.
 
 ## SERVICE_NAME (등록 주체)
-등록 경로는 env `SERVICE_NAME`을 **강제**한다 — 설정돼 있으면 `file_cache` 메타의 `service_name` 필드에 기록하고, 없으면 `FMConfigError`. 순수 조회(`check_cache`/`get_file`)는 없어도 동작한다.
+등록 경로는 env `SERVICE_NAME`을 **강제**한다 — 설정돼 있으면 `file_cache` 메타의 `service_name` 필드에 기록하고, 없으면 `FMConfigError`. 순수 조회(`check_cache`/`get_file`/`get_metadata`)는 없어도 동작한다.
 
 검사 지점이 **둘**인 데는 각각 이유가 있다(규칙 자체는 `_require_service_name()` 하나가 SSOT).
 - `upload_file` 진입부 — 파일 저장(POST) **전에** 막는다. 저장 후 실패하면 메타 없는 orphan이 file-handler에 남는다.
@@ -44,9 +44,13 @@ file_bytes, meta = await fm.get_file(metadata["file_path"])
 
 file-manager는 SDK라 자기 프로세스가 없다 — 이 env는 **SDK를 import한 서비스 프로세스**의 것이다(ETF 컨테이너면 `kiwoom-etf`). mdb-manager의 `X-Caller-Service`(SDK 정체성 = 항상 `file-manager`)와는 다른 축이니 혼동하지 말 것.
 
-**반환 계약은 6필드 고정**이다 — `service_name`은 저장 문서에만 넣는다. `register_or_get`은 입력 메타에 `file_path`만 얹고, `get_file`은 저장 문서에서 `_PUBLIC_METADATA_FIELDS`만 골라 담는다(문서를 통째로 내보내면 옛 문서 6필드 / 새 문서 7필드로 **등록 시점에 따라 모양이 달라진다**). 소비처(Kiwoom-ESG `source_verify`)가 `StoredFile(**out)`으로 펼쳐 넣는데 `StoredFile`이 `extra="forbid"`라, 반환에 필드를 더하면 `ValidationError`로 깨진다.
+**반환 계약은 6필드 고정**이다 — `service_name`은 저장 문서에만 넣는다. `register_or_get`은 입력 메타에 `file_path`만 얹고, `get_metadata`는 저장 문서에서 `_PUBLIC_METADATA_FIELDS`만 골라 담는다(`get_file`은 그 `get_metadata`를 호출하므로 계약이 하나다 — 규칙을 두 벌 적지 않는다). 문서를 통째로 내보내면 옛 문서 6필드 / 새 문서 7필드로 **등록 시점에 따라 모양이 달라진다**. 소비처(Kiwoom-ESG `source_verify`)가 `StoredFile(**out)`으로 펼쳐 넣는데 `StoredFile`이 `extra="forbid"`라, 반환에 필드를 더하면 `ValidationError`로 깨진다.
+
+여기서 "고정"은 **초과 필드를 싣지 않는다**는 뜻이지 6개를 채워 준다는 보장이 아니다 — 선별이 `if k in stored`라, 저장 문서에 필드가 빠져 있으면 그 필드는 조용히 빠진 채 나간다. `StoredFile`은 6필드가 전부 required라 그 경우도 소비처에서 `ValidationError`로 터지는데, 터지는 지점이 원인(결손 문서)에서 멀다. 지금까지 결손 문서가 관측된 적은 없어 가드를 두지 않았다 — 실제로 나오면 그때 `FAIL-LOUD` 쪽으로 판단할 것.
 
 마이그레이션 CLI(`scripts/migrate_smb_to_fm.py`)는 `--dry-run`이 아니면 루프 진입 전에 `SERVICE_NAME`을 한 번 검사한다 — `_process_one`의 blanket `except Exception`이 `FMConfigError`를 파일 단위 `error:` 문자열로 강등해, 전 항목이 실패한 매핑 JSON을 종료코드 0으로 남기는 것을 막는다.
 
 ## 예외
-`FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` (from `file_manager`).
+`FMError` · `FMConfigError` · `FMConnectionError` · `FMServiceError` · `MDBConnectionError`(503) · `MetadataNotFoundError`(404) (from `file_manager`).
+
+`MetadataNotFoundError`는 4xx다 — `get_metadata`가 임의 `file_path`를 받는 공개 lookup이 되면서 "조회 미스"까지 뜻하게 됐고, 5xx로 두면 소비처가 `status_code >= 500`에 건 알림·재시도가 단순 미스마다 울린다. 소비처는 모두 `isinstance`로 판정하므로(`stored_file_resolver._is_not_found`, Kiwoom-ESG `_is_retryable`) 코드 값 변경에 영향받지 않는다.
