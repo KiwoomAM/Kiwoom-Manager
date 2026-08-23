@@ -19,7 +19,6 @@ docs/25.pdf-split-shared-pool-and-unsplittable-reject.md 참고.
 있어 페이지를 아무리 청소해도 끊기지 않는다. 그래서 split_pdf 는 select() 이전에 카탈로그와
 주석 동작을 함께 정리한다(_strip_chains_copy).
 docs/34.pdf-split-global-reference-chains.md 참고.
-(Kiwoom-ESG file_manager.split_by_size 로직 기반)
 """
 
 from __future__ import annotations

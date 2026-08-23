@@ -47,7 +47,7 @@ async def upload_pdf_parts(
         주의 — split_pdf 가 사슬 정리 사본을 만들었는데 그 사본이 임계 아래로 내려가 단일
         파트가 되면(docs/34 §4·§8-1의 52.9MB 파일 사례), 여기서 ``[(1, N)]`` 이 나온다.
         값은 정확하다. 다만 "분할되었는가"를 ``pdf_part_ranges is not None`` 으로 판정하면
-        이 경우 오독하므로, 소비처는 ``len(...) >= 2`` 로 분할 여부를 본다(Kiwoom-ESG 관례).
+        이 경우 오독하므로, 소비처는 ``len(...) >= 2`` 로 분할 여부를 판정해야 한다.
     """
     parts = split_pdf(path, target_mb, max_pages)
 

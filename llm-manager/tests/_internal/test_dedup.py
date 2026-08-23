@@ -397,8 +397,8 @@ class TestFailureRecordDoesNotPoisonRerun:
 
     실패 기록은 '그 시도가 실패했다'는 뜻이지 '이 파일은 영영 안 된다'가 아니다.
     지우지 않으면, 실패 후 TTL(60초) 안에 재실행할 때 새 leader 는 정상 작업하는데
-    대기자들만 낡은 기록을 보고 죽는다 — 실패한 배치를 곧바로 다시 돌리는 ESG 의
-    정상 패턴에서 27건이 실패한다.
+    대기자들만 낡은 기록을 보고 죽는다 — 실패한 배치를 곧바로 다시 돌리는 흔한
+    사용 패턴에서 27건이 실패한다.
     """
 
     async def test_acquire_clears_stale_failure(self, fake_redis):
