@@ -365,7 +365,7 @@ def call(
 | `http_timeout` | `600.0` | SDK → Service HTTP 응답 대기 시간 (초) | 느린 모델 사용 시 늘릴 것. 기본 600초로 대부분 충분 |
 | `mdb_ttl` | `None` | MDB 캐시 수명 (초). None = 영구 저장 | **현재 미동작 — 설정해도 만료 처리 안 됨. 항상 영구 저장** |
 | `context_cache_ttl` | `None` | Gemini Context Cache 수명 (초) | **`None` 또는 `0` 이면 Context Cache 비활성**. 양수(`>0`) 값만 생성 트리거. 반복 참조 파일에 Context Cache 를 쓰려면 양수 값 지정 필요 (예: `3600`) |
-| `standby_ttl` | `600` | Cache stampede dedup 대기 시간 (초) | 동일 요청이 동시에 몰릴 때 중복 LLM 호출 방지. LLM 응답 시간보다 길게 설정 |
+| `standby_ttl` | `600` | Cache stampede dedup 대기 시간 (초) | 동일 요청이 동시에 몰릴 때 중복 LLM 호출 방지(**`save_mode=True` 일 때만 — docs/35**). LLM 응답 시간보다 길게 설정 |
 
 ```python
 response, meta = await llm_request_async(
@@ -736,12 +736,19 @@ llm_input = {"contents": "안녕", "temperature": None}
 
 `cache_mode` / `save_mode` 조합에 따라 경로가 달라진다.
 
-| cache_mode | save_mode | 흐름 |
-| --- | --- | --- |
-| `False` | `False` | 키 생성 없음 → LLM 직접 호출 → 저장 없음 |
-| `False` | `True` | 키 생성 → LLM 호출 → MDB 저장 |
-| `True` | `True` | 키 생성 → MDB 조회 → HIT 반환 / MISS LLM 호출 + 저장 |
-| `True` | `False` | 키 생성 → MDB 조회 → HIT 반환 / MISS LLM 호출만 |
+| cache_mode | save_mode | 흐름 | agent_llm standby |
+| --- | --- | --- | --- |
+| `False` | `False` | 키 생성 없음 → LLM 직접 호출 → 저장 없음 | 안 씀 |
+| `False` | `True` | 키 생성 → LLM 호출 → MDB 저장 | 씀 |
+| `True` | `True` | 키 생성 → MDB 조회 → HIT 반환 / MISS LLM 호출 + 저장 | 씀 |
+| `True` | `False` | 키 생성 → MDB 조회 → HIT 반환 / MISS LLM 호출만 | 안 씀 |
+
+**두 플래그는 MDB 응답 캐시만 가른다.** `stored_files` 첨부는 네 조합 모두에서 동일하게 동작한다 —
+업로드·inline 분류·Context Cache·404 자동 복구 전부 그대로다.
+
+**standby 는 `save_mode=True` 일 때만 건다.** 대기자가 기다린 대가로 받는 것은 리더가 MDB 에 저장한
+결과이므로, 저장하지 않는 조합에서 줄을 세우면 대기자가 빈손으로 깨어나 자기가 다시 LLM 을 부른다
+(LLM 호출 수는 그대로고 지연만 쌓인다). 상세는 `docs/35`.
 
 ## MDB 저장 구조
 
@@ -998,6 +1005,8 @@ const mtime = Math.floor(file.lastModified / 1000);
 ### 동시 요청 시 `standby_ttl_seconds` 조정
 
 같은 입력의 동시 요청은 Redis standby 메커니즘으로 중복 LLM 호출을 방지한다.
+**단 `save_mode=True` 일 때만이다** — 대기자가 받아가는 것이 리더의 MDB 저장분이라, 저장하지 않는
+조합(`save_mode=False`)에서는 standby 를 걸지 않고 각 요청이 곧장 LLM 을 부른다 (`docs/35`).
 
 - 첫 요청이 `standby_ttl_seconds` 내에 완료되면 후속 요청은 자동으로 캐시 결과를 사용
 - 시간 내 완료되지 않으면 후속 요청이 별도 LLM 호출 시작 (두 응답이 다를 수 있음)

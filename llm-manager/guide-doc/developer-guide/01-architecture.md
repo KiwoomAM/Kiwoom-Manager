@@ -113,6 +113,7 @@ llm_request_async()
   │                                      │    └─ Context Cache (opt-in) ────► Gemini + Redis
   │                                      │
   │                                      │ ③ agent_llm dedup ────────────────► Redis (SETNX)
+  │                                      │    (save_mode=True 일 때만 — docs/35)
   │                                      │    ├─ leader → ④
   │                                      │    └─ waiter → 대기 후 캐시 재조회
   │                                      │

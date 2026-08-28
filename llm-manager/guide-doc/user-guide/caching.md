@@ -51,6 +51,25 @@ llm_input + files
 
 **기본값**: 둘 다 `True`. 별도 지정 없이 호출하면 일반 사용 모드.
 
+**두 플래그는 MDB 응답 캐시만 가른다.** `stored_files` 첨부는 네 조합 모두에서 동일하게 동작한다 —
+업로드·inline 분류·Context Cache·404 자동 복구 전부 그대로다.
+
+**`agent_llm` dedup 은 `save_mode=True` 일 때만 건다.** 대기자가 받아가는 것이 리더의 MDB 저장분이라,
+저장하지 않는 조합(`True`/`False`·`False`/`False`)에서는 줄을 세우지 않고 각 요청이 곧장 LLM 을 부른다.
+
+**`False`/`False` 로 파일을 반복해서 보낼 때의 비용.** 이 조합만 **응답 캐시 조회까지 없어**, 같은
+파일로 같은 질문을 반복하면 매번 파일을 다시 받아 오고 입력 토큰도 매번 다시 문다. 파일 단위
+dedup 은 Files API 경로에만 있고 inline 경로에는 없다(작은 파일은 대개 inline 이다).
+**반복 호출이 예상되면 `cache_mode=True` 를 켜야 아껴진다** — `save_mode` 만 켜면(`False`/`True`)
+조회를 안 하므로 순차 반복에서는 아무것도 아껴지지 않는다(위 표 3행).
+
+**`False`/`False` 도 흔적을 남길 수 있다.** 파일 합계가 inline 한도를 넘거나
+`timings={"context_cache_ttl": ...}` 를 지정하면 파일이 Files API 로 올라가고(48시간 잔존),
+ttl 을 켰다면 **과금되는 Context Cache** 까지 생성된다. "아무것도 남기지 않는 일회성 호출" 로
+쓰려면 파일 첨부 없이, ttl 없이 불러야 한다.
+
+상세는 `docs/35`.
+
 ### MongoDB 저장 구조
 
 | 설정 | 값 |

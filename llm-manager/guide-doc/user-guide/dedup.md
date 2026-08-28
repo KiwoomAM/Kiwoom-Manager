@@ -16,9 +16,13 @@ llm-manager는 Redis `SETNX` 선점 방식으로 첫 요청만 작업을 수행�
 |---|---|---|
 | Files API 업로드 | 같은 파일을 동시에 여러 요청이 보낼 때 | 한 요청만 업로드, 나머지는 결과 URI 재사용 |
 | Context Cache 생성 | 같은 (파일 + 모델 + system + tools) 조합을 동시에 여러 요청이 시도할 때 | 한 요청만 생성, 나머지는 캐시된 cache_name 재사용 |
-| LLM 응답 (`agent_llm`) | 같은 cache_key를 동시에 여러 요청이 LLM 호출하려 할 때 | 한 요청만 LLM 호출, 나머지는 MDB 결과 재사용 |
+| LLM 응답 (`agent_llm`) | 같은 cache_key를 동시에 여러 요청이 LLM 호출하려 할 때 (**`save_mode=True` 인 경우만**) | 한 요청만 LLM 호출, 나머지는 MDB 결과 재사용 |
 
 > inline 경로(작은 파일을 inline 전송)는 Redis를 거치지 않아 dedup 대상이 아니다.
+
+> `agent_llm` dedup 이 `save_mode=True` 로 한정되는 이유: 대기자가 받아가는 것이 **리더의 MDB
+> 저장분**이라, 저장하지 않는 조합에서 줄을 세우면 대기자가 빈손으로 깨어나 결국 자기가 LLM 을
+> 다시 부른다. LLM 호출 수는 줄지 않고 지연만 쌓인다 (`docs/35`).
 
 ## 동작 방식
 

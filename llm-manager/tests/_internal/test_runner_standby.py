@@ -512,3 +512,131 @@ class TestPhase3LazyFetchDedup:
         assert get_file_count == 1, f"expected 1 fetch, got {get_file_count}"
         assert len(results) == 10
         assert all(r[0].text == "ok" for r in results)
+
+
+# ── standby 진입 조건 = save_mode (docs/35 §5-B) ──────────────
+
+
+class TestStandbyGatedBySaveMode:
+    """standby 는 리더가 MDB 에 저장해야 값을 한다.
+
+    `save_mode=False` 면 아무도 저장하지 않으므로 대기자는 기다린 뒤 자기가 다시 LLM 을
+    부른다 — 호출 수는 그대로고 지연만 쌓인다. 그래서 진입 조건은 `dc` 존재 여부가 아니라
+    `save_mode` 여야 한다. docs/35 §1.2·§3.3.
+    """
+
+    @staticmethod
+    def _spy_acquire(monkeypatch, acquired):
+        """agent_llm standby 선점 시도를 기록한다(원래 동작은 유지)."""
+        orig = runner.dedup.try_acquire_standby
+
+        async def spy(prefix, key, ttl):
+            acquired.append(prefix)
+            return await orig(prefix, key, ttl)
+
+        monkeypatch.setattr(runner.dedup, "try_acquire_standby", spy)
+
+    @staticmethod
+    def _stub_call(monkeypatch, counter):
+        async def slow_aio_call(**kwargs):
+            counter.append(1)
+            await asyncio.sleep(0.05)
+            return _make_response("no standby")
+
+        monkeypatch.setattr(runner, "aio_call", slow_aio_call)
+
+    # ── §5-6: T/F 는 standby 를 타지 않는다 ──────────────────
+
+    async def test_save_off_skips_standby(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """cache_mode=True, save_mode=False → agent_llm standby 선점 자체를 안 한다."""
+        acquired: list[str] = []
+        calls: list[int] = []
+        self._spy_acquire(monkeypatch, acquired)
+        self._stub_call(monkeypatch, calls)
+
+        llm_input = {
+            "contents": "standby gated by save_mode",
+            "model": "gemini-2.5-flash",
+            "task_name": "test",
+        }
+
+        async def _run():
+            return await runner.llm_request_async(
+                llm_input,
+                cache_mode=True, save_mode=False,
+                standby_ttl_seconds=10, database="test_db",
+            )
+
+        await asyncio.gather(_run(), _run())
+
+        assert "agent_llm" not in acquired, (
+            "save_mode=False 인데 standby 를 선점했다 — 대기자가 받아갈 저장분이 없어 "
+            "기다린 뒤 자기가 다시 LLM 을 부르게 된다(직렬화)"
+        )
+        assert len(calls) == 2, "둘 다 곧장 LLM 을 불러야 한다"
+
+    # ── §5-7: 스트림도 같다 ─────────────────────────────────
+
+    async def test_stream_save_off_skips_standby(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """가드가 두 함수에 따로 있으므로 스트림도 따로 검증한다."""
+        acquired: list[str] = []
+        self._spy_acquire(monkeypatch, acquired)
+
+        async def fake_stream(**kwargs):
+            await asyncio.sleep(0.05)
+            yield StreamChunk(text="ok", finish_reason="STOP")
+
+        monkeypatch.setattr(runner, "aio_stream", fake_stream)
+
+        llm_input = {
+            "contents": "stream standby gated by save_mode",
+            "model": "gemini-2.5-flash",
+            "task_name": "test",
+        }
+
+        async def _run():
+            chunks, _meta = await runner.llm_request_stream_async(
+                llm_input,
+                cache_mode=True, save_mode=False,
+                standby_ttl_seconds=10, database="test_db",
+            )
+            async for _chunk in chunks:
+                pass
+
+        await asyncio.gather(_run(), _run())
+
+        assert "agent_llm" not in acquired, (
+            "스트림 save_mode=False 에서 standby 를 선점했다"
+        )
+
+    # ── §5-8: 회귀 — save_mode=True 조합은 그대로 탄다 ───────
+
+    async def test_save_on_still_uses_standby(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+    ):
+        """T/T·F/T 는 리더가 저장하므로 standby 가 그대로 값을 한다."""
+        for cache_mode in (True, False):
+            acquired: list[str] = []
+            calls: list[int] = []
+            self._spy_acquire(monkeypatch, acquired)
+            self._stub_call(monkeypatch, calls)
+
+            llm_input = {
+                "contents": f"standby stays on {cache_mode}",
+                "model": "gemini-2.5-flash",
+                "task_name": "test",
+            }
+
+            await runner.llm_request_async(
+                llm_input,
+                cache_mode=cache_mode, save_mode=True,
+                standby_ttl_seconds=1, database="test_db",
+            )
+
+            assert "agent_llm" in acquired, (
+                f"cache_mode={cache_mode}, save_mode=True 인데 standby 를 건너뛰었다"
+            )

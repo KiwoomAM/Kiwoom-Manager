@@ -102,8 +102,8 @@ def prepare(
     requested_at = datetime.now(UTC)
 
     # ── files 처리 ─────────────────────────────────────
-    if not (cache_mode or save_mode):
-        files = None
+    # 캐시 플래그는 MDB 응답 캐시만 가른다 — 파일 첨부와 직교하므로 files 를 버리지 않는다
+    # (docs/35 §3.1). 예전엔 여기서 files=None 으로 지워 F/F 호출이 첨부 없이 나갔다.
 
     # keying용 입력: files가 있으면 checksum 리스트로 변환 후 주입
     if files:
@@ -121,7 +121,7 @@ def prepare(
             requested_at=requested_at,
             dc=None, cached_output=None,
             route_reason="cache_off_save_off",
-            files=None,
+            files=files,
             context_cache_ttl=context_cache_ttl,
             standby_ttl_seconds=standby_ttl_seconds,
             debug=debug,
@@ -529,9 +529,6 @@ async def llm_request_async(
     debug: bool = False,
 ) -> tuple[LLMResponse, dict[str, Any]]:
     """단일 LLM 요청 실행 (async). Phase 3: stored_files 만 받음 (Method 1 폐기)."""
-    if not (cache_mode or save_mode):
-        stored_files = None
-
     combined = await _prepare_files(stored_files)
 
     prep = prepare(
@@ -546,8 +543,10 @@ async def llm_request_async(
     if prep.cached_output:
         return prep.cached_output
 
-    # dc 없는 경우(cache_off_save_off) → 공유 캐시 없어서 standby 불필요
-    if prep.dc is None:
+    # standby 는 리더가 MDB 에 저장해야 대기자가 그 결과를 받아간다. save_mode=False 면 아무도
+    # 저장하지 않아, 대기자는 기다린 뒤 결국 자기가 다시 LLM 을 부른다 — 호출 수는 그대로고
+    # 지연만 쌓인다(docs/35 §1.2). F/F(dc 없음)도 save_mode=False 이므로 여기서 함께 걸린다.
+    if not prep.save_mode:
         return await _do_llm_call(prep, database)
 
     # cache miss — agent_llm standby 선점 시도
@@ -665,9 +664,6 @@ async def llm_request_stream_async(
     debug: bool = False,
 ) -> tuple[AsyncIterator[StreamChunk], dict[str, Any]]:
     """스트리밍 LLM 요청 (async). Phase 3: stored_files 만 받음."""
-    if not (cache_mode or save_mode):
-        stored_files = None
-
     combined = await _prepare_files(stored_files)
 
     prep = prepare(
@@ -688,8 +684,8 @@ async def llm_request_stream_async(
 
         return _cached_stream(), cached_meta
 
-    # dc 없는 경우 → 공유 캐시 없어서 standby 불필요
-    if prep.dc is None:
+    # standby 진입 조건은 save_mode — 근거는 llm_request_async 쪽 주석과 docs/35 §1.2·§3.3.
+    if not prep.save_mode:
         return _do_llm_stream(prep, database), _build_live_meta(prep)
 
     # cache miss — agent_llm standby 선점 시도
