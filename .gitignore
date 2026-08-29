@@ -217,6 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 certs/
-# 설계·계획 문서(docs/)는 손으로 쓰는 산출물이라 버전 관리한다.
-# guide-doc/ 는 코드에서 뽑아내는 생성물이라 제외한다.
+docs/
+!llm-manager/docs/
 guide-doc/
