@@ -640,3 +640,134 @@ class TestStandbyGatedBySaveMode:
             assert "agent_llm" in acquired, (
                 f"cache_mode={cache_mode}, save_mode=True 인데 standby 를 건너뛰었다"
             )
+
+
+# ── sync 스트림이 실제 standby 를 푸는가 (docs/36 §5-8) ────────
+
+
+class TestSyncStreamReleasesStandby:
+    """공개 sync 래퍼가 **진짜 두 겹 구조를 지나** 락을 푸는지 본다.
+
+    `tests/test_sync_stream.py` 의 단위 테스트는 `runner.llm_request_stream_async` 를 통째로
+    목으로 갈아끼우므로 `_events()` → `_leader_stream` 두 겹을 지나지 않는다. 그래서 여기서
+    **실제 runner + fake redis** 로 한 번 더 본다. 단정은 "제너레이터 finally 가 돌았다" 가
+    아니라 **standby 키가 실제로 지워졌는가** 다 (docs/36 §4.1 의 교훈).
+
+    ⚠️ **이 테스트만으로는 `_events()` 의 `try/finally` 를 고정하지 못한다.** 실측(돌연변이)으로
+    확인했다 — 그 3줄을 지워도 여기는 통과한다. `_SyncStream.close()` 가 `aclose()` 뒤에
+    `shutdown_asyncgens()` 를 부르는데 그것이 버려진 안쪽 제너레이터를 대신 닫아 주기 때문이다.
+    즉 sync 경로에는 안전망이 둘이다. `_events()` 수정을 고정하는 것은 그 안전망이 없는 **async**
+    경로 테스트(`tests/test_sync_stream.py::TestEventsClosePropagates`)다. 여기서는 의도적으로
+    **메커니즘이 아니라 결과**(키가 지워졌는가)를 본다.
+    """
+
+    def test_close_releases_standby_key(self, mock_collection, fake_redis, monkeypatch):
+        import llm_manager
+        from llm_manager._internal.file_processing.dedup import _make_standby_key
+
+        monkeypatch.setattr(llm_manager, "ensure_configured", lambda: None)
+
+        async def slow_stream(**kwargs):
+            for i in range(5):
+                yield StreamChunk(text=f"c{i}", finish_reason=None)
+
+        monkeypatch.setattr(runner, "aio_stream", slow_stream)
+
+        it, meta = llm_manager.llm_request_stream(
+            {
+                "contents": "sync stream releases standby",
+                "model": "gemini-2.5-flash",
+                "task_name": "test",
+            },
+            cache_mode=True, save_mode=True, database="test_db",
+        )
+        key = _make_standby_key("agent_llm", meta["cache_key"])
+
+        next(it)   # 스트림 진행 중 — 리더가 락을 쥐고 있어야 한다
+        assert fake_redis.get(key) is not None, "스트림 도중인데 standby 가 없다"
+
+        it.close()
+        assert fake_redis.get(key) is None, (
+            "sync 스트림을 닫았는데 standby 키가 남았다 — 안쪽 finally 가 안 돈 것이다"
+        )
+
+    def test_full_drain_releases_standby_key(self, mock_collection, fake_redis, monkeypatch):
+        """회귀 — 끝까지 소비하는 정상 경로도 당연히 풀려야 한다."""
+        import llm_manager
+        from llm_manager._internal.file_processing.dedup import _make_standby_key
+
+        monkeypatch.setattr(llm_manager, "ensure_configured", lambda: None)
+
+        async def short_stream(**kwargs):
+            yield StreamChunk(text="only", finish_reason="STOP")
+
+        monkeypatch.setattr(runner, "aio_stream", short_stream)
+
+        it, meta = llm_manager.llm_request_stream(
+            {
+                "contents": "sync stream full drain",
+                "model": "gemini-2.5-flash",
+                "task_name": "test",
+            },
+            cache_mode=True, save_mode=True, database="test_db",
+        )
+        key = _make_standby_key("agent_llm", meta["cache_key"])
+        events = list(it)
+
+        assert [e["text"] for e in events] == ["only"]
+        assert fake_redis.get(key) is None
+
+
+# ── 캐시 히트 경로 (docs/36 §5-7) ──────────────────────────────
+
+
+class TestSyncStreamCacheHit:
+    """캐시 히트는 chunk 1개짜리 스트림으로 재생된다 — sync 래퍼도 정상 동작해야 한다.
+
+    이 경로에는 standby 토큰이 없다(`_cached_stream`). 그래서 정리 대상 자체가 없지만,
+    "chunk 1개 + 즉시 종료" 라는 형태가 루프 회수와 어긋나지 않는지 확인한다.
+    """
+
+    def test_cached_replay_through_sync_wrapper(self, mock_collection, fake_redis, monkeypatch):
+        import llm_manager
+
+        monkeypatch.setattr(llm_manager, "ensure_configured", lambda: None)
+
+        calls = {"n": 0}
+
+        async def counted_stream(**kwargs):
+            calls["n"] += 1
+            yield StreamChunk(text="cached me", finish_reason="STOP")
+
+        monkeypatch.setattr(runner, "aio_stream", counted_stream)
+        # 스트림 저장은 handler done event 의 assistant_message 로 이뤄진다 (PR #593 §2).
+        # 이것이 없으면 1회차가 저장되지 않아 2회차가 캐시 히트가 안 된다.
+        monkeypatch.setattr(runner, "last_assistant_message", lambda: Content.model_validate({
+            "role": "model",
+            "content": [{"type": "text", "text": "cached me"}],
+        }))
+
+        llm_input = {
+            "contents": "cache hit through sync stream",
+            "model": "gemini-2.5-flash",
+            "task_name": "test",
+        }
+
+        # 1회차 — live. 저장까지 끝낸다.
+        it1, meta1 = llm_manager.llm_request_stream(
+            llm_input, cache_mode=True, save_mode=True, database="test_db",
+        )
+        first = list(it1)
+        assert meta1["source"] == "live"
+        assert [e["text"] for e in first] == ["cached me"]
+
+        # 2회차 — 같은 입력이면 캐시에서 재생되고 LLM 을 다시 부르지 않는다.
+        it2, meta2 = llm_manager.llm_request_stream(
+            llm_input, cache_mode=True, save_mode=True, database="test_db",
+        )
+        second = list(it2)
+
+        assert meta2["source"] == "cache", "두 번째 호출이 캐시를 안 탔다"
+        assert calls["n"] == 1, f"캐시 히트인데 LLM 을 다시 불렀다 (호출 {calls['n']}회)"
+        assert [e["text"] for e in second] == ["cached me"], "재생 내용이 다르다"
+        assert it2._loop.is_closed(), "캐시 히트 경로에서 루프가 회수되지 않았다"
