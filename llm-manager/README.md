@@ -300,6 +300,14 @@ except FileResolveError:
 
 주력 함수. `llm_request_async`(비동기) / `llm_request`(동기 래퍼)는 단건 호출, `llm_request_stream_async` / `llm_request_stream`은 스트리밍이다. 모두 `(llm_input, *, stored_files, cache_mode, save_mode, database, timings, debug)` 시그니처를 공유하며 `(result, meta)` 를 반환한다. 아래는 입력·플래그·반환의 상세.
 
+> ⚠️ **스트리밍은 반환된 스트림을 끝까지 소비하거나 닫아야 한다** (`aclose()` / sync 는 `close()`).
+> 그 스트림이 dedup standby 리더 토큰을 쥐고 있어서, 받아 놓고 순회하지 않으면 같은 입력의 다른
+> 요청이 최대 `standby_ttl`(기본 600초)만큼 대기한다. 대기자는 리더가 죽었는지 일하는 중인지
+> 구분할 수 없어 TTL 을 다 기다린다. 상세는 `docs/36`.
+>
+> sync 판(`llm_request_stream`)은 **이미 실행 중인 이벤트 루프 안에서는 부를 수 없다** — async
+> 컨텍스트에서는 `llm_request_stream_async` 를 쓴다.
+
 ### llm_input 구조
 
 `llm_request_async`의 첫 번째 인자. **handler 생성 호출(`call()`)의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 내부에서 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
