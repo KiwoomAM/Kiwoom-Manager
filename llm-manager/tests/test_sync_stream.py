@@ -319,3 +319,102 @@ class TestSyncStreamCleanup:
 
         assert created, "루프가 만들어지지 않았다 — 테스트 전제가 깨졌다"
         assert all(lp.is_closed() for lp in created), "준비 실패 후 루프가 남았다"
+
+
+# ── PR #100 리뷰 대응 (docs/36 §4.5) ──────────────────────────
+
+
+class TestIteratorProtocol:
+    """소진·폐기 뒤에도 이터레이터 프로토콜을 지켜야 한다.
+
+    초판은 `StopAsyncIteration` 을 받으면 곧장 루프를 닫아서, 그 다음 호출이 닫힌 루프를
+    만나 `RuntimeError` 를 냈다. `next(it, default)`·재순회·itertools 조합처럼 평범한
+    소비 패턴이 깨진다 (PR #100 리뷰 🟠).
+    """
+
+    def test_repeated_next_after_exhaustion(self, monkeypatch):
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed, n=1))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        assert next(it)["text"] == "c0"
+
+        for _ in range(3):                       # 소진 뒤 여러 번 불러도
+            with pytest.raises(StopIteration):
+                next(it)
+
+    def test_next_with_default_after_exhaustion(self, monkeypatch):
+        """`next(it, default)` 방어 패턴이 살아 있어야 한다."""
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed, n=1))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        list(it)                                  # 소진
+        assert next(it, "SENTINEL") == "SENTINEL"
+
+    def test_relist_after_exhaustion_is_empty(self, monkeypatch):
+        """두 번째 `list()` 는 빈 리스트여야 한다 (예외가 아니라)."""
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed, n=2))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        assert len(list(it)) == 2
+        assert list(it) == []
+
+    def test_next_after_explicit_close(self, monkeypatch):
+        """명시적으로 닫은 뒤에도 StopIteration 이다."""
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        next(it)
+        it.close()
+        with pytest.raises(StopIteration):
+            next(it)
+
+
+class TestContextManager:
+    """`with` 로 확정 해제할 수 있어야 한다 — docstring 이 요구하는 "닫아라" 의 강제 수단."""
+
+    def test_with_closes_on_exit(self, monkeypatch):
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        with it as stream:
+            assert next(stream)["text"] == "c0"
+
+        assert closed == ["inner"], "with 블록을 나올 때 정리가 안 됐다"
+        assert it._loop.is_closed()
+
+    def test_with_closes_on_exception(self, monkeypatch):
+        """블록 안에서 예외가 나도 닫힌다."""
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        with pytest.raises(ValueError):
+            with it as stream:
+                next(stream)
+                raise ValueError("소비자 쪽 실패")
+
+        assert closed == ["inner"]
+        assert it._loop.is_closed()

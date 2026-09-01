@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from typing import Any, TypedDict
 
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
@@ -271,7 +271,7 @@ async def llm_request_stream_async(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
+) -> tuple[AsyncGenerator[dict[str, Any], None], dict[str, Any]]:
     """스트리밍 LLM 요청 (async).
 
     (이벤트 dict 스트림, meta) 튜플 반환. 각 이벤트는
@@ -297,7 +297,7 @@ async def llm_request_stream_async(
         debug=debug,
     )
 
-    async def _events() -> AsyncIterator[dict[str, Any]]:
+    async def _events() -> AsyncGenerator[dict[str, Any], None]:
         # `async for` 는 빠져나갈 때 안쪽 이터레이터를 닫지 않는다. 안쪽 스트림의 finally 에
         # **standby 리더 토큰 해제**가 걸려 있으므로(runner.py 의 `_leader_stream`), 여기서
         # 명시적으로 닫아 준다. 없으면 해제가 이벤트 루프의 asyncgen 파이널라이저 시점까지
@@ -331,7 +331,11 @@ class _SyncStream:
 
     __slots__ = ("_loop", "_agen", "_closed")
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, agen: AsyncIterator[dict[str, Any]]):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        agen: AsyncGenerator[dict[str, Any], None],
+    ):
         self._loop = loop
         self._agen = agen
         self._closed = False
@@ -340,6 +344,11 @@ class _SyncStream:
         return self
 
     def __next__(self) -> dict[str, Any]:
+        if self._closed:
+            # 이미 끝났거나 닫힌 이터레이터는 StopIteration 을 돌려줘야 한다.
+            # 그러지 않으면 닫힌 루프에서 RuntimeError 가 나 `next(it, default)`·재순회·
+            # itertools 조합 같은 평범한 소비 패턴이 깨진다 (PR #100 리뷰).
+            raise StopIteration
         try:
             return self._loop.run_until_complete(self._agen.__anext__())
         except StopAsyncIteration:
@@ -371,9 +380,20 @@ class _SyncStream:
             finally:
                 self._loop.close()
 
+    def __enter__(self) -> _SyncStream:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
     def __del__(self) -> None:
-        # 소비자가 한 번도 순회하지 않고 버려도 루프를 회수한다.
-        # (인터프리터 종료 중에는 보장되지 않는다 — docs/36 §4.3)
+        """**안전망일 뿐 계약이 아니다.**
+
+        호출 시점을 우리가 고르지 못한다. 같은 스레드에서 다른 이벤트 루프가 돌고 있으면
+        `close()` 의 `run_until_complete` 가 거부당해 정리가 실패하고(FastAPI 가
+        `run_in_threadpool` 로 부른 뒤 루프 스레드에서 수거되는 구성이 그렇다), 인터프리터
+        종료 중에도 마찬가지다(docs/36 §4.3). 확정 해제가 필요하면 `with` 나 `close()` 를 쓴다.
+        """
         try:
             self.close()
         except Exception:  # pragma: no cover - 종료 경로 방어
@@ -394,9 +414,15 @@ def llm_request_stream(
 
     chunk 가 도착하는 대로 하나씩 돌려준다(docs/36).
 
-    ⚠️ **반환된 이터레이터는 끝까지 소비하거나 `close()` 해야 한다.** 방치하면 같은 입력의
-    다른 요청이 최대 `standby_ttl`(기본 600초) 만큼 대기한다 — 안쪽 스트림이 그동안
-    dedup standby 리더 토큰을 쥐고 있기 때문이다.
+    ⚠️ **반환된 이터레이터는 끝까지 소비하거나 `close()` 해야 한다** (`with` 권장). 방치하면
+    같은 입력의 다른 요청이 최대 `standby_ttl`(기본 600초) 만큼 대기한다 — 안쪽 스트림이
+    그동안 dedup standby 리더 토큰을 쥐고 있기 때문이다.
+
+    ⚠️ **다만 한 번도 순회하지 않은 경우에는 `close()` 로도 그 토큰이 풀리지 않는다.**
+    토큰 획득은 제너레이터 **바깥**에서 일어나는데 해제는 **안쪽 `finally`** 에 있고,
+    시작조차 안 된 async 제너레이터에는 실행할 `finally` 가 없기 때문이다(PEP 525).
+    이 비대칭은 `llm_request_stream_async` 도 같다. 해소하려면 토큰 획득 시점을 옮겨야 하며
+    별건이다 (docs/36 §3.2·§7). **받았으면 최소한 한 번은 순회하라.**
 
     ⚠️ **이미 실행 중인 이벤트 루프 안에서는 부를 수 없다.** async 컨텍스트에서는
     `llm_request_stream_async` 를 쓴다.
