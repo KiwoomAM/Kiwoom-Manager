@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Iterator
-from typing import Any, TypedDict
+from typing import Any, Protocol, TypedDict
 
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
 from llm_manager._internal import runner
@@ -96,6 +96,7 @@ __all__ = [
     "llm_request",
     "llm_request_stream_async",
     "llm_request_stream",
+    "StreamIterator",
     "file_preprocessing",
     "file_preprocessing_async",
     "done_check",
@@ -318,6 +319,24 @@ async def llm_request_stream_async(
     return _events(), meta
 
 
+class StreamIterator(Protocol):
+    """sync 스트리밍의 반환 계약 — **소비자가 확정 해제할 수 있어야 한다** (docs/36 §3.1).
+
+    평범한 이터레이터가 아니라 **자원(이벤트 루프 + dedup standby 리더 토큰)을 쥔 이터레이터**다.
+    그래서 `close()` 와 `with` 를 계약에 포함한다 — docstring 이 "닫아라" 고만 하고 타입에
+    없으면, 타입체커를 쓰는 성실한 소비자일수록 그 지시를 못 따른다(PR #100 리뷰).
+
+    구현(`_SyncStream`)이 아니라 이 계약을 내보내므로, 나중에 sync 판을 갈아 끼워도
+    호출부는 바뀌지 않는다.
+    """
+
+    def __iter__(self) -> Iterator[dict[str, Any]]: ...
+    def __next__(self) -> dict[str, Any]: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> StreamIterator: ...
+    def __exit__(self, *exc_info: object) -> None: ...
+
+
 class _SyncStream:
     """async 이벤트 스트림을 sync 이터레이터로 노출한다 (docs/36 §3.1).
 
@@ -409,7 +428,7 @@ def llm_request_stream(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
+) -> tuple[StreamIterator, dict[str, Any]]:
     """스트리밍 LLM 요청 (sync). `llm_request_stream_async` 의 동기 래퍼.
 
     chunk 가 도착하는 대로 하나씩 돌려준다(docs/36).

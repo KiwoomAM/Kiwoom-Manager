@@ -418,3 +418,29 @@ class TestContextManager:
 
         assert closed == ["inner"]
         assert it._loop.is_closed()
+
+
+class TestReturnContract:
+    """docstring 이 요구하는 것(`close()`·`with`)이 **타입에도** 있어야 한다.
+
+    반환 타입이 `Iterator[dict]` 이던 시절에는 docstring 이 시키는 대로 쓰면 타입 검사가
+    깨졌다 — 타입체커를 쓰는 성실한 소비자일수록 계약을 어기게 된다(PR #100 리뷰).
+    """
+
+    def test_stream_iterator_is_public(self):
+        assert "StreamIterator" in llm_manager.__all__
+        assert hasattr(llm_manager, "StreamIterator")
+
+    def test_returned_object_satisfies_contract(self, monkeypatch):
+        produced: list[int] = []
+        closed: list[str] = []
+        _patch_stream(monkeypatch, _counting_inner(produced, closed))
+
+        it, _meta = llm_manager.llm_request_stream(
+            {"contents": "x", "model": "gemini-2.5-flash"},
+        )
+        try:
+            for name in ("__iter__", "__next__", "close", "__enter__", "__exit__"):
+                assert hasattr(it, name), f"반환 객체에 {name} 이 없다 — 계약 위반"
+        finally:
+            it.close()
