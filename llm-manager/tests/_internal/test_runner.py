@@ -661,3 +661,219 @@ def test_to_stream_chunk_preserves_url_context():
 
     assert chunk.url_context is not None
     assert chunk.url_context.url_metadata[0].retrieved_url == "https://example.com/a"
+
+
+# ── 플래그 조합 × 파일 전달 (docs/35 §5-A) ─────────────────────
+
+
+class TestFlagCombinationsPassFilesThrough:
+    """`cache_mode`/`save_mode` 는 MDB 응답 캐시만 가른다 — 파일 첨부와 직교해야 한다.
+
+    이 축(플래그 → 파일 전달)에는 그동안 `llm_request_*` 수준 테스트가 0건이었다.
+    docs/35 §5-A. 회귀망을 여기서 만든다.
+    """
+
+    @staticmethod
+    def _stored_file():
+        from llm_manager.models import StoredFile
+
+        return StoredFile(
+            file_path="primary-uuid.pdf",
+            file_name="y.pdf", file_size=2, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+        )
+
+    @staticmethod
+    def _file_input():
+        from llm_manager.models import FileInput
+
+        return FileInput(
+            file_name="y.pdf", file_size=2, file_mtime=0,
+            mime_type="application/pdf", extension=".pdf",
+            data=b"",
+            file_path="primary-uuid.pdf",
+            resolved_via="primary",
+        )
+
+    @staticmethod
+    def _assert_attached(seen_calls, sentinel, where):
+        """첨부가 **실제 handler 호출 입력까지** 갔는지 본다.
+
+        `resolve_files` 에 들어간 것만 보면 부족하다 — 그 뒤 `_apply_resolved` 가 parts 를
+        통째로 버려도 통과해 버린다(돌연변이로 확인). 계약은 "LLM 이 파일을 받는다" 이므로
+        handler 인자의 contents 에서 확인한다.
+        """
+        assert seen_calls, f"{where}: handler 가 불리지 않았다"
+        contents = seen_calls[0]["contents"]
+        assert isinstance(contents, list), (
+            f"{where}: 첨부가 있으면 contents 는 list 여야 한다 — 실제 {type(contents).__name__}"
+        )
+        assert sentinel in contents, (
+            f"{where}: 첨부 Part 가 handler 입력에 없다 — 파일이 LLM 까지 가지 못했다"
+        )
+
+    def _patch(self, monkeypatch, *, seen_files, seen_calls):
+        """resolve_stored_files / resolve_files / aio_call·aio_stream 을 모두 가로챈다.
+
+        반환: 첨부를 대표하는 센티널 `Part`. 호출부는 이것이 handler 입력까지 갔는지 본다.
+        """
+        from llm_manager._internal import runner
+        from llm_manager._internal.file_processing.resolver import ResolvedFiles
+        from llm_manager._internal.handler_client.models import (
+            LLMResponse,
+            Part,
+            StreamChunk,
+            TokenUsage,
+        )
+
+        file_input = self._file_input()
+        sentinel = Part.from_bytes(data=b"ATTACHED-SENTINEL", mime_type="application/pdf")
+
+        async def fake_resolve_stored(refs):
+            return [file_input]
+
+        async def fake_resolve_files(files, llm_input, **kwargs):
+            # 여기 도달 = 파일이 파이프라인에 들어감. 실제 LLM 도달은 _assert_attached 가 본다.
+            seen_files.extend(files)
+            return ResolvedFiles(
+                inline_parts=[sentinel],
+                uri_parts=[],
+                cached_content=None,
+            )
+
+        async def fake_aio_call(**kwargs):
+            seen_calls.append(kwargs)
+            return LLMResponse(
+                text="ok", model="gemini-2.5-flash",
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+                finish_reason="STOP", request_id="req-test",
+            )
+
+        async def fake_aio_stream(**kwargs):
+            seen_calls.append(kwargs)
+            yield StreamChunk(text="ok", finish_reason="STOP")
+
+        monkeypatch.setattr(runner, "resolve_stored_files", fake_resolve_stored)
+        monkeypatch.setattr(runner, "resolve_files", fake_resolve_files)
+        monkeypatch.setattr(runner, "aio_call", fake_aio_call)
+        monkeypatch.setattr(runner, "aio_stream", fake_aio_stream)
+        return sentinel
+
+    # ── §5-1: 비스트림 ──────────────────────────────────────
+
+    async def test_cache_off_save_off_still_attaches_file(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """F/F 여도 첨부가 LLM 호출까지 도달한다 (docs/35 §5-1)."""
+        from llm_manager._internal import runner
+
+        seen_files, seen_calls = [], []
+        sentinel = self._patch(monkeypatch, seen_files=seen_files, seen_calls=seen_calls)
+
+        await runner.llm_request_async(
+            {"contents": "요약해줘", "model": "gemini-2.5-flash", "task_name": "t"},
+            stored_files=[self._stored_file()],
+            cache_mode=False, save_mode=False,
+            database="test_db",
+        )
+
+        assert [f.file_name for f in seen_files] == ["y.pdf"], (
+            "F/F 에서 stored_files 가 버려졌다 — 파일이 resolve_files 까지 오지 못했다"
+        )
+        self._assert_attached(seen_calls, sentinel, "F/F 비스트림")
+
+    # ── §5-2: 스트림 ────────────────────────────────────────
+
+    async def test_stream_cache_off_save_off_still_attaches_file(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """스트림도 같은 계약 — F/F 에서 첨부가 살아 있다 (docs/35 §5-2)."""
+        from llm_manager._internal import runner
+
+        seen_files, seen_calls = [], []
+        sentinel = self._patch(monkeypatch, seen_files=seen_files, seen_calls=seen_calls)
+
+        chunks, _meta = await runner.llm_request_stream_async(
+            {"contents": "요약해줘", "model": "gemini-2.5-flash", "task_name": "t"},
+            stored_files=[self._stored_file()],
+            cache_mode=False, save_mode=False,
+            database="test_db",
+        )
+        async for _chunk in chunks:
+            pass
+
+        assert [f.file_name for f in seen_files] == ["y.pdf"], (
+            "스트림 F/F 에서 stored_files 가 버려졌다"
+        )
+        self._assert_attached(seen_calls, sentinel, "F/F 스트림")
+
+    # ── §5-3: prepare() 단위 ────────────────────────────────
+
+    def test_prepare_branch_one_keeps_files(self):
+        """분기 ①(F/F) 이 files 를 보존한다 — dc 는 없고 files 는 있다 (docs/35 §5-3)."""
+        from llm_manager._internal.runner import prepare
+
+        fi = self._file_input()
+        prep = prepare(
+            {"contents": "요약해줘", "model": "gemini-2.5-flash"},
+            files=[fi],
+            cache_mode=False, save_mode=False,
+        )
+
+        assert prep.dc is None, "F/F 는 캐시 키를 만들지 않는다"
+        assert prep.files == [fi], "분기 ① 이 files 를 버렸다"
+
+    # ── §5-4: 회귀 — 저장 정책은 그대로 ──────────────────────
+
+    async def test_cache_off_save_off_still_does_not_save(
+        self, mock_collection, fake_redis, monkeypatch,
+    ):
+        """파일을 흘려보낸다고 캐시 정책이 따라 바뀌면 안 된다 (docs/35 §5-4)."""
+        from llm_manager._internal import runner
+
+        saved = []
+        seen_files, seen_calls = [], []
+        self._patch(monkeypatch, seen_files=seen_files, seen_calls=seen_calls)
+        monkeypatch.setattr(
+            runner, "save_result", lambda *a, **k: saved.append(a),
+        )
+
+        await runner.llm_request_async(
+            {"contents": "요약해줘", "model": "gemini-2.5-flash", "task_name": "t"},
+            stored_files=[self._stored_file()],
+            cache_mode=False, save_mode=False,
+            database="test_db",
+        )
+
+        assert saved == [], "save_mode=False 인데 MDB 에 저장했다"
+
+    # ── §5-5: 회귀 — 나머지 세 조합 ─────────────────────────
+
+    @pytest.mark.parametrize(
+        ("cache_mode", "save_mode"),
+        [(True, True), (True, False), (False, True)],
+    )
+    async def test_other_combinations_also_attach_file(
+        self, mock_collection, fake_redis, fast_backoff, monkeypatch,
+        cache_mode, save_mode,
+    ):
+        """T/T·T/F·F/T 에서도 첨부가 도달한다 (docs/35 §5-5)."""
+        from llm_manager._internal import runner
+
+        seen_files, seen_calls = [], []
+        sentinel = self._patch(monkeypatch, seen_files=seen_files, seen_calls=seen_calls)
+
+        await runner.llm_request_async(
+            {"contents": f"요약해줘 {cache_mode}{save_mode}",
+             "model": "gemini-2.5-flash", "task_name": "t"},
+            stored_files=[self._stored_file()],
+            cache_mode=cache_mode, save_mode=save_mode,
+            standby_ttl_seconds=1, database="test_db",
+        )
+
+        assert [f.file_name for f in seen_files] == ["y.pdf"], (
+            f"cache_mode={cache_mode}, save_mode={save_mode} 에서 첨부가 사라졌다"
+        )
+        self._assert_attached(
+            seen_calls, sentinel, f"cache_mode={cache_mode}, save_mode={save_mode}",
+        )

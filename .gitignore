@@ -219,3 +219,4 @@ __marimo__/
 certs/
 docs/
 !llm-manager/docs/
+llm-manager/guide-doc/

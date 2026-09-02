@@ -29,8 +29,9 @@ mdb·redis·file manager 와 llm-handler 를 조합해 LLM 응답을 캐싱하�
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, TypedDict
+import logging
+from collections.abc import AsyncGenerator, Iterator
+from typing import Any, Protocol, TypedDict
 
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
 from llm_manager._internal import runner
@@ -95,6 +96,7 @@ __all__ = [
     "llm_request",
     "llm_request_stream_async",
     "llm_request_stream",
+    "StreamIterator",
     "file_preprocessing",
     "file_preprocessing_async",
     "done_check",
@@ -149,6 +151,9 @@ __all__ = [
     "HandlerConnectionError",
     "HandlerError",
 ]
+
+
+logger = logging.getLogger(__name__)
 
 
 async def close() -> None:
@@ -267,12 +272,17 @@ async def llm_request_stream_async(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[AsyncIterator[dict[str, Any]], dict[str, Any]]:
+) -> tuple[AsyncGenerator[dict[str, Any], None], dict[str, Any]]:
     """스트리밍 LLM 요청 (async).
 
     (이벤트 dict 스트림, meta) 튜플 반환. 각 이벤트는
     {"type": "chunk", "text": ..., "finish_reason": ..., "usage"?: ...}.
     mid-stream 에러는 async for 가 그대로 raise (HandlerError 등).
+
+    ⚠️ **반환된 스트림은 끝까지 소비하거나 `aclose()` 해야 한다.** 이 스트림은 dedup standby
+    리더 토큰을 쥐고 있고, 그 해제가 스트림의 `finally` 에 걸려 있다. 받아 놓고 순회하지 않으면
+    같은 입력의 다른 요청이 최대 `standby_ttl`(기본 600초)만큼 대기한다 — 대기자는 리더가
+    죽었는지 일하는 중인지 구분할 수 없어 TTL 을 다 기다린다 (docs/36 §3.2).
     """
     await asyncio.to_thread(ensure_configured)
     t = _resolve_timings(timings)
@@ -288,18 +298,125 @@ async def llm_request_stream_async(
         debug=debug,
     )
 
-    async def _events() -> AsyncIterator[dict[str, Any]]:
-        async for chunk in chunk_stream:
-            event: dict[str, Any] = {
-                "type": "chunk",
-                "text": chunk.text,
-                "finish_reason": chunk.finish_reason,
-            }
-            if chunk.usage:
-                event["usage"] = chunk.usage.model_dump()
-            yield event
+    async def _events() -> AsyncGenerator[dict[str, Any], None]:
+        # `async for` 는 빠져나갈 때 안쪽 이터레이터를 닫지 않는다. 안쪽 스트림의 finally 에
+        # **standby 리더 토큰 해제**가 걸려 있으므로(runner.py 의 `_leader_stream`), 여기서
+        # 명시적으로 닫아 준다. 없으면 해제가 이벤트 루프의 asyncgen 파이널라이저 시점까지
+        # 미뤄져 GC 타이밍에 달린다 — 그동안 같은 입력의 다른 요청이 대기한다 (docs/36 §4.1).
+        try:
+            async for chunk in chunk_stream:
+                event: dict[str, Any] = {
+                    "type": "chunk",
+                    "text": chunk.text,
+                    "finish_reason": chunk.finish_reason,
+                }
+                if chunk.usage:
+                    event["usage"] = chunk.usage.model_dump()
+                yield event
+        finally:
+            await chunk_stream.aclose()
 
     return _events(), meta
+
+
+class StreamIterator(Protocol):
+    """sync 스트리밍의 반환 계약 — **소비자가 확정 해제할 수 있어야 한다** (docs/36 §3.1).
+
+    평범한 이터레이터가 아니라 **자원(이벤트 루프 + dedup standby 리더 토큰)을 쥔 이터레이터**다.
+    그래서 `close()` 와 `with` 를 계약에 포함한다 — docstring 이 "닫아라" 고만 하고 타입에
+    없으면, 타입체커를 쓰는 성실한 소비자일수록 그 지시를 못 따른다(PR #100 리뷰).
+
+    구현(`_SyncStream`)이 아니라 이 계약을 내보내므로, 나중에 sync 판을 갈아 끼워도
+    호출부는 바뀌지 않는다.
+    """
+
+    def __iter__(self) -> Iterator[dict[str, Any]]: ...
+    def __next__(self) -> dict[str, Any]: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> StreamIterator: ...
+    def __exit__(self, *exc_info: object) -> None: ...
+
+
+class _SyncStream:
+    """async 이벤트 스트림을 sync 이터레이터로 노출한다 (docs/36 §3.1).
+
+    `asyncio.run` 은 코루틴을 **끝까지 돌리고 루프를 닫는다.** 그래서 그것으로는 chunk 를
+    도중에 건네줄 수 없어 전부 모으게 된다. 여기서는 루프를 **열어 둔 채** 소비자가
+    `next()` 를 부를 때마다 `run_until_complete(__anext__())` 로 딱 한 걸음씩만 돌린다.
+
+    이 객체가 **이벤트 루프를 소유한다.** 따라서 어떤 경로로 끝나든 반드시 회수해야 한다:
+    끝까지 소비 / 중간 포기 / 예외 / 한 번도 소비 안 함(→ `__del__`). `close()` 는 멱등이다.
+    """
+
+    __slots__ = ("_loop", "_agen", "_closed")
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        agen: AsyncGenerator[dict[str, Any], None],
+    ):
+        self._loop = loop
+        self._agen = agen
+        self._closed = False
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return self
+
+    def __next__(self) -> dict[str, Any]:
+        if self._closed:
+            # 이미 끝났거나 닫힌 이터레이터는 StopIteration 을 돌려줘야 한다.
+            # 그러지 않으면 닫힌 루프에서 RuntimeError 가 나 `next(it, default)`·재순회·
+            # itertools 조합 같은 평범한 소비 패턴이 깨진다 (PR #100 리뷰).
+            raise StopIteration
+        try:
+            return self._loop.run_until_complete(self._agen.__anext__())
+        except StopAsyncIteration:
+            self.close()
+            raise StopIteration from None
+        except BaseException:
+            # mid-stream 실패도 자원은 회수하고 예외는 그대로 올린다 (FAIL-LOUD).
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """스트림과 루프를 회수한다. 여러 번 불러도 안전하다."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            # 안쪽 스트림의 finally(= standby 리더 토큰 해제)를 여기서 돌린다.
+            self._loop.run_until_complete(self._agen.aclose())
+        except Exception:
+            # 전송 계층 teardown(httpx 등)이 던질 수 있다. 삼키되 루프 회수는 계속한다 —
+            # 여기서 예외가 밖으로 나가면 아래 정리가 통째로 날아가 루프가 샌다.
+            logger.warning("sync 스트림 정리 중 aclose 실패", exc_info=True)
+        finally:
+            try:
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                # dedup 이 asyncio.to_thread 를 쓰므로 executor 스레드가 생긴다.
+                # asyncio.run 이 대신 해 주던 정리를 수동 루프에서는 직접 해야 한다.
+                self._loop.run_until_complete(self._loop.shutdown_default_executor())
+            finally:
+                self._loop.close()
+
+    def __enter__(self) -> _SyncStream:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        """**안전망일 뿐 계약이 아니다.**
+
+        호출 시점을 우리가 고르지 못한다. 같은 스레드에서 다른 이벤트 루프가 돌고 있으면
+        `close()` 의 `run_until_complete` 가 거부당해 정리가 실패하고(FastAPI 가
+        `run_in_threadpool` 로 부른 뒤 루프 스레드에서 수거되는 구성이 그렇다), 인터프리터
+        종료 중에도 마찬가지다(docs/36 §4.3). 확정 해제가 필요하면 `with` 나 `close()` 를 쓴다.
+        """
+        try:
+            self.close()
+        except Exception:  # pragma: no cover - 종료 경로 방어
+            pass
 
 
 def llm_request_stream(
@@ -311,25 +428,42 @@ def llm_request_stream(
     database: str | None = None,
     timings: Timings | None = None,
     debug: bool = False,
-) -> tuple[Iterator[dict[str, Any]], dict[str, Any]]:
-    """스트리밍 LLM 요청 (sync). llm_request_stream_async 의 동기 래퍼."""
-    async def _collect() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        event_stream, meta = await llm_request_stream_async(
-            llm_input,
-            stored_files=stored_files,
-            cache_mode=cache_mode,
-            save_mode=save_mode,
-            database=database,
-            timings=timings,
-            debug=debug,
-        )
-        events: list[dict[str, Any]] = []
-        async for event in event_stream:
-            events.append(event)
-        return events, meta
+) -> tuple[StreamIterator, dict[str, Any]]:
+    """스트리밍 LLM 요청 (sync). `llm_request_stream_async` 의 동기 래퍼.
 
-    events, meta = asyncio.run(_collect())
-    return iter(events), meta
+    chunk 가 도착하는 대로 하나씩 돌려준다(docs/36).
+
+    ⚠️ **반환된 이터레이터는 끝까지 소비하거나 `close()` 해야 한다** (`with` 권장). 방치하면
+    같은 입력의 다른 요청이 최대 `standby_ttl`(기본 600초) 만큼 대기한다 — 안쪽 스트림이
+    그동안 dedup standby 리더 토큰을 쥐고 있기 때문이다.
+
+    ⚠️ **다만 한 번도 순회하지 않은 경우에는 `close()` 로도 그 토큰이 풀리지 않는다.**
+    토큰 획득은 제너레이터 **바깥**에서 일어나는데 해제는 **안쪽 `finally`** 에 있고,
+    시작조차 안 된 async 제너레이터에는 실행할 `finally` 가 없기 때문이다(PEP 525).
+    이 비대칭은 `llm_request_stream_async` 도 같다. 해소하려면 토큰 획득 시점을 옮겨야 하며
+    별건이다 (docs/36 §3.2·§7). **받았으면 최소한 한 번은 순회하라.**
+
+    ⚠️ **이미 실행 중인 이벤트 루프 안에서는 부를 수 없다.** async 컨텍스트에서는
+    `llm_request_stream_async` 를 쓴다.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        agen, meta = loop.run_until_complete(
+            llm_request_stream_async(
+                llm_input,
+                stored_files=stored_files,
+                cache_mode=cache_mode,
+                save_mode=save_mode,
+                database=database,
+                timings=timings,
+                debug=debug,
+            )
+        )
+    except BaseException:
+        # 준비 단계에서 실패해도 이미 만든 루프는 흘리지 않는다.
+        loop.close()
+        raise
+    return _SyncStream(loop, agen), meta
 
 
 async def file_preprocessing_async(
