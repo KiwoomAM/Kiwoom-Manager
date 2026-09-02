@@ -360,6 +360,39 @@ def call(
 
 스트리밍은 `stream()`으로 동일 파라미터 사용. async 버전은 `llm_manager.aio.stream()`.
 
+#### `tools` 형식 — 평평한 dict 목록
+
+**Gemini 원문서처럼 `function_declarations` 로 감싸면 안 된다** — handler 가 `HandlerInternalError`(500) 를 낸다.
+
+```python
+llm_input = {
+    "contents": "삼성전자(005930) 현재가 알려줘.",
+    "model": "gemini-3-flash-preview",
+    "tools": [                                   # ✅ 평평한 dict 목록
+        {
+            "name": "get_stock_price",
+            "description": "종목의 현재가를 조회한다",
+            "parameters": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string", "description": "종목코드"}},
+                "required": ["ticker"],
+            },
+        }
+    ],
+    "tool_config": "any",                        # "auto" | "any" | "none" | "validated"
+}
+
+# ❌ tools: [{"function_declarations": [{...}]}]   → 500
+```
+
+내장(server-side) 도구는 이름만 있는 dict 로 켠다.
+
+```python
+"tools": [{"google_search": {}}]                 # url_context·code_execution 도 같은 꼴
+```
+
+도구를 쓰면 `response.text` 가 `None` 이고 `response.function_calls` 에 호출이 담긴다. 스트리밍은 아래 [스트리밍 이벤트](#스트리밍-이벤트) 참고.
+
 ### cache_mode / save_mode
 
 조합별 흐름은 [8. Runner — 캐시 조회 및 LLM 호출 흐름](#8-runner) 참고.
@@ -408,8 +441,48 @@ response, meta = await llm_request_async(
 | `model` | `str` | 사용된 모델명 |
 | `usage` | `TokenUsage \| None` | 토큰 사용량 |
 | `finish_reason` | `str \| None` | 종료 사유 (`"STOP"`, `"MAX_TOKENS"`, `"SAFETY"` 등) |
-| `function_calls` | `list[FunctionCall] \| None` | 모델이 요청한 함수 호출 |
+| `function_calls` | `list[FunctionCall] \| None` | 모델이 요청한 client-side 함수 호출 |
+| `tool_calls` | `list[ToolCallInfo] \| None` | Gemini server-side tool 호출 흔적 (google_search 등) |
+| `tool_responses` | `list[ToolResponseInfo] \| None` | 그 tool 의 응답 |
+| `code_blocks` | `list[CodeBlock] \| None` | code_execution 이 생성한 코드 |
+| `code_results` | `list[CodeResult] \| None` | 그 코드의 실행 결과 |
+| `grounding` | `Grounding \| None` | google_search 인용 출처 |
+| `url_context` | `UrlContextMetadata \| None` | url_context 도구가 읽은 URL |
+| `assistant_message` | `Content \| None` | 그 턴의 완성 발화 (role + Part 목록). 다음 턴 이력에 그대로 echo 가능 |
 | `request_id` | `str` | 요청 식별자 |
+
+### 스트리밍 이벤트
+
+`llm_request_stream_async` / `llm_request_stream` 은 `LLMResponse` 가 아니라 **이벤트 dict** 를 흘린다. 항상 세 키를 갖는다.
+
+```python
+{"type": "chunk", "text": ..., "finish_reason": ...}
+```
+
+아래 키는 **그 청크에 값이 있을 때만** 붙으므로 쓰기 전에 있는지 확인해야 한다. 값은 모두 `model_dump()` 된 dict 라 그대로 `json.dumps` 로 떨어진다.
+
+| 키 | 설명 |
+| --- | --- |
+| `usage` | 토큰 사용량 |
+| `function_calls` | 모델이 요청한 client-side 함수 호출 |
+| `tool_calls` · `tool_responses` | server-side tool 호출·응답 |
+| `code_blocks` · `code_results` | code_execution 코드·결과 |
+| `grounding` | google_search 인용 출처 |
+| `url_context` | url_context 도구가 읽은 URL |
+
+**리스트 5종(`function_calls`·`tool_calls`·`tool_responses`·`code_blocks`·`code_results`)은 소비자가 이어붙여 누적해야 한다.** 청크마다 자기 몫만 실려 오기 때문이다 — 병렬 함수 호출 N 개는 N 개 청크에 1 개씩 나뉘어 온다. 덮어쓰기로 구현하면 마지막 청크 것만 남아 **앞의 호출이 조용히 사라진다.**
+
+```python
+stream, meta = await llm_request_stream_async(llm_input)
+
+calls = []
+async for ev in stream:
+    if ev.get("text"):
+        print(ev["text"], end="")
+    calls += ev.get("function_calls", [])      # ← 덮어쓰지 말고 누적
+```
+
+> **캐시 히트면 스트림 전체가 이벤트 1 개다.** 저장해 둔 응답을 청크 하나로 되돌리므로 `text`(전문)와 도구 필드가 **같은 이벤트에** 실린다. 라이브에서는 도구 필드가 text 없는 청크로 따로 오는 것이 보통이라, `if ev.get("text"): ... else: 도구` 로 짜면 캐시 히트마다 함수 호출을 놓친다. 두 필드를 독립적으로 볼 것.
 
 ### ResponseMeta
 
