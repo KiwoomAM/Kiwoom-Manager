@@ -16,7 +16,11 @@ from llm_manager._internal.file_processing import (
     resolve_files_after_404,
 )
 from llm_manager._internal.gemini_errors import is_gemini_404
-from llm_manager._internal.handler_client._common import extend_stream_field
+from llm_manager._internal.handler_client._common import (
+    STREAM_EXTEND_FIELDS,
+    STREAM_REPLACE_FIELDS,
+    extend_stream_field,
+)
 from llm_manager._internal.handler_client.aio import call as aio_call
 from llm_manager._internal.handler_client.aio import last_assistant_message
 from llm_manager._internal.handler_client.aio import stream as aio_stream
@@ -304,17 +308,15 @@ class _StreamMeta:
     url_context: UrlContextMetadata | None = None
 
     def update(self, chunk: StreamChunk) -> None:
+        # 대상 분류는 _common 의 STREAM_EXTEND_FIELDS / STREAM_REPLACE_FIELDS 가 SSOT.
         # 리스트 5종: 청크마다 흩어져 오므로 extend(앞엣것 보존)
-        self.function_calls = extend_stream_field(self.function_calls, chunk.function_calls)
-        self.tool_calls = extend_stream_field(self.tool_calls, chunk.tool_calls)
-        self.tool_responses = extend_stream_field(self.tool_responses, chunk.tool_responses)
-        self.code_blocks = extend_stream_field(self.code_blocks, chunk.code_blocks)
-        self.code_results = extend_stream_field(self.code_results, chunk.code_results)
+        for name in STREAM_EXTEND_FIELDS:
+            setattr(self, name, extend_stream_field(getattr(self, name), getattr(chunk, name)))
         # 단발성 컨테이너: 마지막 non-None 으로 덮어씀
-        if chunk.grounding is not None:
-            self.grounding = chunk.grounding
-        if chunk.url_context is not None:
-            self.url_context = chunk.url_context
+        for name in STREAM_REPLACE_FIELDS:
+            value = getattr(chunk, name)
+            if value is not None:
+                setattr(self, name, value)
 
 
 def _finalize_stream(

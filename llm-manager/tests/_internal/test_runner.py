@@ -877,3 +877,57 @@ class TestFlagCombinationsPassFilesThrough:
         self._assert_attached(
             seen_calls, sentinel, f"cache_mode={cache_mode}, save_mode={save_mode}",
         )
+
+
+def test_to_stream_chunk_carries_every_field():
+    """StreamChunk 의 모든 필드가 옮겨지는지 — 나열을 빠뜨리면 빨개진다.
+
+    `_to_stream_chunk` 는 필드를 손으로 나열한다. `StreamChunk` 에 필드가 늘었는데 여기
+    안 더하면 **캐시 히트 응답에서만 그 필드가 조용히 사라진다** — 이슈 #99 와 같은 부류의
+    사고이고, 라이브 경로는 멀쩡하므로 재현이 어렵다. 위 url_context 테스트는 한 필드만
+    보므로 나머지 아홉이 무방비였다. 여기서 불변식으로 전부 붙든다.
+    """
+    from llm_manager._internal.handler_client.models import (
+        CodeBlock,
+        CodeResult,
+        FunctionCall,
+        Grounding,
+        GroundingChunk,
+        StreamChunk,
+        TokenUsage,
+        ToolCallInfo,
+        ToolResponseInfo,
+        UrlContextMetadata,
+        UrlMetadata,
+    )
+    from llm_manager._internal.runner import _to_stream_chunk
+
+    response = LLMResponse(
+        text="답변입니다.",
+        model="gemini-3-flash-preview",
+        request_id="req_all",
+        finish_reason="STOP",
+        usage=TokenUsage(input_tokens=1, output_tokens=2, total_tokens=3),
+        function_calls=[FunctionCall(name="get_price", args={"sym": "005930"}, id="fc-1")],
+        tool_calls=[ToolCallInfo(tool_type="GOOGLE_SEARCH_WEB", id="tc-1")],
+        tool_responses=[ToolResponseInfo(tool_type="GOOGLE_SEARCH_WEB", id="tc-1")],
+        code_blocks=[CodeBlock(language="PYTHON", code="print(1)", id="cb-1")],
+        code_results=[CodeResult(outcome="OUTCOME_OK", output="1", id="cr-1")],
+        grounding=Grounding(
+            web_search_queries=["삼성전자 주가"],
+            chunks=[GroundingChunk(title="mk.co.kr", uri="https://vertex.../a")],
+        ),
+        url_context=UrlContextMetadata(
+            url_metadata=[
+                UrlMetadata(
+                    retrieved_url="https://example.com/a",
+                    url_retrieval_status="URL_RETRIEVAL_STATUS_SUCCESS",
+                )
+            ]
+        ),
+    )
+
+    chunk = _to_stream_chunk(response)
+
+    dropped = [f for f in StreamChunk.model_fields if getattr(chunk, f) is None]
+    assert dropped == [], f"_to_stream_chunk 가 옮기지 않은 필드: {dropped}"

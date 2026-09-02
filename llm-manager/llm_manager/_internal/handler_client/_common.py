@@ -40,6 +40,20 @@ _done_payload_var: ContextVar[dict[str, object] | None] = ContextVar("llm_handle
 ContentsType = str | list[str | FileRef | Part]
 
 
+# 스트림 청크에 흩어져 오는 candidate-level 필드를 누적 규칙별로 나눈 분류 (SSOT).
+# "어느 필드가 이어붙이기고 어느 것이 갈아끼우기인가" 의 단일 출처 — 아래
+# extend_stream_field docstring 이 그 규칙을 설명하고, 이 두 튜플이 대상을 정한다.
+# 누적하는 쪽(runner._StreamMeta)과 이벤트로 내보내는 쪽(llm_manager._events)이 함께 쓴다.
+STREAM_EXTEND_FIELDS = (
+    "function_calls",
+    "tool_calls",
+    "tool_responses",
+    "code_blocks",
+    "code_results",
+)
+STREAM_REPLACE_FIELDS = ("grounding", "url_context")
+
+
 def extend_stream_field(dst: list | None, src: list | None) -> list | None:
     """스트림 청크마다 흩어져 오는 리스트 필드를 앞엣것을 버리지 않고 이어붙인다.
 
