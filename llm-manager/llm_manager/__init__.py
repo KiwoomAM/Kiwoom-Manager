@@ -36,9 +36,9 @@ from typing import Any, Protocol, TypedDict
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
 from llm_manager._internal import runner
 from llm_manager._internal._config import ensure_configured
-from llm_manager._internal.file_processing import preprocess
 from llm_manager._internal.context_cache_lifecycle import expire_caches, extend_caches
 from llm_manager._internal.done_check import done_check as _done_check
+from llm_manager._internal.file_processing import preprocess
 
 # handler_client(흡수한 HTTP 클라이언트)는 llm_manager 내부. 공개 표면은 매니저가 큐레이션한다:
 #   - 생성 primitive (매니저가 캐싱 의견 없음): call/stream/embed/session
@@ -66,6 +66,10 @@ from llm_manager._internal.handler_client import (
     embed,
     session,
     stream,
+)
+from llm_manager._internal.handler_client._common import (
+    STREAM_EXTEND_FIELDS,
+    STREAM_REPLACE_FIELDS,
 )
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.store import fetch_by_cache_key as _fetch_by_cache_key
@@ -275,8 +279,32 @@ async def llm_request_stream_async(
 ) -> tuple[AsyncGenerator[dict[str, Any], None], dict[str, Any]]:
     """스트리밍 LLM 요청 (async).
 
-    (이벤트 dict 스트림, meta) 튜플 반환. 각 이벤트는
-    {"type": "chunk", "text": ..., "finish_reason": ..., "usage"?: ...}.
+    (이벤트 dict 스트림, meta) 튜플 반환. 각 이벤트는 항상 세 키를 갖는다 —
+    {"type": "chunk", "text": ..., "finish_reason": ...}. 아래 키는 **그 청크에 값이 있을
+    때만** 붙으므로, 쓰기 전에 있는지 확인해야 한다.
+
+        usage             TokenUsage
+        function_calls    모델이 요청한 client-side 함수 호출
+        tool_calls        Gemini server-side tool 호출 흔적 (google_search 등)
+        tool_responses    그 tool 의 응답
+        code_blocks       code_execution 이 생성한 코드
+        code_results      그 코드의 실행 결과
+        grounding         google_search 인용 출처
+        url_context       url_context 도구가 읽은 URL
+
+    값은 모두 `model_dump()` 된 dict 이라 그대로 `json.dumps` 로 떨어진다.
+
+    **리스트 5종(function_calls·tool_calls·tool_responses·code_blocks·code_results)은
+    소비자가 이어붙여 누적해야 한다.** 청크마다 자기 몫만 실려 오기 때문이다 — 병렬 함수
+    호출 N 개는 N 개 청크에 1 개씩 나뉘어 온다(llm-handler 계약). 덮어쓰기로 구현하면
+    마지막 청크 것만 남아 **앞의 호출이 조용히 사라진다.** grounding·url_context 도 청크별로
+    실려 오며, 이 계층은 어느 것도 병합하지 않는다.
+
+    **캐시 히트면 스트림 전체가 이벤트 1 개다.** 저장해 둔 응답을 청크 하나로 되돌리므로
+    `text`(전문)와 도구 필드가 **같은 이벤트에** 실린다. 라이브에서는 도구 필드가 text 없는
+    청크로 따로 오는 것이 보통이라, `if ev.get("text"): 토큰 else: 도구` 로 짜면 캐시 히트마다
+    함수 호출을 놓친다. 두 필드를 독립적으로 보라.
+
     mid-stream 에러는 async for 가 그대로 raise (HandlerError 등).
 
     ⚠️ **반환된 스트림은 끝까지 소비하거나 `aclose()` 해야 한다.** 이 스트림은 dedup standby
@@ -312,6 +340,17 @@ async def llm_request_stream_async(
                 }
                 if chunk.usage:
                     event["usage"] = chunk.usage.model_dump()
+                # 나머지 필드도 통과시킨다 (이슈 #99). `usage` 와 같이 **값이 있을 때만**
+                # 넣어 기존 소비자의 이벤트 모양을 바꾸지 않는다. 대상 분류는
+                # _common 의 두 상수가 SSOT — 여기서 다시 나열하지 않는다.
+                for name in STREAM_EXTEND_FIELDS:
+                    items = getattr(chunk, name)
+                    if items:                       # None 과 빈 리스트를 함께 거른다
+                        event[name] = [item.model_dump() for item in items]
+                for name in STREAM_REPLACE_FIELDS:
+                    obj = getattr(chunk, name)
+                    if obj is not None:             # truthiness 금지 — Grounding() 은 비어도 True
+                        event[name] = obj.model_dump()
                 yield event
         finally:
             await chunk_stream.aclose()
@@ -432,6 +471,9 @@ def llm_request_stream(
     """스트리밍 LLM 요청 (sync). `llm_request_stream_async` 의 동기 래퍼.
 
     chunk 가 도착하는 대로 하나씩 돌려준다(docs/36).
+
+    **이벤트 모양과 누적 규칙은 `llm_request_stream_async` 를 보라** — 같은 이벤트 dict 를
+    주므로 리스트 5 종을 덮어쓰면 sync 에서도 똑같이 병렬 함수 호출을 잃는다.
 
     ⚠️ **반환된 이터레이터는 끝까지 소비하거나 `close()` 해야 한다** (`with` 권장). 방치하면
     같은 입력의 다른 요청이 최대 `standby_ttl`(기본 600초) 만큼 대기한다 — 안쪽 스트림이
