@@ -13,10 +13,10 @@ import asyncio
 import gc
 
 import pytest
-from conftest import _patch_stream
 
 import llm_manager
 from llm_manager._internal.handler_client.models import StreamChunk
+from tests.helpers import _patch_stream
 
 # ── (가) `_events()` 정리 전파 (docs/36 §5-4) ──────────────────
 

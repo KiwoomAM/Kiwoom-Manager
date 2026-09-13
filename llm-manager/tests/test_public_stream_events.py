@@ -5,13 +5,11 @@
 쓰는 소비자는 함수 호출이 이벤트에 안 실려 매니저를 못 쓴다.
 
 `test_sync_stream.py`(정리 계약·증분성)와 축이 다르다. 그쪽은 "언제 닫히는가"를 보고
-이 파일은 "무엇이 실리는가"를 본다. 패치 헬퍼(`_patch_stream`)만 conftest 에서 공유한다.
+이 파일은 "무엇이 실리는가"를 본다. 패치 헬퍼(`_patch_stream`)만 `tests/helpers.py` 에서 공유한다.
 """
 from __future__ import annotations
 
 import json
-
-from conftest import _patch_stream
 
 import llm_manager
 from llm_manager._internal.handler_client.models import (
@@ -27,6 +25,7 @@ from llm_manager._internal.handler_client.models import (
     UrlContextMetadata,
     UrlMetadata,
 )
+from tests.helpers import _patch_stream
 
 
 async def _collect(monkeypatch, chunks: list[StreamChunk]) -> list[dict]:
@@ -69,17 +68,29 @@ def test_all_stream_chunk_fields_are_covered():
     손으로 나열하는 아래 테스트들로는 못 잡으므로 불변식으로 붙든다. `StreamChunk` 에
     필드가 늘면 여기서 터진다.
 
-    한계: 합집합만 보므로 리스트 필드를 REPLACE 쪽에 잘못 넣는 **오배치**는 못 잡는다.
+    합집합 동치만으로는 리스트 필드를 CONTAINER 쪽에 잘못 넣는 **오배치**를 못 잡으므로,
+    필드의 실제 타입 모양까지 함께 단언한다 — `_events()` 가 LIST 는
+    `[x.model_dump() for x in ...]` 로, CONTAINER 는 `x.model_dump()` 로 다루기 때문에
+    오배치는 스트리밍 도중 `AttributeError` 로 죽는다 (PR #104 리뷰).
     """
     from llm_manager._internal.handler_client._common import (
-        STREAM_EXTEND_FIELDS,
-        STREAM_REPLACE_FIELDS,
+        STREAM_CONTAINER_FIELDS,
+        STREAM_LIST_FIELDS,
     )
 
     always_present = {"text", "finish_reason", "usage"}
-    covered = set(STREAM_EXTEND_FIELDS) | set(STREAM_REPLACE_FIELDS)
+    covered = set(STREAM_LIST_FIELDS) | set(STREAM_CONTAINER_FIELDS)
 
     assert covered == set(StreamChunk.model_fields) - always_present
+
+    # 타입 모양이 분류와 맞는가 — LIST 는 리스트, CONTAINER 는 리스트가 아니어야 한다
+    def _is_list_field(name: str) -> bool:
+        return "list[" in str(StreamChunk.model_fields[name].annotation)
+
+    misplaced_list = [f for f in STREAM_LIST_FIELDS if not _is_list_field(f)]
+    misplaced_container = [f for f in STREAM_CONTAINER_FIELDS if _is_list_field(f)]
+    assert misplaced_list == [], f"LIST 인데 리스트가 아니다: {misplaced_list}"
+    assert misplaced_container == [], f"CONTAINER 인데 리스트다(이벤트에서 터진다): {misplaced_container}"
 
 
 # ── 필드 통과 ──────────────────────────────────────────────────

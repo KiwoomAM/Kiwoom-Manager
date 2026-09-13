@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import llm_manager
 from llm_manager._internal.handler_client.models import LLMResponse, StreamChunk, TokenUsage
 
 # ── 공통 데이터 (테스트 모듈에서 직접 import) ────────────────────
@@ -66,21 +65,3 @@ def mock_collection():
     with patch("llm_manager._internal.store._get_collection", return_value=col):
         yield store
 
-
-# ── 공통 헬퍼 (테스트 모듈에서 `from conftest import ...`) ──────
-
-
-def _patch_stream(monkeypatch, inner_factory, meta=None):
-    """공개 `llm_request_stream_async` 가 주어진 async 제너레이터를 쓰도록 갈아끼운다.
-
-    `test_sync_stream.py`(정리 계약·증분성)와 `test_public_stream_events.py`(필드 통과)가
-    같은 패치 방식을 쓰므로 여기 한 곳에 둔다. 사본을 두면 한쪽만 고쳐져 어긋난다.
-    """
-    monkeypatch.setattr(llm_manager, "ensure_configured", lambda: None)
-
-    async def fake_runner_stream(*args, **kwargs):
-        return inner_factory(), (meta if meta is not None else {"source": "live"})
-
-    monkeypatch.setattr(
-        llm_manager.runner, "llm_request_stream_async", fake_runner_stream,
-    )

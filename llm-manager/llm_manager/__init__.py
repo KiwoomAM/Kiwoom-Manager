@@ -68,8 +68,10 @@ from llm_manager._internal.handler_client import (
     stream,
 )
 from llm_manager._internal.handler_client._common import (
-    STREAM_EXTEND_FIELDS,
-    STREAM_REPLACE_FIELDS,
+    STREAM_CONTAINER_FIELDS as _STREAM_CONTAINER_FIELDS,
+)
+from llm_manager._internal.handler_client._common import (  # 내부 상수 — 밑줄로 받아 공개 표면을 안 넓힌다
+    STREAM_LIST_FIELDS as _STREAM_LIST_FIELDS,
 )
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.store import fetch_by_cache_key as _fetch_by_cache_key
@@ -305,6 +307,12 @@ async def llm_request_stream_async(
     청크로 따로 오는 것이 보통이라, `if ev.get("text"): 토큰 else: 도구` 로 짜면 캐시 히트마다
     함수 호출을 놓친다. 두 필드를 독립적으로 보라.
 
+    **캐시 히트에서 두 부류의 결과가 갈린다.** 리스트 5 종은 저장 경로가 이어붙여 두므로
+    캐시 히트 이벤트 하나가 라이브를 누적한 것과 같은 집합이 된다. 반면 `grounding`·
+    `url_context` 는 저장 경로가 **마지막 non-None 으로 덮어써서**, 여러 번 나뉘어 온 턴이면
+    캐시 히트에는 마지막 것만 남는다. 즉 같은 입력이라도 캐시 히트 여부에 따라 인용 출처
+    집합이 달라질 수 있다 (별건 — 이슈 #99 범위 밖, `docs/37` §3.2·§6).
+
     mid-stream 에러는 async for 가 그대로 raise (HandlerError 등).
 
     ⚠️ **반환된 스트림은 끝까지 소비하거나 `aclose()` 해야 한다.** 이 스트림은 dedup standby
@@ -343,11 +351,11 @@ async def llm_request_stream_async(
                 # 나머지 필드도 통과시킨다 (이슈 #99). `usage` 와 같이 **값이 있을 때만**
                 # 넣어 기존 소비자의 이벤트 모양을 바꾸지 않는다. 대상 분류는
                 # _common 의 두 상수가 SSOT — 여기서 다시 나열하지 않는다.
-                for name in STREAM_EXTEND_FIELDS:
+                for name in _STREAM_LIST_FIELDS:
                     items = getattr(chunk, name)
                     if items:                       # None 과 빈 리스트를 함께 거른다
                         event[name] = [item.model_dump() for item in items]
-                for name in STREAM_REPLACE_FIELDS:
+                for name in _STREAM_CONTAINER_FIELDS:
                     obj = getattr(chunk, name)
                     if obj is not None:             # truthiness 금지 — Grounding() 은 비어도 True
                         event[name] = obj.model_dump()

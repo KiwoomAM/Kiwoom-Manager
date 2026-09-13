@@ -17,6 +17,10 @@ from __future__ import annotations
 import asyncio
 
 from llm_manager._internal import runner
+from llm_manager._internal.handler_client._common import (
+    STREAM_CONTAINER_FIELDS,
+    STREAM_LIST_FIELDS,
+)
 from llm_manager._internal.handler_client.models import (
     CodeBlock,
     CodeResult,
@@ -393,6 +397,16 @@ class TestStreamCandidateMetaSave:
         assert result["code_blocks"][0]["code"] == "print(1)"
         assert result["code_results"][0]["output"] == "1"
         assert result["url_context"]["url_metadata"][0]["retrieved_url"] == "https://example.com/a"
+
+        # 불변식 — 위 일곱을 손으로 단언하는 것만으로는 여덟 번째 필드가 생겼을 때 못 잡는다.
+        # `_finalize_stream` 도 필드를 손으로 나열하므로, 거기서 빠뜨리면 **캐시에 저장되는
+        # 문서에서만 조용히 사라진다**(이슈 #99 와 같은 사고 모양). `_to_stream_chunk` 쪽에는
+        # 같은 안전망이 있는데 이쪽에는 없어 대칭이 깨져 있었다 (PR #104 리뷰).
+        dropped = [
+            f for f in (*STREAM_LIST_FIELDS, *STREAM_CONTAINER_FIELDS)
+            if result.get(f) is None
+        ]
+        assert dropped == [], f"_finalize_stream 이 저장에 옮기지 않은 필드: {dropped}"
 
 
 # ── _StreamMeta 필드별 누적 규칙 (PR #66 재리뷰) ──

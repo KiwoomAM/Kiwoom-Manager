@@ -391,7 +391,7 @@ llm_input = {
 "tools": [{"google_search": {}}]                 # url_context·code_execution 도 같은 꼴
 ```
 
-도구를 쓰면 `response.text` 가 `None` 이고 `response.function_calls` 에 호출이 담긴다. 스트리밍은 아래 [스트리밍 이벤트](#스트리밍-이벤트) 참고.
+도구를 쓰면 `response.text` 가 **비어 있을 수 있고**(`None`), `response.function_calls` 에 호출이 담긴다. **둘은 한 턴에 함께 올 수 있으니 독립적으로 확인할 것** — `if response.text is None:` 안에서 호출을 처리하면 텍스트가 같이 온 턴에서 놓친다. 스트리밍은 아래 [스트리밍 이벤트](#스트리밍-이벤트) 참고.
 
 ### cache_mode / save_mode
 
@@ -483,6 +483,8 @@ async for ev in stream:
 ```
 
 > **캐시 히트면 스트림 전체가 이벤트 1 개다.** 저장해 둔 응답을 청크 하나로 되돌리므로 `text`(전문)와 도구 필드가 **같은 이벤트에** 실린다. 라이브에서는 도구 필드가 text 없는 청크로 따로 오는 것이 보통이라, `if ev.get("text"): ... else: 도구` 로 짜면 캐시 히트마다 함수 호출을 놓친다. 두 필드를 독립적으로 볼 것.
+
+> **캐시 히트에서 두 부류의 결과가 갈린다.** 리스트 5 종은 저장 경로가 이어붙여 두므로 캐시 히트 이벤트 하나가 라이브를 누적한 것과 같은 집합이 된다. 반면 `grounding`·`url_context` 는 저장 경로가 **마지막 non-None 으로 덮어써서**, 여러 번 나뉘어 온 턴이면 캐시 히트에는 마지막 것만 남는다. 즉 같은 입력이라도 캐시 히트 여부에 따라 인용 출처 집합이 달라질 수 있다(별건 — 이슈 #99 범위 밖).
 
 ### ResponseMeta
 
