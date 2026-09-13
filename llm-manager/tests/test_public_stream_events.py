@@ -151,8 +151,8 @@ async def test_grounding_and_url_context_pass_through(monkeypatch):
 async def test_absent_fields_omitted(monkeypatch):
     """값이 없으면 키 자체가 없어야 한다 — 기존 소비자의 이벤트 모양이 안 바뀐다.
 
-    리스트는 `None` 과 `[]` 를 모두 걸러야 하고, 컨테이너는 `None` 을 걸러야 한다.
-    `Grounding()` 은 비어 있어도 truthy 라 truthiness 로 판정하면 빈 껍데기가 실린다.
+    여기서 보는 것은 리스트 쪽이다 — `None` 과 `[]` 를 모두 걸러야 한다. 컨테이너 쪽은
+    `None` 만 거르므로 빈 `Grounding()` 은 그대로 실리며, 그 경우는 이 테스트가 다루지 않는다.
     """
     events = await _collect(monkeypatch, [
         StreamChunk(

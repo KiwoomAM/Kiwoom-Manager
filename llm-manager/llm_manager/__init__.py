@@ -357,7 +357,7 @@ async def llm_request_stream_async(
                         event[name] = [item.model_dump() for item in items]
                 for name in _STREAM_CONTAINER_FIELDS:
                     obj = getattr(chunk, name)
-                    if obj is not None:             # truthiness 금지 — Grounding() 은 비어도 True
+                    if obj is not None:             # None 만 거른다 — 빈 Grounding() 은 걸러지지 않는다
                         event[name] = obj.model_dump()
                 yield event
         finally:
