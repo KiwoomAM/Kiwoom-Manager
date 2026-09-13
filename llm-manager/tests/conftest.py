@@ -64,3 +64,4 @@ def mock_collection():
 
     with patch("llm_manager._internal.store._get_collection", return_value=col):
         yield store
+

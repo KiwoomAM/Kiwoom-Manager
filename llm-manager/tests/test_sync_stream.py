@@ -16,19 +16,7 @@ import pytest
 
 import llm_manager
 from llm_manager._internal.handler_client.models import StreamChunk
-
-
-def _patch_stream(monkeypatch, inner_factory, meta=None):
-    """공개 `llm_request_stream_async` 가 주어진 async 제너레이터를 쓰도록 갈아끼운다."""
-    monkeypatch.setattr(llm_manager, "ensure_configured", lambda: None)
-
-    async def fake_runner_stream(*args, **kwargs):
-        return inner_factory(), (meta if meta is not None else {"source": "live"})
-
-    monkeypatch.setattr(
-        llm_manager.runner, "llm_request_stream_async", fake_runner_stream,
-    )
-
+from tests.helpers import _patch_stream
 
 # ── (가) `_events()` 정리 전파 (docs/36 §5-4) ──────────────────
 

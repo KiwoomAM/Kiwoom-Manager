@@ -40,6 +40,27 @@ _done_payload_var: ContextVar[dict[str, object] | None] = ContextVar("llm_handle
 ContentsType = str | list[str | FileRef | Part]
 
 
+# 스트림 청크의 candidate-level 필드를 **타입 모양**으로 나눈 분류 (SSOT).
+#
+# 이름이 누적 규칙(extend/replace)이 아니라 모양(list/container)인 이유 — 소비처가 둘이고
+# 각자 다른 것을 묻기 때문이다.
+#   - runner._StreamMeta.update : 어떻게 누적할까 (리스트는 이어붙이고, 컨테이너는 갈아끼운다)
+#   - llm_manager._events       : 어떻게 dump 할까 ([x.model_dump() for x in ...] 냐 x.model_dump() 냐)
+# 모양은 그 필드의 **사실**이라 안 변하지만 누적 규칙은 **정책**이라 바뀔 수 있다(예: grounding 을
+# 누적으로 돌릴지는 아직 열린 질문 — docs/37 §3.2·§6). 그래서 안 변하는 쪽을 이름으로 삼는다.
+#
+# ⚠️ 오배치(리스트인데 CONTAINER 에 넣기)는 _events 에서 `list.model_dump()` 로 죽는다.
+# tests/test_public_stream_events.py 의 불변식 테스트가 이를 막는다.
+STREAM_LIST_FIELDS = (
+    "function_calls",
+    "tool_calls",
+    "tool_responses",
+    "code_blocks",
+    "code_results",
+)
+STREAM_CONTAINER_FIELDS = ("grounding", "url_context")
+
+
 def extend_stream_field(dst: list | None, src: list | None) -> list | None:
     """스트림 청크마다 흩어져 오는 리스트 필드를 앞엣것을 버리지 않고 이어붙인다.
 

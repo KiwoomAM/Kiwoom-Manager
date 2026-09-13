@@ -16,7 +16,11 @@ from llm_manager._internal.file_processing import (
     resolve_files_after_404,
 )
 from llm_manager._internal.gemini_errors import is_gemini_404
-from llm_manager._internal.handler_client._common import extend_stream_field
+from llm_manager._internal.handler_client._common import (
+    STREAM_CONTAINER_FIELDS,
+    STREAM_LIST_FIELDS,
+    extend_stream_field,
+)
 from llm_manager._internal.handler_client.aio import call as aio_call
 from llm_manager._internal.handler_client.aio import last_assistant_message
 from llm_manager._internal.handler_client.aio import stream as aio_stream
@@ -293,6 +297,11 @@ class _StreamMeta:
         덮어쓴다.
     text/usage/finish_reason 은 각각 done event 의 assistant_message·마지막 청크로 복원하므로 여기서
     누적하지 않는다.
+
+    ⚠️ **이 dataclass 는 `STREAM_LIST_FIELDS`·`STREAM_CONTAINER_FIELDS` 의 모든 이름을 필드로
+    가져야 한다.** `update` 가 그 상수를 `getattr`/`setattr` 로 순회하므로, 상수에만 이름을
+    더하고 여기 필드를 빠뜨리면 `AttributeError` 로 **모든 스트리밍 요청이 깨진다**. 나열이던
+    시절에는 없던 결합이고, 루프로 얻은 간결함의 대가로 이 자리에서 정적 타입 검증도 사라졌다.
     """
 
     function_calls: list[FunctionCall] | None = None
@@ -304,17 +313,16 @@ class _StreamMeta:
     url_context: UrlContextMetadata | None = None
 
     def update(self, chunk: StreamChunk) -> None:
+        # 대상 분류는 _common 의 STREAM_LIST_FIELDS / STREAM_CONTAINER_FIELDS 가 SSOT.
+        # 상수는 **타입 모양**을 말하고, 그 모양에 어떤 누적 규칙을 붙일지는 여기(정책)가 정한다.
         # 리스트 5종: 청크마다 흩어져 오므로 extend(앞엣것 보존)
-        self.function_calls = extend_stream_field(self.function_calls, chunk.function_calls)
-        self.tool_calls = extend_stream_field(self.tool_calls, chunk.tool_calls)
-        self.tool_responses = extend_stream_field(self.tool_responses, chunk.tool_responses)
-        self.code_blocks = extend_stream_field(self.code_blocks, chunk.code_blocks)
-        self.code_results = extend_stream_field(self.code_results, chunk.code_results)
+        for name in STREAM_LIST_FIELDS:
+            setattr(self, name, extend_stream_field(getattr(self, name), getattr(chunk, name)))
         # 단발성 컨테이너: 마지막 non-None 으로 덮어씀
-        if chunk.grounding is not None:
-            self.grounding = chunk.grounding
-        if chunk.url_context is not None:
-            self.url_context = chunk.url_context
+        for name in STREAM_CONTAINER_FIELDS:
+            value = getattr(chunk, name)
+            if value is not None:
+                setattr(self, name, value)
 
 
 def _finalize_stream(
