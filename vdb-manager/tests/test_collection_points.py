@@ -222,3 +222,37 @@ def test_scroll_points_forwards_uuid_offset():
     col.scroll_points(COLLECTION, limit=2, offset=UUID_A)
 
     assert client.calls[0]["json"]["offset"] == UUID_A
+
+
+# ------------------------------------------------------------------
+# 빈 조건 — 존재 확인을 조용히 틀리게 만드는 입력
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["count_points", "has_points"])
+def test_empty_filter_is_rejected_before_any_request(method):
+    """서버는 빈 dict 를 "필터 없음" 으로 보아 컬렉션 전체를 센다.
+
+    조건을 코드로 만들다 비어서 나오면 전체 개수가 돌아오고, 소비자는 그것을
+    "이미 적재됨" 으로 읽어 적재를 건너뛴다. 존재 확인을 정확하게 만들려고 만든
+    경로이므로 조용히 틀린 답을 주지 않고 왕복 전에 막는다.
+    """
+    col, client = _collection({"count": 24407})
+
+    with pytest.raises(ValueError) as exc:
+        getattr(col, method)(COLLECTION, {})
+
+    assert "빈 dict" in str(exc.value)
+    assert client.calls == [], "요청을 보내기 전에 막아야 한다"
+
+
+@pytest.mark.parametrize("no_filter", [None, "생략"])
+def test_absent_filter_still_counts_whole_collection(no_filter):
+    """전체를 세는 길은 막지 않는다 — 인자를 생략하거나 None 을 준다."""
+    col, client = _collection({"count": 24407})
+
+    if no_filter is None:
+        assert col.count_points(COLLECTION, None) == 24407
+    else:
+        assert col.count_points(COLLECTION) == 24407
+    assert client.calls[0]["json"] == {"payload_filter": None}

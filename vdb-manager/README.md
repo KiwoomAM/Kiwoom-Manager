@@ -279,6 +279,8 @@ for r in results:
 - **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors`·`ids` 전달 시 동일 길이 필수
 - **`upsert()`는 Deprecated**: 호출 시 `DeprecationWarning` 발생. 서버가 `start_id + j`로 채번하므로 호출자가 커서를 정확히 기억할 때만 안전하고, 기본값 `0`은 0번부터 기존 포인트를 덮어쓴다. 신규 적재는 `upsert_points(..., ids=[...])`
 - **포인트 id**: 부호 없는 정수 또는 UUID만 허용(형식 검증은 Service). 문서에서 유도한 id를 쓸 때 **폭을 줄이지 말 것** — 작은 범위로 접으면 기존 순번 id 구간을 덮어쓴다
+- **빈 조건은 거부됨**: `count_points()`·`has_points()`에 빈 dict(`{}`)를 넘기면 `ValueError`. Service는 빈 조건을 "필터 없음"으로 보아 컬렉션 전체를 세므로, 조건을 코드로 만들다 비어서 나오면 그 결과가 "이미 적재됨"으로 읽혀 적재가 누락된다. 전체 개수를 원하면 인자를 생략
+- **Deprecation 경고가 안 보일 수 있음**: 파이썬 기본 설정은 `__main__`에서 난 `DeprecationWarning`만 표시한다. 서비스 모듈 안에서 `upsert()`를 부르면 화면에 안 뜨므로, 남은 호출부를 찾으려면 `PYTHONWARNINGS=default::DeprecationWarning` 또는 `python -W default::DeprecationWarning`으로 켠다
 - **`has_points()`는 "적재 완료"가 아님**: 조건에 맞는 포인트가 하나라도 있으면 True다. 문서 하나가 포인트 여럿이 되는(청킹) 소비자가 이것을 완료 판정으로 쓰면 부분 적재가 영구히 굳는다
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)

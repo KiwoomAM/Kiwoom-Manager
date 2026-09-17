@@ -230,13 +230,24 @@ class CollectionClient:
         Args:
             collection_name: 대상 컬렉션.
             payload_filter: `{"must": [{"key": ..., "match": {"value": ...}}]}` 형식.
-                None 이면 컬렉션 전체 개수. 지원하는 절과 조건의 정의는 서버의
-                `vdb-handler/app/core/vector_store.py::_build_qdrant_filter` 가 단일
-                출처다. 모르는 절을 보내면 서버가 422 로 거부한다.
+                None 이거나 생략하면 컬렉션 전체 개수. 지원하는 절과 조건의 정의는
+                서버의 `vdb-handler/app/core/vector_store.py::_build_qdrant_filter` 가
+                단일 출처다. 모르는 절을 보내면 서버가 422 로 거부한다.
 
         Returns:
             조건에 맞는 포인트 수.
+
+        Raises:
+            ValueError: payload_filter 가 빈 dict 일 때. 서버는 그것을 필터 없음으로
+                보아 전체를 세는데, 조건을 만들다 비어서 나온 경우 그 결과가
+                "이미 적재됨" 으로 읽혀 적재가 누락된다.
         """
+        if payload_filter is not None and not payload_filter:
+            raise ValueError(
+                "payload_filter 가 빈 dict — 빈 조건은 서버에서 필터 없음이 되어 "
+                "컬렉션 전체를 셈, 전체 개수를 원하면 인자를 생략"
+            )
+
         resp = self._client.post(
             f"/v1/collections/{collection_name}/count",
             json={"payload_filter": payload_filter},
@@ -261,6 +272,9 @@ class CollectionClient:
 
         Returns:
             조건에 맞는 포인트가 하나 이상이면 True.
+
+        Raises:
+            ValueError: payload_filter 가 빈 dict 일 때 (`count_points` 와 같다).
         """
         return self.count_points(collection_name, payload_filter) > 0
 
