@@ -21,7 +21,8 @@ VDBManager - 통합 진입점 (Singleton)
 
     # Collection / CRUD
     handler.collection.create("my_col")
-    handler.collection.upsert("my_col", texts=[...], ...)
+    if not handler.collection.has_points("my_col", {"must": [...]}):
+        handler.collection.upsert_points("my_col", texts=[...], ids=[...], ...)
     handler.collection.get_points("my_col", ids=[1, 2])
 
     # Reranker
@@ -35,6 +36,7 @@ VDBManager - 통합 진입점 (Singleton)
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
@@ -236,8 +238,20 @@ class VDBManager:
         start_id: int = 0,
         batch_size: int = 100,
     ) -> Dict[str, Any]:
-        """데이터 업로드 (sparse_vectors 생략 시 dense-only)"""
-        return self.collection.upsert(
+        """[DEPRECATED] 데이터 업로드 (sparse_vectors 생략 시 dense-only).
+
+        Use ``VDBManager.upsert_points(..., ids=[...])`` instead.
+        근거는 `CollectionClient.upsert` docstring 에 있다.
+        """
+        warnings.warn(
+            "VDBManager.upsert is deprecated. "
+            "Use VDBManager.upsert_points(..., ids=[...]) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # 경고를 여기서 냈으므로 공개 메서드를 다시 부르지 않는다. 두 번 경고하면
+        # 둘 중 하나가 SDK 내부 줄을 가리켜 호출자가 자기 코드를 못 찾는다.
+        return self.collection._upsert_legacy(
             collection_name=collection_name,
             texts=texts,
             dense_vectors=dense_vectors,

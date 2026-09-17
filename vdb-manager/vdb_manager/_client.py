@@ -39,21 +39,28 @@ def _error_message(response: httpx.Response) -> str:
         return str(body["error"])
 
     detail = body.get("detail")
-    if isinstance(detail, list):
-        parts = []
-        for item in detail:
-            if not isinstance(item, dict):
-                parts.append(str(item))
-                continue
-            location = ".".join(str(x) for x in item.get("loc", []))
-            message = str(item.get("msg", item))
-            parts.append(f"{location}: {message}" if location else message)
-        if parts:
-            return "; ".join(parts)
+    if isinstance(detail, list) and detail:
+        return "; ".join(_validation_line(item) for item in detail)
     if detail is not None:
         return str(detail)
 
     return response.text
+
+
+def _validation_line(item: Any) -> str:
+    """FastAPI 검증 오류 항목 하나를 한 줄로 만든다.
+
+    Args:
+        item: `{"loc": [...], "msg": "..."}` 형태의 항목.
+
+    Returns:
+        `body.ids: Value error, …` 처럼 위치와 메시지를 붙인 한 줄.
+    """
+    if not isinstance(item, dict):
+        return str(item)
+    location = ".".join(str(x) for x in item.get("loc", []))
+    message = str(item.get("msg", item))
+    return f"{location}: {message}" if location else message
 
 
 class SyncClient:

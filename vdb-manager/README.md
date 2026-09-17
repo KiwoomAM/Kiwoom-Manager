@@ -120,7 +120,7 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `info(name)` | `Dict` | 컬렉션 정보 조회 |
 | `delete(name)` | `Dict` | 컬렉션 삭제 |
 | `upsert_points(collection_name, texts, dense_vectors, metadatas, ids, sparse_vectors, batch_size)` | `Dict` | 데이터 업로드. **포인트 id 를 직접 지정** |
-| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | ⚠️ **Deprecated** — `upsert_points` 사용 |
+| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | Deprecated — `upsert_points` 사용 |
 | `count_points(collection_name, payload_filter)` | `int` | 조건에 맞는 포인트 수 (벡터·query 불필요) |
 | `has_points(collection_name, payload_filter)` | `bool` | 조건에 맞는 포인트가 있는지 |
 | `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
@@ -182,6 +182,8 @@ except VDBHandlerError as e:
 ### 문서 임베딩 → 컬렉션 저장 (Hybrid)
 
 ```python
+import uuid
+
 handler = VDBManager()
 
 texts = ["텍스트1", "텍스트2"]
@@ -196,14 +198,22 @@ handler.collection.create("my_reports", mode="hybrid")
 # 하이브리드 임베딩 (dense + sparse 한번에)
 embeddings = handler.hybrid.embed_batch(texts)
 
-# 저장
-handler.collection.upsert(
-    collection_name="my_reports",
-    texts=texts,
-    dense_vectors=embeddings["dense"],
-    metadatas=metadatas,
-    sparse_vectors=embeddings["sparse"],
-)
+# 문서 정체성에서 유도한 결정론적 id — 같은 문서를 다시 넣으면 중복이 아니라
+# 덮어쓰기가 된다. 폭을 줄이지 말 것(작은 범위로 접으면 남의 포인트를 덮어쓴다).
+ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"report.pdf:{i}")) for i in range(len(texts))]
+
+# 이미 들어가 있으면 건너뛴다 (벡터도 query 텍스트도 필요 없다)
+if not handler.collection.has_points(
+    "my_reports", {"must": [{"key": "file_name", "match": {"value": "report.pdf"}}]}
+):
+    handler.collection.upsert_points(
+        collection_name="my_reports",
+        texts=texts,
+        dense_vectors=embeddings["dense"],
+        metadatas=metadatas,
+        sparse_vectors=embeddings["sparse"],
+        ids=ids,
+    )
 ```
 
 ### 문서 임베딩 → 컬렉션 저장 (Dense-only)
@@ -224,11 +234,12 @@ handler.collection.create("my_reports", mode="dense")
 dense_vectors = handler.dense.embed_batch(texts)
 
 # 저장 (sparse_vectors 생략)
-handler.collection.upsert(
+handler.collection.upsert_points(
     collection_name="my_reports",
     texts=texts,
     dense_vectors=dense_vectors,
     metadatas=metadatas,
+    ids=[str(uuid.uuid5(uuid.NAMESPACE_URL, f"report.pdf:{i}")) for i in range(len(texts))],
 )
 ```
 

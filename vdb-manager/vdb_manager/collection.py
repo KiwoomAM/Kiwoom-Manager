@@ -80,6 +80,32 @@ class CollectionClient:
             DeprecationWarning,
             stacklevel=2,
         )
+        return self._upsert_legacy(
+            collection_name,
+            texts=texts,
+            dense_vectors=dense_vectors,
+            metadatas=metadatas,
+            sparse_vectors=sparse_vectors,
+            start_id=start_id,
+            batch_size=batch_size,
+        )
+
+    def _upsert_legacy(
+        self,
+        collection_name: str,
+        texts: List[str],
+        dense_vectors: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
+        start_id: int = 0,
+        batch_size: int = 100,
+    ) -> Dict[str, Any]:
+        """경고 없이 legacy 경로로 보낸다.
+
+        `upsert` 와 `VDBManager.upsert` 가 각자 자기 호출자를 가리키는 경고를 낸 뒤
+        여기로 모인다. 구현을 여기 두지 않으면 바로가기로 부른 소비자의 경고가 SDK
+        내부 줄을 짚어, 정작 고쳐야 할 자기 코드를 찾지 못한다.
+        """
         payload: Dict[str, Any] = {
             "texts": texts,
             "dense_vectors": dense_vectors,
@@ -113,8 +139,8 @@ class CollectionClient:
         덮어쓰기가 된다. 확인과 적재 사이의 경쟁에서 결과가 달라지는 지점이다.
 
         id 유도 규칙은 소비자가 정한다 — "같은 문서" 의 정의가 소비자마다 다르다.
-        다만 **유도한 id 의 폭을 줄이지 말 것**: 작은 범위로 접으면(`% 1_000_000` 등)
-        기존 순번 id 구간을 때려 남의 포인트를 덮어쓴다.
+        다만 유도한 id 의 폭을 줄이지 않아야 한다. 작은 범위로 접으면(`% 1_000_000`
+        등) 기존 순번 id 구간을 때려 남의 포인트를 덮어쓴다.
 
         이것을 존재 확인 수단으로 쓰지 말 것. 기존 포인트는 결정론적 id 를 갖고 있지
         않아 전부 "미적재" 로 답한다. 존재 확인은 `count_points`·`has_points` 로 한다.
