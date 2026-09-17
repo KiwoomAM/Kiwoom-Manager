@@ -45,7 +45,7 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   **아무것도 설정하지 않아도 된다.**
 - **서버 기동이 느리다**: VDB Handler Service는 SPLADE/ColBERT 모델 로드로 기동이 ~120s
   걸린다. 클라이언트 타임아웃/헬스체크 시 고려.
-- **Singleton**: `VDBManager()`는 항상 같은 인스턴스. 재초기화는 `reset()`(있으면) 또는 프로세스 재시작.
+- **Singleton**: `VDBManager()`는 항상 같은 인스턴스. 재초기화는 `VDBManager.reset()` 또는 프로세스 재시작.
 
 ## Environment Variables
 
@@ -55,6 +55,9 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
 
 ## Commands
 
-- 이 패키지에는 아직 **테스트 스위트가 없다** (`tests/` 부재). 동작 확인은 실제 VDB Handler
-  Service를 띄운 상태에서 `VDBManager().health_check()`로 한다.
+- 테스트는 `tests/` 에 있고 `uv run --with pytest pytest` 로 돌린다 (dev 의존성이 선언돼
+  있지 않아 `--with pytest` 가 필요하다). Service 를 띄우지 않고 돌아간다 — 손수 만든
+  `FakeClient` 를 서브클라이언트에 주입해 **어느 경로로 어떤 body 가 갔는지**를 검증하는
+  것이 이 패키지의 관례다 (`tests/test_collection_points.py` 참고). 실제 연동 확인이
+  필요하면 Service 를 띄우고 `VDBManager().health_check()`.
 - 클라이언트 동작을 바꾸면 회귀 방지를 위해 최소 단위 테스트 추가를 우선 고려한다.

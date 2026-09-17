@@ -119,7 +119,10 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `create(name, dense_dim, distance, recreate, mode)` | `Dict` | 컬렉션 생성 (mode: `"dense"` \| `"hybrid"`, 기본 `"hybrid"`) |
 | `info(name)` | `Dict` | 컬렉션 정보 조회 |
 | `delete(name)` | `Dict` | 컬렉션 삭제 |
-| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | 데이터 업로드 (sparse_vectors 생략 시 dense-only) |
+| `upsert_points(collection_name, texts, dense_vectors, metadatas, ids, sparse_vectors, batch_size)` | `Dict` | 데이터 업로드. **포인트 id 를 직접 지정** |
+| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | ⚠️ **Deprecated** — `upsert_points` 사용 |
+| `count_points(collection_name, payload_filter)` | `int` | 조건에 맞는 포인트 수 (벡터·query 불필요) |
+| `has_points(collection_name, payload_filter)` | `bool` | 조건에 맞는 포인트가 있는지 |
 | `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
 | `delete_points(collection_name, ids)` | `Dict` | ID로 포인트 삭제 |
 | `scroll_points(collection_name, limit, offset, with_vectors)` | `Dict` | 포인트 페이지네이션 조회 |
@@ -152,6 +155,7 @@ handler.hybrid.search("질문", collection_name="kw_gp")
 | `hybrid_search()`, `dense_search()`, `sparse_search()` | `handler.hybrid` / `handler.dense` / `handler.sparse` |
 | `create_collection()`, `get_collection_info()`, `delete_collection()`, `upsert()` | `handler.collection` |
 | `get_points()`, `delete_points()`, `scroll_points()` | `handler.collection` |
+| `count_points()`, `has_points()`, `upsert_points()` | `handler.collection` |
 | `rerank()` | `handler.reranker` |
 
 ### 예외
@@ -261,7 +265,10 @@ for r in results:
 - **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `VDBManager.reset()` 후 재생성
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
-- **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors` 전달 시 동일 길이 필수
+- **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors`·`ids` 전달 시 동일 길이 필수
+- **`upsert()`는 Deprecated**: 호출 시 `DeprecationWarning` 발생. 서버가 `start_id + j`로 채번하므로 호출자가 커서를 정확히 기억할 때만 안전하고, 기본값 `0`은 0번부터 기존 포인트를 덮어쓴다. 신규 적재는 `upsert_points(..., ids=[...])`
+- **포인트 id**: 부호 없는 정수 또는 UUID만 허용(형식 검증은 Service). 문서에서 유도한 id를 쓸 때 **폭을 줄이지 말 것** — 작은 범위로 접으면 기존 순번 id 구간을 덮어쓴다
+- **`has_points()`는 "적재 완료"가 아님**: 조건에 맞는 포인트가 하나라도 있으면 True다. 문서 하나가 포인트 여럿이 되는(청킹) 소비자가 이것을 완료 판정으로 쓰면 부분 적재가 영구히 굳는다
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장
