@@ -119,7 +119,10 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `create(name, dense_dim, distance, recreate, mode)` | `Dict` | 컬렉션 생성 (mode: `"dense"` \| `"hybrid"`, 기본 `"hybrid"`) |
 | `info(name)` | `Dict` | 컬렉션 정보 조회 |
 | `delete(name)` | `Dict` | 컬렉션 삭제 |
-| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | 데이터 업로드 (sparse_vectors 생략 시 dense-only) |
+| `upsert_points(collection_name, texts, dense_vectors, metadatas, ids, sparse_vectors, batch_size)` | `Dict` | 데이터 업로드. **포인트 id 를 직접 지정** |
+| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | Deprecated — `upsert_points` 사용 |
+| `count_points(collection_name, payload_filter)` | `int` | 조건에 맞는 포인트 수 (벡터·query 불필요) |
+| `has_points(collection_name, payload_filter)` | `bool` | 조건에 맞는 포인트가 있는지 |
 | `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
 | `delete_points(collection_name, ids)` | `Dict` | ID로 포인트 삭제 |
 | `scroll_points(collection_name, limit, offset, with_vectors)` | `Dict` | 포인트 페이지네이션 조회 |
@@ -152,6 +155,7 @@ handler.hybrid.search("질문", collection_name="kw_gp")
 | `hybrid_search()`, `dense_search()`, `sparse_search()` | `handler.hybrid` / `handler.dense` / `handler.sparse` |
 | `create_collection()`, `get_collection_info()`, `delete_collection()`, `upsert()` | `handler.collection` |
 | `get_points()`, `delete_points()`, `scroll_points()` | `handler.collection` |
+| `count_points()`, `has_points()`, `upsert_points()` | `handler.collection` |
 | `rerank()` | `handler.reranker` |
 
 ### 예외
@@ -178,6 +182,8 @@ except VDBHandlerError as e:
 ### 문서 임베딩 → 컬렉션 저장 (Hybrid)
 
 ```python
+import uuid
+
 handler = VDBManager()
 
 texts = ["텍스트1", "텍스트2"]
@@ -192,14 +198,22 @@ handler.collection.create("my_reports", mode="hybrid")
 # 하이브리드 임베딩 (dense + sparse 한번에)
 embeddings = handler.hybrid.embed_batch(texts)
 
-# 저장
-handler.collection.upsert(
-    collection_name="my_reports",
-    texts=texts,
-    dense_vectors=embeddings["dense"],
-    metadatas=metadatas,
-    sparse_vectors=embeddings["sparse"],
-)
+# 문서 정체성에서 유도한 결정론적 id — 같은 문서를 다시 넣으면 중복이 아니라
+# 덮어쓰기가 된다. 폭을 줄이지 말 것(작은 범위로 접으면 남의 포인트를 덮어쓴다).
+ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"report.pdf:{i}")) for i in range(len(texts))]
+
+# 이미 들어가 있으면 건너뛴다 (벡터도 query 텍스트도 필요 없다)
+if not handler.collection.has_points(
+    "my_reports", {"must": [{"key": "file_name", "match": {"value": "report.pdf"}}]}
+):
+    handler.collection.upsert_points(
+        collection_name="my_reports",
+        texts=texts,
+        dense_vectors=embeddings["dense"],
+        metadatas=metadatas,
+        sparse_vectors=embeddings["sparse"],
+        ids=ids,
+    )
 ```
 
 ### 문서 임베딩 → 컬렉션 저장 (Dense-only)
@@ -220,11 +234,12 @@ handler.collection.create("my_reports", mode="dense")
 dense_vectors = handler.dense.embed_batch(texts)
 
 # 저장 (sparse_vectors 생략)
-handler.collection.upsert(
+handler.collection.upsert_points(
     collection_name="my_reports",
     texts=texts,
     dense_vectors=dense_vectors,
     metadatas=metadatas,
+    ids=[str(uuid.uuid5(uuid.NAMESPACE_URL, f"report.pdf:{i}")) for i in range(len(texts))],
 )
 ```
 
@@ -261,7 +276,12 @@ for r in results:
 - **Singleton**: 첫 생성 시 인자만 반영됨. 변경 필요 시 `VDBManager.reset()` 후 재생성
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
-- **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors` 전달 시 동일 길이 필수
+- **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors`·`ids` 전달 시 동일 길이 필수
+- **`upsert()`는 Deprecated**: 호출 시 `DeprecationWarning` 발생. 서버가 `start_id + j`로 채번하므로 호출자가 커서를 정확히 기억할 때만 안전하고, 기본값 `0`은 0번부터 기존 포인트를 덮어쓴다. 신규 적재는 `upsert_points(..., ids=[...])`
+- **포인트 id**: 부호 없는 정수 또는 UUID만 허용(형식 검증은 Service). 문서에서 유도한 id를 쓸 때 **폭을 줄이지 말 것** — 작은 범위로 접으면 기존 순번 id 구간을 덮어쓴다
+- **빈 조건은 거부됨**: `count_points()`·`has_points()`에 빈 dict(`{}`)를 넘기면 `ValueError`. Service는 빈 조건을 "필터 없음"으로 보아 컬렉션 전체를 세므로, 조건을 코드로 만들다 비어서 나오면 그 결과가 "이미 적재됨"으로 읽혀 적재가 누락된다. 전체 개수를 원하면 인자를 생략
+- **Deprecation 경고가 안 보일 수 있음**: 파이썬 기본 설정은 `__main__`에서 난 `DeprecationWarning`만 표시한다. 서비스 모듈 안에서 `upsert()`를 부르면 화면에 안 뜨므로, 남은 호출부를 찾으려면 `PYTHONWARNINGS=default::DeprecationWarning` 또는 `python -W default::DeprecationWarning`으로 켠다
+- **`has_points()`는 "적재 완료"가 아님**: 조건에 맞는 포인트가 하나라도 있으면 True다. 문서 하나가 포인트 여럿이 되는(청킹) 소비자가 이것을 완료 판정으로 쓰면 부분 적재가 영구히 굳는다
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장

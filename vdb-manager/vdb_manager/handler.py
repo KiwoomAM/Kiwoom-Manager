@@ -21,7 +21,8 @@ VDBManager - 통합 진입점 (Singleton)
 
     # Collection / CRUD
     handler.collection.create("my_col")
-    handler.collection.upsert("my_col", texts=[...], ...)
+    if not handler.collection.has_points("my_col", {"must": [...]}):
+        handler.collection.upsert_points("my_col", texts=[...], ids=[...], ...)
     handler.collection.get_points("my_col", ids=[1, 2])
 
     # Reranker
@@ -35,6 +36,7 @@ VDBManager - 통합 진입점 (Singleton)
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
@@ -236,8 +238,20 @@ class VDBManager:
         start_id: int = 0,
         batch_size: int = 100,
     ) -> Dict[str, Any]:
-        """데이터 업로드 (sparse_vectors 생략 시 dense-only)"""
-        return self.collection.upsert(
+        """[DEPRECATED] 데이터 업로드 (sparse_vectors 생략 시 dense-only).
+
+        Use ``VDBManager.upsert_points(..., ids=[...])`` instead.
+        근거는 `CollectionClient.upsert` docstring 에 있다.
+        """
+        warnings.warn(
+            "VDBManager.upsert is deprecated. "
+            "Use VDBManager.upsert_points(..., ids=[...]) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # 경고를 여기서 냈으므로 공개 메서드를 다시 부르지 않는다. 두 번 경고하면
+        # 둘 중 하나가 SDK 내부 줄을 가리켜 호출자가 자기 코드를 못 찾는다.
+        return self.collection._upsert_legacy(
             collection_name=collection_name,
             texts=texts,
             dense_vectors=dense_vectors,
@@ -250,6 +264,27 @@ class VDBManager:
     # 하위호환
     upsert_hybrid = upsert
 
+    def upsert_points(
+        self,
+        collection_name: str,
+        texts: List[str],
+        dense_vectors: List[List[float]],
+        metadatas: List[Dict[str, Any]],
+        ids: List[int | str],
+        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
+        batch_size: int = 100,
+    ) -> Dict[str, Any]:
+        """포인트 id 를 직접 정해 적재"""
+        return self.collection.upsert_points(
+            collection_name=collection_name,
+            texts=texts,
+            dense_vectors=dense_vectors,
+            metadatas=metadatas,
+            ids=ids,
+            sparse_vectors=sparse_vectors,
+            batch_size=batch_size,
+        )
+
     # ------------------------------------------------------------------
     # 포인트 CRUD (바로가기)
     # ------------------------------------------------------------------
@@ -257,7 +292,7 @@ class VDBManager:
     def get_points(
         self,
         collection_name: str,
-        ids: List[int],
+        ids: List[int | str],
         with_vectors: bool = False,
     ) -> List[Dict[str, Any]]:
         """ID로 포인트 조회"""
@@ -270,7 +305,7 @@ class VDBManager:
     def delete_points(
         self,
         collection_name: str,
-        ids: List[int],
+        ids: List[int | str],
     ) -> Dict[str, Any]:
         """ID로 포인트 삭제"""
         return self.collection.delete_points(
@@ -282,7 +317,7 @@ class VDBManager:
         self,
         collection_name: str,
         limit: int = 20,
-        offset: Optional[int] = None,
+        offset: Optional[int | str] = None,
         with_vectors: bool = False,
     ) -> Dict[str, Any]:
         """포인트 스크롤 조회 (페이지네이션)"""
@@ -296,6 +331,28 @@ class VDBManager:
     # ------------------------------------------------------------------
     # 상태 확인 / 생명주기
     # ------------------------------------------------------------------
+
+    def count_points(
+        self,
+        collection_name: str,
+        payload_filter: Optional[dict] = None,
+    ) -> int:
+        """조건에 맞는 포인트 수 조회"""
+        return self.collection.count_points(
+            collection_name=collection_name,
+            payload_filter=payload_filter,
+        )
+
+    def has_points(
+        self,
+        collection_name: str,
+        payload_filter: Optional[dict] = None,
+    ) -> bool:
+        """조건에 맞는 포인트가 하나라도 있는지 확인"""
+        return self.collection.has_points(
+            collection_name=collection_name,
+            payload_filter=payload_filter,
+        )
 
     def health_check(self) -> Dict[str, Any]:
         """서비스 상태 확인"""
