@@ -21,7 +21,8 @@ vdb_manager - VDB Handler SDK
 
     # Collection / CRUD
     handler.collection.create("my_col")
-    handler.collection.upsert("my_col", texts=[...], ...)
+    if not handler.collection.has_points("my_col", {"must": [...]}):
+        handler.collection.upsert_points("my_col", texts=[...], ids=[...], ...)
 
     # Reranker
     reranked = handler.reranker.rerank("질문", documents=[...])
