@@ -31,6 +31,29 @@ def _reject_if_empty(name: str, value: Any, reason: str) -> None:
         raise ValueError(f"{name} 가 빔 — {reason}")
 
 
+def _warn_if_index_cannot_be_deleted(field: str) -> None:
+    """지울 수 없는 색인을 만들려 할 때 그 자리에서 알린다.
+
+    되돌릴 수 없게 만드는 행위는 만드는 쪽이다. 지우는 시점에 알려 주면 이미
+    늦다. 막지는 않는다 — 슬래시 든 필드에 색인을 거는 것은 정당한 요구이고,
+    걸면 조회가 실제로 빨라진다. 못 하는 것은 지우는 일뿐이다.
+
+    KiwoomAM/Kiwoom-Handler#74 가 고쳐지면 함께 걷어낼 임시 조치다.
+
+    Args:
+        field: 색인을 걸 payload 필드명.
+    """
+    if "/" not in field:
+        return
+    warnings.warn(
+        f"필드명 '{field}' 에 슬래시 있음 — 색인을 만들 수는 있으나 지울 수 없음"
+        " (벤더 클라이언트 한계, KiwoomAM/Kiwoom-Handler#74)."
+        " 지울 수 있어야 하면 슬래시 없는 필드명 사용",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 class CollectionClient:
     """Service의 /v1/collections 엔드포인트를 호출하는 클라이언트"""
 
@@ -436,6 +459,101 @@ class CollectionClient:
         return self._client.delete(
             f"/v1/collections/{collection_name}/points/payload/all",
             json={"ids": ids},
+        )
+
+    # ------------------------------------------------------------------
+    # payload 색인
+    # ------------------------------------------------------------------
+
+    def create_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+        schema: str,
+    ) -> Dict[str, Any]:
+        """payload 필드에 색인을 만든다.
+
+        조건 조회(`count_points`·`has_points`·검색의 `payload_filter`)에 쓰는
+        필드에 색인이 없으면 Qdrant 가 전수 주사하므로, 비용이 컬렉션 크기와 함께
+        늘어난다. 색인을 걸면 그 비용을 크기에서 떼어 낼 수 있다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            field: 색인을 걸 payload 필드명.
+            schema: 색인 종류. `keyword`·`integer`·`float`·`geo`·`text`·`bool`·
+                `datetime`·`uuid` 를 서버가 받으며 그 밖은 422 로 거부한다.
+                기본값을 두지 않는 이유는 틀린 선택이 조용하기 때문이다 — 오타는
+                서버가 잡지만, 날짜 필드에 `keyword` 를 거는 것은 유효한 요청이라
+                성공하고 range 질의만 색인을 타지 못한 채 느려진다.
+
+        Returns:
+            `{"status": ..., "collection": ..., "field": ...}`.
+
+        Raises:
+            ValueError: `field` 가 비었을 때.
+
+        Warns:
+            UserWarning: `field` 에 슬래시가 있을 때. 만들 수는 있으나 지울 수
+                없는 색인이 된다. 아래 Note 참고.
+
+        Note:
+            이름에 슬래시가 든 필드는 색인을 지울 수 없다. 원인은 벤더 클라이언트가
+            필드명을 URL 경로에 percent-encoding 없이 넣는 것이며 Qdrant 자체는
+            인코딩된 경로를 받아들인다. KiwoomAM/Kiwoom-Handler#74 에 실측이 있다.
+            같은 원리로 URL 경로에서 의미를 갖는 다른 문자도 깨질 수 있으나, 실제로
+            측정한 것은 슬래시 하나라 그것만 경고한다.
+        """
+        _reject_if_empty("field", field, "대상 필드 없음")
+        _warn_if_index_cannot_be_deleted(field)
+        return self._client.post(
+            f"/v1/collections/{collection_name}/indexes",
+            json={"field": field, "schema": schema},
+        )
+
+    def list_payload_indexes(self, collection_name: str) -> Dict[str, str]:
+        """어떤 필드에 어떤 색인이 걸려 있는지 본다.
+
+        배포 전에 색인이 실제로 걸렸는지 확인하는 자리다. 색인이 하나도 없는 것은
+        오류가 아니라 흔한 상태다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+
+        Returns:
+            필드명에서 색인 종류로 가는 매핑. 예: `{"source_pdf": "keyword"}`.
+            색인이 없으면 빈 dict.
+        """
+        resp = self._client.get(f"/v1/collections/{collection_name}/indexes")
+        return resp["indexes"]
+
+    def delete_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+    ) -> Dict[str, Any]:
+        """payload 색인을 지운다. payload 값은 그대로 남는다.
+
+        잘못 만든 색인이 메모리를 영구히 먹지 않게 하는 경로다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            field: 색인을 지울 payload 필드명.
+
+        Returns:
+            `{"status": ..., "collection": ..., "field": ...}`.
+
+        Raises:
+            ValueError: `field` 가 비었을 때.
+
+        Note:
+            이름에 슬래시가 든 필드는 색인이 있어도 404 가 돌아온다. 필드명을 잘못
+            적어서가 아니라 벤더 클라이언트의 한계이며
+            KiwoomAM/Kiwoom-Handler#74 에 실측과 대안이 있다.
+        """
+        _reject_if_empty("field", field, "대상 필드 없음")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/indexes",
+            json={"field": field},
         )
 
     @property

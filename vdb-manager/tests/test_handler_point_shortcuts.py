@@ -57,6 +57,21 @@ class FakeCollection:
     def clear_payload(self, collection_name, **kwargs):
         return self._capture("clear_payload", collection_name=collection_name, **kwargs)
 
+    def create_payload_index(self, collection_name, **kwargs):
+        return self._capture(
+            "create_payload_index", collection_name=collection_name, **kwargs
+        )
+
+    def list_payload_indexes(self, collection_name, **kwargs):
+        return self._capture(
+            "list_payload_indexes", collection_name=collection_name, **kwargs
+        )
+
+    def delete_payload_index(self, collection_name, **kwargs):
+        return self._capture(
+            "delete_payload_index", collection_name=collection_name, **kwargs
+        )
+
 
 def _handler(result: Any):
     from vdb_manager import VDBManager
@@ -160,6 +175,8 @@ def test_handler_upsert_is_deprecated_and_points_at_its_own_caller():
         ("overwrite_payload", {"ids": [1], "payload": {"file_path": "x"}}),
         ("delete_payload_keys", {"ids": [1], "keys": ["위치"]}),
         ("clear_payload", {"ids": [1]}),
+        ("create_payload_index", {"field": "source_pdf", "schema": "keyword"}),
+        ("delete_payload_index", {"field": "source_pdf"}),
     ],
 )
 def test_handler_forwards_payload_and_index_calls(method, kwargs):
@@ -176,4 +193,14 @@ def test_handler_forwards_payload_and_index_calls(method, kwargs):
         "method": method,
         "collection_name": COLLECTION,
         **kwargs,
+    }
+
+
+def test_handler_list_payload_indexes_forwards():
+    handler, fake = _handler({"source_pdf": "keyword"})
+
+    assert handler.list_payload_indexes(COLLECTION) == {"source_pdf": "keyword"}
+    assert fake.captured == {
+        "method": "list_payload_indexes",
+        "collection_name": COLLECTION,
     }

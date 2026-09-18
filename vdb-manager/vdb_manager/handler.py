@@ -408,6 +408,36 @@ class VDBManager:
             ids=ids,
         )
 
+    def create_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+        schema: str,
+    ) -> Dict[str, Any]:
+        """payload 필드에 색인 생성"""
+        return self.collection.create_payload_index(
+            collection_name=collection_name,
+            field=field,
+            schema=schema,
+        )
+
+    def list_payload_indexes(self, collection_name: str) -> Dict[str, str]:
+        """필드별 색인 현황 조회"""
+        return self.collection.list_payload_indexes(
+            collection_name=collection_name,
+        )
+
+    def delete_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+    ) -> Dict[str, Any]:
+        """payload 색인 삭제"""
+        return self.collection.delete_payload_index(
+            collection_name=collection_name,
+            field=field,
+        )
+
     def health_check(self) -> Dict[str, Any]:
         """서비스 상태 확인"""
         return self._client.get("/v1/admin/status")
