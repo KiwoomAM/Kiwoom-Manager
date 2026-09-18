@@ -51,6 +51,13 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   통과하므로, `tests/conftest.py`의 `FakeClient`는 메서드를 반드시 캡처한다.
 - **`clear_payload`는 `delete_payload_keys`의 인자 생략형이 아니다**: 서버가 경로를 나눠 둔
   이유가 "인자를 빠뜨렸다고 전체가 지워지는 일"을 막기 위해서다. 한쪽으로 합치지 말 것.
+- **payload 쓰기는 존재를 판정하지 않는다**: 서버가 `has_id` 조건으로 보내 없는 id 를
+  고르지 않는다. 예전에는 Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아,
+  호출자가 아무 일도 없었다고 읽으면서 실제로는 일부가 바뀌어 있었다. 존재 판정을 쓰기에
+  다시 얹지 말 것 — 그 일은 `get_points`·`count_points` 가 한다.
+- **payload 쓰기 응답 필드는 `requested`**: `count` 가 아니다. 셀 수 없는 값에 센 값처럼
+  읽히는 이름을 붙이지 않는다. `/count` 응답의 `count` 와 `/upsert_points` 의 `count` 는
+  그대로이며 서로 다른 값이다.
 - **SDK는 빈 것만 막고 형식은 판정하지 않는다**: `_reject_if_empty`가 보는 것은 빈 `ids`·
   `payload`·`keys`·`field`·`schema`뿐이다. u64 폭이나 UUID 모양까지 흉내 내면 서버가 규칙을 넓힐 때
   SDK만 옛 규칙으로 정당한 요청을 막는다. 서버가 판정하지 **않는** 사실(슬래시 한계)만 SDK가

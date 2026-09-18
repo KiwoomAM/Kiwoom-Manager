@@ -338,6 +338,11 @@ class CollectionClient:
     ) -> Dict[str, Any]:
         """포인트 payload 에 주는 키만 더하거나 덮는다. 나머지 키는 보존된다.
 
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
         벡터는 건드리지 않으므로 필드 하나를 고치자고 임베딩을 다시 돌릴 필요가
         없다. 스키마가 바뀌어 기존 포인트를 채워 넣는 백필이 이 메서드의 자리다.
 
@@ -351,9 +356,10 @@ class CollectionClient:
             payload: 더하거나 덮을 key-value.
 
         Returns:
-            `{"status": "updated", "collection": ..., "count": ...}`.
-            `count` 는 영향받은 수가 아니라 요청한 id 수다. Qdrant 가 실제 변경
-            건수를 돌려주지 않아 세는 것이 불가능하다.
+            `{"status": "updated", "collection": ..., "requested": ...}`.
+            `requested` 는 요청한 id 수다. Qdrant 가 실제 변경 건수를 돌려주지 않아
+            셀 수가 없으므로 이름으로 그 사실을 드러낸다 — `count_points` 가
+            돌려주는 `count` 는 진짜로 센 값이라 서로 다른 것이다.
 
         Raises:
             ValueError: `ids` 나 `payload` 가 비었을 때.
@@ -379,6 +385,11 @@ class CollectionClient:
     ) -> Dict[str, Any]:
         """포인트 payload 를 통째로 주는 것으로 바꾼다. 기존 키는 전부 사라진다.
 
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
         스키마를 전면 개편할 때 남은 키를 하나씩 지우지 않아도 되게 하는 경로다.
         주지 않은 키를 남기려면 `set_payload` 를 쓴다.
 
@@ -391,8 +402,8 @@ class CollectionClient:
             payload: 새 payload 전체.
 
         Returns:
-            `{"status": "replaced", "collection": ..., "count": ...}`.
-            `count` 의 의미는 `set_payload` 와 같다.
+            `{"status": "replaced", "collection": ..., "requested": ...}`.
+            `requested` 의 의미는 `set_payload` 와 같다.
 
         Raises:
             ValueError: `ids` 나 `payload` 가 비었을 때.
@@ -412,6 +423,11 @@ class CollectionClient:
     ) -> Dict[str, Any]:
         """포인트 payload 에서 주는 키만 지운다.
 
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
         폐기된 필드를 컬렉션에서 걷어내는 정리 작업의 자리다. payload 를 통째로
         비우려면 `clear_payload` 를 쓴다 — `keys` 를 생략해서 도달할 수 있는
         연산이 아니다.
@@ -422,7 +438,7 @@ class CollectionClient:
             keys: 지울 payload 키. 필수다.
 
         Returns:
-            `{"status": ..., "collection": ..., "count": ..., "ids": [...],
+            `{"status": ..., "collection": ..., "requested": ..., "ids": [...],
             "keys": [...]}`. 무엇을 어디서 지웠는지가 응답에 실린다 — 되돌릴
             수단이 없는 연산이라 호출자가 로그로 남길 수 있어야 한다.
 
@@ -443,6 +459,11 @@ class CollectionClient:
     ) -> Dict[str, Any]:
         """포인트 payload 를 통째로 비운다.
 
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
         잘못 채워진 포인트를 초기화하는 경로다. 벡터는 남고 payload 만 사라진다.
 
         `keys` 를 받지 않는다. 받으면 키 삭제와 구분이 흐려지고, 인자를 빠뜨렸다는
@@ -453,7 +474,8 @@ class CollectionClient:
             ids: 대상 포인트 id.
 
         Returns:
-            `{"status": "cleared", "collection": ..., "count": ..., "ids": [...]}`.
+            `{"status": "cleared", "collection": ..., "requested": ...,
+            "ids": [...]}`.
 
         Raises:
             ValueError: `ids` 가 비었을 때.
