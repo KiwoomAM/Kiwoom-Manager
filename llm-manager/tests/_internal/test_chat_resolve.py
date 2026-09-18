@@ -22,7 +22,7 @@ from llm_manager._internal.handler_client.models import (
 )
 from llm_manager._internal.keying import make_file_checksum
 from llm_manager._internal.stored_file_resolver import resolve_stored_files
-from llm_manager.exceptions import ValidationError
+from llm_manager.exceptions import CacheError, FileResolveError, ValidationError
 from llm_manager.models import ChatMessage, StoredFile
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
@@ -169,14 +169,14 @@ class TestResolveAttachments:
         ]
 
     async def test_failed_file_alone_becomes_notice(self, handler, monkeypatch):
-        """해소가 실패한 파일만 안내 문구가 되고 호출은 계속된다."""
+        """파일 하나에 매인 실패(파일매니저에서 못 찾음)면 그 파일만 안내 문구가 되고 호출은 계속된다."""
         bad, ok = _sf("bad.pdf"), _sf("ok.pdf")
         await _seed_files_api(ok, ["files/ok1"])
         real = chat._resolve_one_files_api
 
         async def resolve(fi, checksum, **kwargs):
             if fi.file_name == "bad.pdf":
-                raise RuntimeError("file-manager down")
+                raise FileResolveError("file-manager 에 그 파일이 없다")
             return await real(fi, checksum, **kwargs)
 
         monkeypatch.setattr(chat, "_resolve_one_files_api", resolve)
@@ -188,6 +188,20 @@ class TestResolveAttachments:
             ("text", "[bad.pdf: 첨부를 불러오지 못했습니다]"),
             ("file", "files/ok1"),
         ]
+
+    async def test_infrastructure_failure_is_raised_not_hidden(self, handler, monkeypatch):
+        """Redis·file-manager 장애는 파일 하나의 문제가 아니다 — 안내 문구로 덮지 않고 올린다.
+
+        덮으면 장애 동안 모든 대화의 모든 첨부가 조용히 빠진 채 모델이 문서 없이 답한다.
+        """
+        async def resolve(fi, checksum, **kwargs):
+            raise CacheError("Redis files_api 조회 실패: handler down")
+
+        monkeypatch.setattr(chat, "_resolve_one_files_api", resolve)
+
+        with pytest.raises(CacheError):
+            await _stream([_user(_sf("a.pdf"), _text("요약"))])
+        assert handler.calls == []
 
 
 # ── 반환과 전달 ────────────────────────────────────────────────
@@ -328,7 +342,7 @@ class TestGemini404Recovery:
     async def test_404_with_only_notice_attachments_is_not_retried(self, handler, monkeypatch):
         """안내 문구로 바뀐 파일은 주소를 보내지 않았으니 404 의 원인이 아니다."""
         async def resolve(fi, checksum, **kwargs):
-            raise RuntimeError("file-manager down")
+            raise FileResolveError("file-manager 에 그 파일이 없다")
 
         monkeypatch.setattr(chat, "_resolve_one_files_api", resolve)
         handler.script = [[_gone()], [StreamChunk(text="ok")]]

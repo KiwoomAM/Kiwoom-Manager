@@ -545,7 +545,9 @@ async def llm_chat_stream_async(
 
     `async for chunk in llm_chat_stream_async(messages, ...)` 로 쓴다. 인자는 `messages`
     외에 밑단 `aio.stream` 과 같다. `service_name` 은 env `SERVICE_NAME` 에서 넣고, 없으면
-    요청 전에 `ValidationError` 를 낸다. 응답 캐시·저장·Context Cache·meta 는 없다.
+    Gemini 를 부르기 전에 `llm_manager.ValidationError` 를 낸다. **async generator 라 이 검사는
+    함수를 부를 때가 아니라 첫 반복(`async for` 시작)에서 일어난다** — `StreamingResponse` 등에
+    넘기면 응답이 시작된 뒤에 드러난다. 응답 캐시·저장·Context Cache·meta 는 없다.
 
     **첨부.** 발화의 원래 위치에 `StoredFile` 을 넣으면 매니저가 Files API 주소 조각으로
     바꿔 보낸다(분할된 PDF 는 조각 여러 개). 파일마다 60초 상한이 있고, 넘기거나 실패한

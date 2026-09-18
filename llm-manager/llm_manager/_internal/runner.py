@@ -15,7 +15,7 @@ from llm_manager._internal.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
-from llm_manager._internal.gemini_errors import is_gemini_file_unavailable
+from llm_manager._internal.gemini_errors import is_gemini_404, is_gemini_file_unavailable
 from llm_manager._internal.handler_client._common import (
     STREAM_CONTAINER_FIELDS,
     STREAM_LIST_FIELDS,
@@ -495,6 +495,16 @@ def _recheck_agent_llm_cache(
     return response, meta
 
 
+def _file_gone(e: Exception, prep: _Prepared) -> bool:
+    """첨부 주소 기록을 지우고 다시 올릴 신호인지 — Context Cache 를 쓴 요청은 404 만 본다.
+
+    그 요청에서 Gemini 는 파일이 아니라 캐시를 읽으므로 403 은 파일 소실보다 인증·쿼터
+    쪽이다. 그 403 으로 복구하면 `resolve_files_after_404` 가 Redis 의 context_cache 기록까지
+    지워, Gemini 쪽 캐시는 TTL 까지 과금되는 고아가 된다.
+    """
+    return is_gemini_404(e) if prep.context_cache_id else is_gemini_file_unavailable(e)
+
+
 async def _do_llm_call(
     prep: _Prepared, database: str | None,
 ) -> tuple[LLMResponse, dict[str, Any]]:
@@ -503,7 +513,7 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if is_gemini_file_unavailable(e) and prep.files:
+        if _file_gone(e, prep) and prep.files:
             logger.warning("Gemini 가 첨부를 못 씀 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -637,8 +647,8 @@ async def _do_llm_stream(
             meta.update(chunk)
             yield chunk
     except Exception as e:
-        # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if is_gemini_file_unavailable(e) and prep.files and last is None:
+        # 첨부 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
+        if _file_gone(e, prep) and prep.files and last is None:
             logger.warning("Gemini 가 첨부를 못 씀 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
@@ -656,9 +666,9 @@ async def _do_llm_stream(
                 meta.update(chunk)
                 yield chunk
         else:
-            # 404 외 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
+            # 첨부 복구 대상이 아닌 예외 (rate limit / 네트워크 / etc) — partial chunk 는 이미 yield 됐으나
             # 불완전 응답을 캐시에 남기지 않기 위해 finalize 호출 안 함. 동일 요청 재호출 시 LLM 재과금 발생.
-            logger.warning("스트림 중 비-404 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
+            logger.warning("스트림 중 복구 대상이 아닌 예외 — partial 응답 폐기, 캐시 미저장: %s", e)
             raise
     _finalize_stream(prep, last, meta, database=database)
 

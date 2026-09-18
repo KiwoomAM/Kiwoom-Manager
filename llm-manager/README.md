@@ -540,11 +540,11 @@ async for chunk in llm_chat_stream_async(messages, model="gemini-2.5-flash", too
 | --- | --- |
 | 인자 | `messages` 외에는 `aio.stream` / `aio.call` 과 같다. `contents`·`history`·`cached_content` 는 받지 않는다 |
 | `role` | `user`·`model` 만 받는다. `assistant` → `model` 변환은 호출하는 쪽이 한다 |
-| `content` | `StoredFile` 과 파일이 아닌 `Part`(글·함수 호출·함수 결과 등)를 받는다. `inline`·`file` 조각은 `ValidationError` 를 낸다 |
+| `content` | `StoredFile` 과 파일이 아닌 `Part`(글·함수 호출·함수 결과 등)를 받는다. `inline`·`file` 조각은 `pydantic.ValidationError` 를 낸다 |
 | 첨부 | 파일마다 Files API 주소 조각으로 바꿔 원래 위치에 넣는다. Redis 에 주소가 있으면 재사용하고, 없으면 파일매니저에서 받아 올린다. 분할된 PDF 는 조각 여러 개가 된다 |
-| 첨부 실패 | 파일마다 60초 상한이 있다. 넘기거나 실패한 파일만 `[{file_name}: 첨부를 불러오지 못했습니다]` 로 바뀌고 호출은 계속되며, 실패는 로그에만 남는다 |
+| 첨부 실패 | 파일마다 60초 상한이 있다. 넘기거나 그 파일에만 매인 이유(file-manager 에 없음·형식·크기·분할 불가)로 실패한 파일만 `[{file_name}: 첨부를 불러오지 못했습니다]` 로 바뀌고 호출은 계속되며, 그 실패는 로그에만 남는다. Redis·file-manager·Gemini 업로드 장애는 덮지 않고 예외로 올라온다 |
 | 만료된 첨부 | 첨부를 못 쓴다는 응답(Gemini 404, 또는 지워진 파일에 오는 403 — handler 가 `handler_ops` 502 로 바꿔 올린다)이면 주소로 보낸 파일들의 Redis 기록을 지우고 다시 풀어 1회 재시도한다. 스트림은 첫 청크가 나오기 전일 때만 재시도한다 |
-| `service_name` | env `SERVICE_NAME` 에서 넣는다. 없으면 요청 전에 `ValidationError` 를 낸다 |
+| `service_name` | env `SERVICE_NAME` 에서 넣는다. 없으면 Gemini 를 부르기 전에 `llm_manager.ValidationError` 를 낸다(`ChatMessage` 검증의 `pydantic.ValidationError` 와 다른 클래스다). 스트림은 async generator 라 부를 때가 아니라 첫 반복에서 난다 |
 | 반환 | 스트림은 `StreamChunk` 객체를, 단건은 `LLMResponse` 를 돌려준다. meta 는 없다 |
 | 캐시·저장 | 응답 캐시·MDB 저장·Context Cache 를 쓰지 않는다 |
 
@@ -1089,7 +1089,7 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | 시간 상한 | LLM 스트림만 감싼다 | 첨부 해소 시간까지 덮게 늘린다 |
 | 청크 읽기 | `StreamChunk` 속성으로 읽는다 | 그대로 둔다 |
 
-**`StoredFile` 을 만들지 못한 블록은 호출하는 쪽이 안내 문구로 바꾼다.** 매니저는 `StoredFile` 만 받으므로, 저장된 대화에 필드가 빠진 옛 블록이 섞여 있으면 `ChatMessage` 를 만들 때 `ValidationError` 가 난다.
+**`StoredFile` 을 만들지 못한 블록은 호출하는 쪽이 안내 문구로 바꾼다.** 매니저는 `StoredFile` 만 받으므로, 저장된 대화에 필드가 빠진 옛 블록이 섞여 있으면 `ChatMessage` 를 만들 때 `pydantic.ValidationError` 가 난다.
 
 **바이트로 남은 첨부는 소비자가 고른다.** 파일매니저 등록이 실패해 바이트(`inline`)로 남은 첨부를 새 함수는 받지 않는다. 그 대화를 기존 `aio.stream` 경로로 보내 폴백을 유지할지, 안내 문구로 바꿔 폴백을 뺄지 고른다.
 
