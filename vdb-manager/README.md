@@ -130,9 +130,9 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `overwrite_payload(collection_name, ids, payload)` | `Dict` | payload를 통째로 교체 (기존 키 사라짐) |
 | `delete_payload_keys(collection_name, ids, keys)` | `Dict` | payload에서 주는 키만 삭제 |
 | `clear_payload(collection_name, ids)` | `Dict` | payload를 통째로 비우기 |
-| `create_payload_index(collection_name, field, schema)` | `Dict` | payload 필드에 색인 생성 |
-| `list_payload_indexes(collection_name)` | `Dict[str, str]` | 필드별 색인 현황 (`{필드명: 종류}`) |
-| `delete_payload_index(collection_name, field)` | `Dict` | payload 색인 삭제 |
+| `create_payload_index(collection_name, field, schema)` | `Dict` | payload 필드에 index 생성 |
+| `list_payload_indexes(collection_name)` | `Dict[str, str]` | 필드별 index 현황 (`{필드명: 종류}`) |
+| `delete_payload_index(collection_name, field)` | `Dict` | payload index 삭제 |
 | `is_ready` (property) | `bool` | Qdrant 연결 상태 |
 
 #### handler.reranker — RerankerClient
@@ -281,9 +281,9 @@ for i in range(0, len(ids), CHUNK):
     logger.info("%d/%d 완료", min(i + CHUNK, len(ids)), len(ids))
 ```
 
-### 자주 쓰는 조건에 색인 걸기
+### 자주 쓰는 조건에 index 걸기
 
-존재 확인(`has_points`)이나 검색의 `payload_filter`에 쓰는 필드에 색인이 없으면 Qdrant가
+존재 확인(`has_points`)이나 검색의 `payload_filter`에 쓰는 필드에 index 가 없으면 Qdrant가
 전수 스캔한다. 컬렉션이 커질수록 같은 질의가 느려진다.
 
 ```python
@@ -336,8 +336,8 @@ for r in results:
 - **어떤 payload 키도 보호되지 않음**: 존재 확인에 쓰는 정체성 키(`source_pdf` 등)도 `overwrite_payload()`·`clear_payload()`로 사라진다. 재적재 여부는 도메인 소비자가 판단할 일이라 Service가 막지 않는다 (근거는 `KiwoomAM/Kiwoom-Handler`의 ADR 0002)
 - **payload 쓰기의 빈 인자는 거부됨**: `ids`·`payload`·`keys`·`field`·`schema`가 비면 왕복 전에 `ValueError`. 대상 0개로 통과하면 Service까지 갔다가 아무것도 바꾸지 않고 성공처럼 보인다. 형식(정수 폭·UUID 모양)은 SDK가 판정하지 않고 Service에 맡긴다
 - **큰 id 목록은 호출자가 끊어 보낼 것**: SDK가 쪼개지 않는다. 중간에 실패하면 "몇 개까지 갔는지"를 예외가 실어 나를 수 없어, 그 정보를 아는 호출자의 루프가 필요하다. `upsert_points()`의 `batch_size`와 혼동하지 말 것 — 그것은 HTTP가 아니라 Service→Qdrant 호출을 나누는 인자다
-- **색인 `schema`에 기본값이 없음**: 오타는 Service가 422로 잡지만, 날짜 필드에 `keyword`를 거는 것은 유효한 요청이라 성공하고 range 질의만 색인을 타지 못한 채 느려진다. 색인은 오래 사는 물건이라 그 침묵이 길다
-- **이름에 슬래시가 든 필드의 색인은 지울 수 없음**: 만들 수는 있고 조회에도 보이지만 삭제가 404로 돌아온다. 필드명을 잘못 적어서가 아니라 벤더 클라이언트 한계이며, `create_payload_index()`가 만드는 시점에 경고한다 (`KiwoomAM/Kiwoom-Handler#74`)
+- **index `schema`에 기본값이 없음**: 오타는 Service가 422로 잡지만, 날짜 필드에 `keyword`를 거는 것은 유효한 요청이라 성공하고 range 질의만 index 를 타지 못한 채 느려진다. index 는 오래 사는 물건이라 그 침묵이 길다
+- **이름에 슬래시가 든 필드의 index 는 지울 수 없음**: 만들 수는 있고 조회에도 보이지만 삭제가 404로 돌아온다. 필드명을 잘못 적어서가 아니라 벤더 클라이언트 한계이며, `create_payload_index()`가 만드는 시점에 경고한다 (`KiwoomAM/Kiwoom-Handler#74`)
 - **`has_points()`는 "적재 완료"가 아님**: 조건에 맞는 포인트가 하나라도 있으면 True다. 문서 하나가 포인트 여럿이 되는(청킹) 소비자가 이것을 완료 판정으로 쓰면 부분 적재가 영구히 굳는다
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)

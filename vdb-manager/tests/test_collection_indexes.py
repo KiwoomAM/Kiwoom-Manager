@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""자주 조건으로 쓰는 payload 필드에 색인을 만들고 보고 지우는 세 연산.
+"""자주 조건으로 쓰는 payload 필드에 index 를 만들고 보고 지우는 세 연산.
 
 서버(KiwoomAM/Kiwoom-Handler#73)가 별도 자원으로 연 `/indexes` 에 대응한다.
-Qdrant 에 색인 전용 조회 경로가 없어 서버가 컬렉션 정보에서 투영하지만, 그것은
+Qdrant 에 index 전용 조회 경로가 없어 서버가 컬렉션 정보에서 투영하지만, 그것은
 서버가 감싸는 물건의 구현 세부라 SDK 에는 드러나지 않는다.
 """
 
@@ -68,9 +68,9 @@ def test_list_payload_indexes_returns_only_the_mapping(make_collection):
 
 
 def test_no_indexes_is_an_empty_mapping(make_collection):
-    """색인이 하나도 없는 것은 오류가 아니다.
+    """index 가 하나도 없는 것은 오류가 아니다.
 
-    운영 컬렉션의 실제 상태가 이것이다 — 2026-09-18 실측에서 색인이 0개였다.
+    운영 컬렉션의 실제 상태가 이것이다 — 2026-09-18 실측에서 index 가 0개였다.
     """
     col, _ = make_collection({"collection_name": COLLECTION, "indexes": {}})
 
@@ -124,14 +124,14 @@ def test_empty_field_rejected_without_calling_server(make_collection, method):
 
 
 # ------------------------------------------------------------------
-# 지울 수 없는 색인을 만들 때 알린다
+# 지울 수 없는 index 를 만들 때 알린다
 # ------------------------------------------------------------------
 
 
 def test_slash_in_field_warns_when_creating(make_collection):
     """되돌릴 수 없게 만드는 행위는 만드는 쪽이다.
 
-    이름에 슬래시가 든 필드는 색인을 만들 수는 있으나 지울 수 없다
+    이름에 슬래시가 든 필드는 index 를 만들 수는 있으나 지울 수 없다
     (KiwoomAM/Kiwoom-Handler#74). 삭제 시점에 알려 주면 이미 늦다.
     """
     col, client = make_collection()

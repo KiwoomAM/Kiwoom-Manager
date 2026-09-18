@@ -164,7 +164,7 @@ def test_handler_upsert_is_deprecated_and_points_at_its_own_caller():
 
 
 # ------------------------------------------------------------------
-# payload 수정과 색인 (KiwoomAM/Kiwoom-Manager#109, #110)
+# payload 수정과 index (KiwoomAM/Kiwoom-Manager#109, #110)
 # ------------------------------------------------------------------
 
 
@@ -218,7 +218,7 @@ def test_slash_warning_survives_the_shortcut():
 
     `stacklevel` 은 위임 프레임 때문에 호출자 줄을 정확히 짚지 못한다. 그것은
     KiwoomAM/Kiwoom-Manager#114 가 다룰 구조 문제이고, 여기서 지키는 것은 더 앞의
-    계약이다 — 경고 자체가 나기는 하는가. 나지 않으면 소비자는 지울 수 없는 색인을
+    계약이다 — 경고 자체가 나기는 하는가. 나지 않으면 소비자는 지울 수 없는 index 를
     만들고도 아무 말도 듣지 못한다.
     """
     import warnings

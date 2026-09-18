@@ -355,7 +355,7 @@ class VDBManager:
         )
 
     # ------------------------------------------------------------------
-    # payload 수정 / 색인
+    # payload 수정 / index
     # ------------------------------------------------------------------
 
     def set_payload(
@@ -414,7 +414,7 @@ class VDBManager:
         field: str,
         schema: str,
     ) -> Dict[str, Any]:
-        """payload 필드에 색인 생성"""
+        """payload 필드에 index 생성"""
         return self.collection.create_payload_index(
             collection_name=collection_name,
             field=field,
@@ -422,7 +422,7 @@ class VDBManager:
         )
 
     def list_payload_indexes(self, collection_name: str) -> Dict[str, str]:
-        """필드별 색인 현황 조회"""
+        """필드별 index 현황 조회"""
         return self.collection.list_payload_indexes(
             collection_name=collection_name,
         )
@@ -432,7 +432,7 @@ class VDBManager:
         collection_name: str,
         field: str,
     ) -> Dict[str, Any]:
-        """payload 색인 삭제"""
+        """payload index 삭제"""
         return self.collection.delete_payload_index(
             collection_name=collection_name,
             field=field,

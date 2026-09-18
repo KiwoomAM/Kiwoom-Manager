@@ -55,10 +55,10 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   `payload`·`keys`·`field`·`schema`뿐이다. u64 폭이나 UUID 모양까지 흉내 내면 서버가 규칙을 넓힐 때
   SDK만 옛 규칙으로 정당한 요청을 막는다. 서버가 판정하지 **않는** 사실(슬래시 한계)만 SDK가
   경고로 전한다.
-- **색인 조회는 컬렉션 정보와 별개다**: Qdrant에 색인 전용 조회 경로가 없어 서버가
+- **index 조회는 컬렉션 정보와 별개다**: Qdrant에 index 전용 조회 경로가 없어 서버가
   `get_collection()`에서 투영하지만 그것은 서버의 구현 세부다. `list_payload_indexes`를
   `info()`에 합치면 한 메서드가 두 엔드포인트를 치는 얕은 합성이 된다.
-- **슬래시가 든 필드명의 색인은 삭제 불가**: 벤더 클라이언트가 필드명을 URL 경로에
+- **슬래시가 든 필드명의 index 는 삭제 불가**: 벤더 클라이언트가 필드명을 URL 경로에
   percent-encoding 없이 넣는다. `create_payload_index`의 경고는 `KiwoomAM/Kiwoom-Handler#74`가
   고쳐지면 함께 걷어낼 임시 조치다.
 - **이 레포의 `#74`는 다른 이슈다**: 이슈 번호를 적을 때 레포를 함께 쓴다. `Kiwoom-Manager#74`는
