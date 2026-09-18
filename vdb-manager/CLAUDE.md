@@ -46,13 +46,13 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   **아무것도 설정하지 않아도 된다.**
 - **서버 기동이 느리다**: VDB Handler Service는 SPLADE/ColBERT 모델 로드로 기동이 ~120s
   걸린다. 클라이언트 타임아웃/헬스체크 시 고려.
-- **payload 병합과 교체는 HTTP 메서드로만 갈린다**: `set_payload`(PATCH)와 `overwrite_payload`
+- **payload 병합과 교체는 HTTP 메서드로만 구분된다**: `set_payload`(PATCH)와 `overwrite_payload`
   (PUT)는 경로와 body 모양이 같다. 테스트 더블이 메서드를 기록하지 않으면 둘이 뒤바뀌어도
   통과하므로, `tests/conftest.py`의 `FakeClient`는 메서드를 반드시 캡처한다.
-- **`clear_payload`는 `delete_payload_keys`의 인자 생략형이 아니다**: 서버가 경로를 갈라 둔
+- **`clear_payload`는 `delete_payload_keys`의 인자 생략형이 아니다**: 서버가 경로를 나눠 둔
   이유가 "인자를 빠뜨렸다고 전체가 지워지는 일"을 막기 위해서다. 한쪽으로 합치지 말 것.
 - **SDK는 빈 것만 막고 형식은 판정하지 않는다**: `_reject_if_empty`가 보는 것은 빈 `ids`·
-  `payload`·`keys`·`field`뿐이다. u64 폭이나 UUID 모양까지 흉내 내면 서버가 규칙을 넓힐 때
+  `payload`·`keys`·`field`·`schema`뿐이다. u64 폭이나 UUID 모양까지 흉내 내면 서버가 규칙을 넓힐 때
   SDK만 옛 규칙으로 정당한 요청을 막는다. 서버가 판정하지 **않는** 사실(슬래시 한계)만 SDK가
   경고로 전한다.
 - **색인 조회는 컬렉션 정보와 별개다**: Qdrant에 색인 전용 조회 경로가 없어 서버가

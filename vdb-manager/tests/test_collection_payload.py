@@ -84,7 +84,7 @@ def test_clear_payload_uses_its_own_path(make_collection):
 def test_clear_payload_never_reaches_the_key_delete_path(make_collection):
     """전부 삭제가 키 삭제와 같은 경로로 가면 안 된다.
 
-    서버가 두 연산을 갈라 둔 이유는 인자를 빠뜨렸을 때 전체가 지워지는 일을 막기
+    서버가 두 연산을 나눠 둔 이유는 인자를 빠뜨렸을 때 전체가 지워지는 일을 막기
     위해서다. SDK 가 같은 경로로 보내면서 keys 만 빼면 그 경계가 무너진다.
     """
     col, client = make_collection()

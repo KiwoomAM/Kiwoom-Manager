@@ -52,7 +52,7 @@ def test_schema_choice_is_left_to_the_server(make_collection):
 
 
 def test_list_payload_indexes_returns_only_the_mapping(make_collection):
-    """호출자가 서버 응답의 봉투 모양을 알지 않아도 되게 한다."""
+    """호출자가 서버 응답이 어떤 키로 감싸 보내는지 알지 않아도 되게 한다."""
     col, client = make_collection(
         {
             "collection_name": COLLECTION,
@@ -100,6 +100,16 @@ def test_delete_payload_index_sends_field_in_body(make_collection):
 # ------------------------------------------------------------------
 # 빈 것은 SDK 가 막는다
 # ------------------------------------------------------------------
+
+
+def test_empty_schema_rejected_without_calling_server(make_collection):
+    """빈 것을 막는다는 규칙을 field 에만 적용하면 반만 지킨 것이 된다."""
+    col, client = make_collection()
+
+    with pytest.raises(ValueError, match="schema"):
+        col.create_payload_index(COLLECTION, field="source_pdf", schema="")
+
+    assert client.calls == []
 
 
 @pytest.mark.parametrize("method", ["create_payload_index", "delete_payload_index"])

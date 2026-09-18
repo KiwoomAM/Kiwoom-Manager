@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from vdb_manager._client import SyncClient
 
 
+_EMPTY_PAYLOAD_REASON = "바꿀 내용 없음, 비우려면 clear_payload 사용"
+
+
 def _reject_if_empty(name: str, value: Any, reason: str) -> None:
     """빈 인자를 서버에 보내기 전에 막는다.
 
@@ -28,7 +31,7 @@ def _reject_if_empty(name: str, value: Any, reason: str) -> None:
         ValueError: `value` 가 비었을 때.
     """
     if not value:
-        raise ValueError(f"{name} 가 빔 — {reason}")
+        raise ValueError(f"{name} 비어 있음 — {reason}")
 
 
 def _warn_if_index_cannot_be_deleted(field: str) -> None:
@@ -362,7 +365,7 @@ class CollectionClient:
             남는다. 어디까지 갔는지는 호출자의 루프만 알 수 있다.
         """
         _reject_if_empty("ids", ids, "대상 포인트 없음")
-        _reject_if_empty("payload", payload, "바꿀 내용 없음, 비우려면 clear_payload 사용")
+        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
         return self._client.patch(
             f"/v1/collections/{collection_name}/points/payload",
             json={"ids": ids, "payload": payload},
@@ -395,7 +398,7 @@ class CollectionClient:
             ValueError: `ids` 나 `payload` 가 비었을 때.
         """
         _reject_if_empty("ids", ids, "대상 포인트 없음")
-        _reject_if_empty("payload", payload, "바꿀 내용 없음, 비우려면 clear_payload 사용")
+        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
         return self._client.put(
             f"/v1/collections/{collection_name}/points/payload",
             json={"ids": ids, "payload": payload},
@@ -419,9 +422,9 @@ class CollectionClient:
             keys: 지울 payload 키. 필수다.
 
         Returns:
-            `{"status": ..., "collection": ..., "count": ..., "keys": [...]}`.
-            무엇을 지웠는지가 응답에 실린다 — 되돌릴 수단이 없는 연산이라
-            호출자가 로그로 남길 수 있어야 한다.
+            `{"status": ..., "collection": ..., "count": ..., "ids": [...],
+            "keys": [...]}`. 무엇을 어디서 지웠는지가 응답에 실린다 — 되돌릴
+            수단이 없는 연산이라 호출자가 로그로 남길 수 있어야 한다.
 
         Raises:
             ValueError: `ids` 나 `keys` 가 비었을 때.
@@ -450,7 +453,7 @@ class CollectionClient:
             ids: 대상 포인트 id.
 
         Returns:
-            `{"status": "cleared", "collection": ..., "count": ...}`.
+            `{"status": "cleared", "collection": ..., "count": ..., "ids": [...]}`.
 
         Raises:
             ValueError: `ids` 가 비었을 때.
@@ -474,27 +477,27 @@ class CollectionClient:
         """payload 필드에 색인을 만든다.
 
         조건 조회(`count_points`·`has_points`·검색의 `payload_filter`)에 쓰는
-        필드에 색인이 없으면 Qdrant 가 전수 주사하므로, 비용이 컬렉션 크기와 함께
+        필드에 색인이 없으면 Qdrant 가 전수 스캔하므로, 비용이 컬렉션 크기와 함께
         늘어난다. 색인을 걸면 그 비용을 크기에서 떼어 낼 수 있다.
 
         Args:
             collection_name: 대상 컬렉션.
             field: 색인을 걸 payload 필드명.
-            schema: 색인 종류. `keyword`·`integer`·`float`·`geo`·`text`·`bool`·
-                `datetime`·`uuid` 를 서버가 받으며 그 밖은 422 로 거부한다.
-                기본값을 두지 않는 이유는 틀린 선택이 조용하기 때문이다 — 오타는
-                서버가 잡지만, 날짜 필드에 `keyword` 를 거는 것은 유효한 요청이라
-                성공하고 range 질의만 색인을 타지 못한 채 느려진다.
+            schema: 색인 종류. 받는 값의 정의는 서버의
+                `vdb-handler/app/models/requests.py::PayloadIndexSchema` 가 단일
+                출처이며 그 밖은 422 로 거부한다. 기본값을 두지 않는 이유는 틀린
+                선택이 조용하기 때문이다 — 오타는 서버가 잡지만, 날짜 필드에
+                `keyword` 를 거는 것은 유효한 요청이라 성공하고 range 질의만 색인을
+                타지 못한 채 느려진다.
 
         Returns:
-            `{"status": ..., "collection": ..., "field": ...}`.
+            `{"status": ..., "collection": ..., "field": ..., "schema": ...}`.
 
         Raises:
-            ValueError: `field` 가 비었을 때.
+            ValueError: `field` 나 `schema` 가 비었을 때.
 
         Warns:
-            UserWarning: `field` 에 슬래시가 있을 때. 만들 수는 있으나 지울 수
-                없는 색인이 된다. 아래 Note 참고.
+            UserWarning: `field` 에 슬래시가 있을 때. 아래 Note 참고.
 
         Note:
             이름에 슬래시가 든 필드는 색인을 지울 수 없다. 원인은 벤더 클라이언트가
@@ -504,6 +507,7 @@ class CollectionClient:
             측정한 것은 슬래시 하나라 그것만 경고한다.
         """
         _reject_if_empty("field", field, "대상 필드 없음")
+        _reject_if_empty("schema", schema, "색인 종류 없음")
         _warn_if_index_cannot_be_deleted(field)
         return self._client.post(
             f"/v1/collections/{collection_name}/indexes",

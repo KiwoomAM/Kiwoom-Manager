@@ -284,7 +284,7 @@ for i in range(0, len(ids), CHUNK):
 ### 자주 쓰는 조건에 색인 걸기
 
 존재 확인(`has_points`)이나 검색의 `payload_filter`에 쓰는 필드에 색인이 없으면 Qdrant가
-전수 주사한다. 컬렉션이 커질수록 같은 질의가 느려진다.
+전수 스캔한다. 컬렉션이 커질수록 같은 질의가 느려진다.
 
 ```python
 # 배포 전에 지금 무엇이 걸려 있는지 본다 (없으면 빈 dict)
@@ -334,7 +334,7 @@ for r in results:
 - **Deprecation 경고가 안 보일 수 있음**: 파이썬 기본 설정은 `__main__`에서 난 `DeprecationWarning`만 표시한다. 서비스 모듈 안에서 `upsert()`를 부르면 화면에 안 뜨므로, 남은 호출부를 찾으려면 `PYTHONWARNINGS=default::DeprecationWarning` 또는 `python -W default::DeprecationWarning`으로 켠다
 - **병합과 교체를 헷갈리지 말 것**: `set_payload()`는 주는 키만 더하거나 덮고 나머지를 남기지만, `overwrite_payload()`는 payload를 통째로 바꿔 **주지 않은 키가 전부 사라진다.** 둘은 같은 경로로 가고 HTTP 메서드만 다르다
 - **어떤 payload 키도 보호되지 않음**: 존재 확인에 쓰는 정체성 키(`source_pdf` 등)도 `overwrite_payload()`·`clear_payload()`로 사라진다. 재적재 여부는 도메인 소비자가 판단할 일이라 Service가 막지 않는다 (근거는 `KiwoomAM/Kiwoom-Handler`의 ADR 0002)
-- **payload 쓰기의 빈 인자는 거부됨**: `ids`·`payload`·`keys`·`field`가 비면 왕복 전에 `ValueError`. 대상 0개로 통과하면 Service까지 갔다가 아무것도 바꾸지 않고 성공처럼 보인다. 형식(정수 폭·UUID 모양)은 SDK가 판정하지 않고 Service에 맡긴다
+- **payload 쓰기의 빈 인자는 거부됨**: `ids`·`payload`·`keys`·`field`·`schema`가 비면 왕복 전에 `ValueError`. 대상 0개로 통과하면 Service까지 갔다가 아무것도 바꾸지 않고 성공처럼 보인다. 형식(정수 폭·UUID 모양)은 SDK가 판정하지 않고 Service에 맡긴다
 - **큰 id 목록은 호출자가 끊어 보낼 것**: SDK가 쪼개지 않는다. 중간에 실패하면 "몇 개까지 갔는지"를 예외가 실어 나를 수 없어, 그 정보를 아는 호출자의 루프가 필요하다. `upsert_points()`의 `batch_size`와 혼동하지 말 것 — 그것은 HTTP가 아니라 Service→Qdrant 호출을 나누는 인자다
 - **색인 `schema`에 기본값이 없음**: 오타는 Service가 422로 잡지만, 날짜 필드에 `keyword`를 거는 것은 유효한 요청이라 성공하고 range 질의만 색인을 타지 못한 채 느려진다. 색인은 오래 사는 물건이라 그 침묵이 길다
 - **이름에 슬래시가 든 필드의 색인은 지울 수 없음**: 만들 수는 있고 조회에도 보이지만 삭제가 404로 돌아온다. 필드명을 잘못 적어서가 아니라 벤더 클라이언트 한계이며, `create_payload_index()`가 만드는 시점에 경고한다 (`KiwoomAM/Kiwoom-Handler#74`)

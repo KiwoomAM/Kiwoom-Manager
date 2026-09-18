@@ -204,3 +204,30 @@ def test_handler_list_payload_indexes_forwards():
         "method": "list_payload_indexes",
         "collection_name": COLLECTION,
     }
+
+
+class _NullClient:
+    """경고만 보려는 테스트를 위해 요청을 삼키는 더블."""
+
+    def post(self, path, **kwargs):
+        return {"status": "created"}
+
+
+def test_slash_warning_survives_the_shortcut():
+    """바로가기로 불러도 경고가 사라지지 않아야 한다.
+
+    `stacklevel` 은 위임 프레임 때문에 호출자 줄을 정확히 짚지 못한다. 그것은
+    KiwoomAM/Kiwoom-Manager#114 가 다룰 구조 문제이고, 여기서 지키는 것은 더 앞의
+    계약이다 — 경고 자체가 나기는 하는가. 나지 않으면 소비자는 지울 수 없는 색인을
+    만들고도 아무 말도 듣지 못한다.
+    """
+    import warnings
+
+    from vdb_manager import VDBManager
+    from vdb_manager.collection import CollectionClient
+
+    handler = VDBManager()
+    handler.collection = CollectionClient(_NullClient())  # type: ignore[arg-type]
+
+    with pytest.warns(UserWarning, match="종목/분류명"):
+        handler.create_payload_index(COLLECTION, field="종목/분류명", schema="keyword")
