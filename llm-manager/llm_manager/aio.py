@@ -17,6 +17,7 @@ configure(base_url/timeout) 는 HTTP 클라이언트 설정용이라 공개한�
 from llm_manager._internal.handler_client.aio import (
     AsyncSession,
     CacheRef,
+    Content,
     ContentsType,
     EmbeddingStatistics,
     EmbeddingValue,
@@ -36,6 +37,8 @@ from llm_manager._internal.handler_client.aio import (
     session,
     stream,
 )
+from llm_manager._internal.handler_client.models import FunctionResponse
+from llm_manager.models import ChatMessage
 
 __all__ = [
     # 생성 primitive
@@ -48,12 +51,15 @@ __all__ = [
     "configure",
     # 모델
     "CacheRef",
+    "ChatMessage",
+    "Content",
     "ContentsType",
     "EmbeddingStatistics",
     "EmbeddingValue",
     "EmbedResponse",
     "FileRef",
     "FunctionCall",
+    "FunctionResponse",
     "LLMResponse",
     "Part",
     "StreamChunk",

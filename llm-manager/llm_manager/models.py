@@ -8,14 +8,17 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
+from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer, field_validator
+
+from llm_manager._internal.handler_client.models import Part
 
 __all__ = [
     "FileInput",
     "FileKeyingMeta",
     "StoredFile",
+    "ChatMessage",
     "ResponseMeta",
     "ResponseResult",
     "DoneCheckResult",
@@ -89,6 +92,34 @@ class StoredFile(BaseModel):
     file_mtime: str | int
     mime_type: str
     extension: str
+
+
+# 첨부를 담는 조각 — ChatMessage 는 이 둘 대신 StoredFile 만 받는다.
+_FILE_PART_TYPES = ("inline", "file")
+
+
+class ChatMessage(BaseModel):
+    """대화 함수(`llm_chat_async`·`llm_chat_stream_async`)가 받는 발화 하나 (docs/38 §3.2).
+
+    첨부는 `StoredFile` 을 그 발화의 원래 위치에 넣는다. 매니저가 Files API 주소 조각으로
+    바꿔 보낸다. 바이트(`inline`)·Files API 주소(`file`) 조각은 받지 않는다 — 첨부 형태를
+    한 가지로 고정해, 파일매니저 주소는 소비자가 만들고 Files API 업로드는 매니저가 맡는다.
+
+    `role` 은 Gemini 이름(`user`·`model`)만 받는다. `assistant` → `model` 변환은 소비자 몫이다.
+    """
+
+    role: Literal["user", "model"]
+    content: list[StoredFile | Part]
+
+    @field_validator("content")
+    @classmethod
+    def _reject_file_parts(cls, content: list[StoredFile | Part]) -> list[StoredFile | Part]:
+        for item in content:
+            if isinstance(item, Part) and item.type in _FILE_PART_TYPES:
+                raise ValueError(
+                    f"첨부는 StoredFile 로 넣으세요 — '{item.type}' 조각은 받지 않습니다"
+                )
+        return content
 
 
 class ResponseMeta(BaseModel):

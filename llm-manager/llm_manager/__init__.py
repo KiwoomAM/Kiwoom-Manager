@@ -29,12 +29,13 @@ mdb·redis·file manager 와 llm-handler 를 조합해 LLM 응답을 캐싱하�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any, Protocol, TypedDict
 
 from llm_manager import aio as aio  # noqa: PLC0414  (llm_manager.aio 서브모듈 노출)
-from llm_manager._internal import runner
+from llm_manager._internal import chat, runner
 from llm_manager._internal._config import ensure_configured
 from llm_manager._internal.context_cache_lifecycle import expire_caches, extend_caches
 from llm_manager._internal.done_check import done_check as _done_check
@@ -48,12 +49,14 @@ from llm_manager._internal.file_processing import preprocess
 # 단, configure(base_url/timeout) 는 HTTP 클라이언트 설정용이라 공개한다 (캐시 상태 무관).
 from llm_manager._internal.handler_client import (
     CacheRef,
+    Content,
     ContentsType,
     EmbeddingStatistics,
     EmbeddingValue,
     EmbedResponse,
     FileRef,
     FunctionCall,
+    FunctionResponse,
     HandlerConnectionError,
     HandlerError,
     LLMResponse,
@@ -87,6 +90,7 @@ from llm_manager.exceptions import (
     ValidationError,
 )
 from llm_manager.models import (
+    ChatMessage,
     DoneCheckResult,
     ExpireFailure,
     ExpireResult,
@@ -103,6 +107,8 @@ __all__ = [
     "llm_request_stream_async",
     "llm_request_stream",
     "StreamIterator",
+    "llm_chat_async",
+    "llm_chat_stream_async",
     "file_preprocessing",
     "file_preprocessing_async",
     "done_check",
@@ -116,6 +122,7 @@ __all__ = [
     # 공개 타입
     "FileKeyingMeta",
     "StoredFile",
+    "ChatMessage",
     "ResponseMeta",
     "ResponseResult",
     "DoneCheckResult",
@@ -143,12 +150,14 @@ __all__ = [
     "configure",
     # handler 모델·타입 (타입힌트/Part 생성용 — 항상 공개)
     "CacheRef",
+    "Content",
     "ContentsType",
     "EmbeddingStatistics",
     "EmbeddingValue",
     "EmbedResponse",
     "FileRef",
     "FunctionCall",
+    "FunctionResponse",
     "LLMResponse",
     "Part",
     "StreamChunk",
@@ -514,6 +523,80 @@ def llm_request_stream(
         loop.close()
         raise
     return _SyncStream(loop, agen), meta
+
+
+async def llm_chat_stream_async(
+    messages: list[ChatMessage],
+    *,
+    system: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    seed: int | None = None,
+    output: str | None = None,
+    schema: type | dict | None = None,
+    thinking: str | None = None,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
+    task_name: str | None = None,
+    media_resolution: str | None = None,
+) -> AsyncGenerator[StreamChunk, None]:
+    """대화 스트리밍 호출 (async). 청크를 `StreamChunk` 객체로 바로 내보낸다 (docs/38).
+
+    `async for chunk in llm_chat_stream_async(messages, ...)` 로 쓴다. 인자는 `messages`
+    외에 밑단 `aio.stream` 과 같다. `service_name` 은 env `SERVICE_NAME` 에서 넣고, 없으면
+    요청 전에 `ValidationError` 를 낸다. 응답 캐시·저장·Context Cache·meta 는 없다.
+
+    **첨부.** 발화의 원래 위치에 `StoredFile` 을 넣으면 매니저가 Files API 주소 조각으로
+    바꿔 보낸다(분할된 PDF 는 조각 여러 개). 파일마다 60초 상한이 있고, 넘기거나 실패한
+    파일만 `[{file_name}: 첨부를 불러오지 못했습니다]` 로 바뀐 채 호출은 계속된다.
+
+    **시간 상한.** 첨부 해소는 첫 청크 전에 이 제너레이터 안에서 일어난다. 호출을
+    `asyncio.timeout` 으로 감싸면 그 상한이 해소 시간까지 잡으므로, 첨부가 Redis 에 없는
+    대화(처음 붙였거나 47시간이 지난 것)를 덮을 만큼 잡아야 한다.
+    """
+    await asyncio.to_thread(ensure_configured)
+    call_kwargs = {
+        "system": system, "model": model, "temperature": temperature,
+        "max_tokens": max_tokens, "seed": seed, "output": output, "schema": schema,
+        "thinking": thinking, "tools": tools, "tool_config": tool_config,
+        "task_name": task_name, "media_resolution": media_resolution,
+    }
+    # `async for` 는 빠져나갈 때 안쪽 제너레이터를 닫지 않는다 — 소비자가 도중에 그만두면
+    # 밑단 HTTP 스트림이 GC 시점까지 남으므로 여기서 닫는다.
+    async with contextlib.aclosing(chat.stream_chat(messages, call_kwargs)) as chunks:
+        async for chunk in chunks:
+            yield chunk
+
+
+async def llm_chat_async(
+    messages: list[ChatMessage],
+    *,
+    system: str | None = None,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    seed: int | None = None,
+    output: str | None = None,
+    schema: type | dict | None = None,
+    thinking: str | None = None,
+    tools: list[dict] | None = None,
+    tool_config: str | None = None,
+    task_name: str | None = None,
+    media_resolution: str | None = None,
+) -> LLMResponse:
+    """대화 호출 (async). `LLMResponse` 하나를 돌려준다 (docs/38).
+
+    인자·첨부 처리·시간 상한은 `llm_chat_stream_async` 와 같다.
+    """
+    await asyncio.to_thread(ensure_configured)
+    call_kwargs = {
+        "system": system, "model": model, "temperature": temperature,
+        "max_tokens": max_tokens, "seed": seed, "output": output, "schema": schema,
+        "thinking": thinking, "tools": tools, "tool_config": tool_config,
+        "task_name": task_name, "media_resolution": media_resolution,
+    }
+    return await chat.call_chat(messages, call_kwargs)
 
 
 async def file_preprocessing_async(
