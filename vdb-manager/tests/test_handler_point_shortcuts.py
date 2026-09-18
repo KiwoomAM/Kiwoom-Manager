@@ -41,6 +41,22 @@ class FakeCollection:
     def upsert_points(self, collection_name, **kwargs):
         return self._capture("upsert_points", collection_name=collection_name, **kwargs)
 
+    def set_payload(self, collection_name, **kwargs):
+        return self._capture("set_payload", collection_name=collection_name, **kwargs)
+
+    def overwrite_payload(self, collection_name, **kwargs):
+        return self._capture(
+            "overwrite_payload", collection_name=collection_name, **kwargs
+        )
+
+    def delete_payload_keys(self, collection_name, **kwargs):
+        return self._capture(
+            "delete_payload_keys", collection_name=collection_name, **kwargs
+        )
+
+    def clear_payload(self, collection_name, **kwargs):
+        return self._capture("clear_payload", collection_name=collection_name, **kwargs)
+
 
 def _handler(result: Any):
     from vdb_manager import VDBManager
@@ -130,3 +146,34 @@ def test_handler_upsert_is_deprecated_and_points_at_its_own_caller():
     assert len(deprecations) == 1, "경고는 한 번만 — 두 번이면 하나가 SDK 내부를 가리킨다"
     assert "upsert_points" in str(deprecations[0].message)
     assert captured["start_id"] == 7
+
+
+# ------------------------------------------------------------------
+# payload 수정과 색인 (KiwoomAM/Kiwoom-Manager#109, #110)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        ("set_payload", {"ids": [1], "payload": {"file_path": "x"}}),
+        ("overwrite_payload", {"ids": [1], "payload": {"file_path": "x"}}),
+        ("delete_payload_keys", {"ids": [1], "keys": ["위치"]}),
+        ("clear_payload", {"ids": [1]}),
+    ],
+)
+def test_handler_forwards_payload_and_index_calls(method, kwargs):
+    """이름과 인자가 그대로 collection 에 도착하는지 본다.
+
+    바로가기는 시그니처를 한 벌 더 적는 일이라 두 곳이 어긋날 수 있다. 여기서
+    붙잡지 않으면 인자 하나가 조용히 기본값으로 떨어진 채 서버로 간다.
+    """
+    handler, fake = _handler({"status": "ok"})
+
+    getattr(handler, method)(COLLECTION, **kwargs)
+
+    assert fake.captured == {
+        "method": method,
+        "collection_name": COLLECTION,
+        **kwargs,
+    }

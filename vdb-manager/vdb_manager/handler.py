@@ -354,6 +354,60 @@ class VDBManager:
             payload_filter=payload_filter,
         )
 
+    # ------------------------------------------------------------------
+    # payload 수정 / 색인
+    # ------------------------------------------------------------------
+
+    def set_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """payload 에 주는 키만 더하거나 덮기 (나머지 키 보존)"""
+        return self.collection.set_payload(
+            collection_name=collection_name,
+            ids=ids,
+            payload=payload,
+        )
+
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """payload 를 통째로 교체 (기존 키는 사라짐)"""
+        return self.collection.overwrite_payload(
+            collection_name=collection_name,
+            ids=ids,
+            payload=payload,
+        )
+
+    def delete_payload_keys(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        keys: List[str],
+    ) -> Dict[str, Any]:
+        """payload 에서 주는 키만 삭제"""
+        return self.collection.delete_payload_keys(
+            collection_name=collection_name,
+            ids=ids,
+            keys=keys,
+        )
+
+    def clear_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+    ) -> Dict[str, Any]:
+        """payload 를 통째로 비우기"""
+        return self.collection.clear_payload(
+            collection_name=collection_name,
+            ids=ids,
+        )
+
     def health_check(self) -> Dict[str, Any]:
         """서비스 상태 확인"""
         return self._client.get("/v1/admin/status")

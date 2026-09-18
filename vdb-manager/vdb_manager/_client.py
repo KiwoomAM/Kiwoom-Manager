@@ -97,6 +97,14 @@ class SyncClient:
         resp = self._request("POST", path, **kwargs)
         return resp.json()
 
+    def patch(self, path: str, **kwargs: Any) -> Any:
+        resp = self._request("PATCH", path, **kwargs)
+        return resp.json()
+
+    def put(self, path: str, **kwargs: Any) -> Any:
+        resp = self._request("PUT", path, **kwargs)
+        return resp.json()
+
     def delete(self, path: str, **kwargs: Any) -> Any:
         resp = self._request("DELETE", path, **kwargs)
         return resp.json()

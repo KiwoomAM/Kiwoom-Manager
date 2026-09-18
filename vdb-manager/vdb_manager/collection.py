@@ -9,6 +9,28 @@ from typing import Any, Dict, List, Optional, Tuple
 from vdb_manager._client import SyncClient
 
 
+def _reject_if_empty(name: str, value: Any, reason: str) -> None:
+    """빈 인자를 서버에 보내기 전에 막는다.
+
+    서버도 422 로 거부하지만 층이 다른 두 방어다. 서버의 것은 모든 소비자(다른
+    언어·curl·다음에 생길 SDK)를 향하고, 이것은 이 SDK 사용자에게 왕복 전에
+    알린다.
+
+    빈 것만 막고 형식은 판정하지 않는다. u64 범위나 UUID 모양까지 흉내 내면 서버가
+    규칙을 넓힐 때마다 SDK 가 정당한 요청을 막는다.
+
+    Args:
+        name: 인자 이름. 메시지에 그대로 실린다.
+        value: 검사할 값.
+        reason: 왜 막는지. 호출자마다 다르다.
+
+    Raises:
+        ValueError: `value` 가 비었을 때.
+    """
+    if not value:
+        raise ValueError(f"{name} 가 빔 — {reason}")
+
+
 class CollectionClient:
     """Service의 /v1/collections 엔드포인트를 호출하는 클라이언트"""
 
@@ -277,6 +299,144 @@ class CollectionClient:
             ValueError: payload_filter 가 빈 dict 일 때 (`count_points` 와 같다).
         """
         return self.count_points(collection_name, payload_filter) > 0
+
+    # ------------------------------------------------------------------
+    # payload 부분 수정
+    # ------------------------------------------------------------------
+
+    def set_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """포인트 payload 에 주는 키만 더하거나 덮는다. 나머지 키는 보존된다.
+
+        벡터는 건드리지 않으므로 필드 하나를 고치자고 임베딩을 다시 돌릴 필요가
+        없다. 스키마가 바뀌어 기존 포인트를 채워 넣는 백필이 이 메서드의 자리다.
+
+        payload 를 통째로 바꾸려면 `overwrite_payload` 를 쓴다. 둘은 같은 경로로
+        가고 HTTP 메서드만 다르므로, 잘못 고르면 주지 않은 키가 조용히 사라진다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id. 부호 없는 정수 또는 UUID 만 허용되며 형식 검증은
+                서버가 한다. 수천 개를 한 번에 보내지 말 것 — 아래 Note 참고.
+            payload: 더하거나 덮을 key-value.
+
+        Returns:
+            `{"status": "updated", "collection": ..., "count": ...}`.
+            `count` 는 영향받은 수가 아니라 요청한 id 수다. Qdrant 가 실제 변경
+            건수를 돌려주지 않아 세는 것이 불가능하다.
+
+        Raises:
+            ValueError: `ids` 나 `payload` 가 비었을 때.
+
+        Note:
+            큰 id 목록은 호출자가 끊어 보낸다. 한 요청에 다 실으면 Qdrant 가
+            처리하는 동안 HTTP 요청 하나가 열려 있고, 타임아웃이 나면 예외는
+            실패라고 말하는데 서버 작업은 되돌려지지 않아 일부가 적용된 상태로
+            남는다. 어디까지 갔는지는 호출자의 루프만 알 수 있다.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("payload", payload, "바꿀 내용 없음, 비우려면 clear_payload 사용")
+        return self._client.patch(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "payload": payload},
+        )
+
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """포인트 payload 를 통째로 주는 것으로 바꾼다. 기존 키는 전부 사라진다.
+
+        스키마를 전면 개편할 때 남은 키를 하나씩 지우지 않아도 되게 하는 경로다.
+        주지 않은 키를 남기려면 `set_payload` 를 쓴다.
+
+        어떤 키도 보호하지 않는다 — 소비자가 존재 확인에 쓰는 정체성 키도 함께
+        사라진다. 그 결정의 근거는 KiwoomAM/Kiwoom-Handler 의 ADR 0002 에 있다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id. `set_payload` 와 같다.
+            payload: 새 payload 전체.
+
+        Returns:
+            `{"status": "replaced", "collection": ..., "count": ...}`.
+            `count` 의 의미는 `set_payload` 와 같다.
+
+        Raises:
+            ValueError: `ids` 나 `payload` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("payload", payload, "바꿀 내용 없음, 비우려면 clear_payload 사용")
+        return self._client.put(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "payload": payload},
+        )
+
+    def delete_payload_keys(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        keys: List[str],
+    ) -> Dict[str, Any]:
+        """포인트 payload 에서 주는 키만 지운다.
+
+        폐기된 필드를 컬렉션에서 걷어내는 정리 작업의 자리다. payload 를 통째로
+        비우려면 `clear_payload` 를 쓴다 — `keys` 를 생략해서 도달할 수 있는
+        연산이 아니다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id.
+            keys: 지울 payload 키. 필수다.
+
+        Returns:
+            `{"status": ..., "collection": ..., "count": ..., "keys": [...]}`.
+            무엇을 지웠는지가 응답에 실린다 — 되돌릴 수단이 없는 연산이라
+            호출자가 로그로 남길 수 있어야 한다.
+
+        Raises:
+            ValueError: `ids` 나 `keys` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("keys", keys, "지울 키 없음, 전부 비우려면 clear_payload 사용")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "keys": keys},
+        )
+
+    def clear_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+    ) -> Dict[str, Any]:
+        """포인트 payload 를 통째로 비운다.
+
+        잘못 채워진 포인트를 초기화하는 경로다. 벡터는 남고 payload 만 사라진다.
+
+        `keys` 를 받지 않는다. 받으면 키 삭제와 구분이 흐려지고, 인자를 빠뜨렸다는
+        이유로 전체가 지워지는 길이 열린다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id.
+
+        Returns:
+            `{"status": "cleared", "collection": ..., "count": ...}`.
+
+        Raises:
+            ValueError: `ids` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/points/payload/all",
+            json={"ids": ids},
+        )
 
     @property
     def is_ready(self) -> bool:
