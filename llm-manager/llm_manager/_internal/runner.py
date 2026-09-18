@@ -15,7 +15,7 @@ from llm_manager._internal.file_processing import (
     resolve_files,
     resolve_files_after_404,
 )
-from llm_manager._internal.gemini_errors import is_gemini_404
+from llm_manager._internal.gemini_errors import is_gemini_file_unavailable
 from llm_manager._internal.handler_client._common import (
     STREAM_CONTAINER_FIELDS,
     STREAM_LIST_FIELDS,
@@ -503,8 +503,8 @@ async def _do_llm_call(
     try:
         res = await aio_call(**call_input)
     except Exception as e:
-        if is_gemini_404(e) and prep.files:
-            logger.warning("Gemini 404 감지 — 자동 복구 시도: %s", e)
+        if is_gemini_file_unavailable(e) and prep.files:
+            logger.warning("Gemini 가 첨부를 못 씀 — 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
                 model=prep.llm_input.get("model"),
@@ -638,8 +638,8 @@ async def _do_llm_stream(
             yield chunk
     except Exception as e:
         # 404 복구는 아직 아무 chunk도 yield 안 된 상태에서만 의미 있음
-        if is_gemini_404(e) and prep.files and last is None:
-            logger.warning("Gemini 404 감지 — stream 자동 복구 시도: %s", e)
+        if is_gemini_file_unavailable(e) and prep.files and last is None:
+            logger.warning("Gemini 가 첨부를 못 씀 — stream 자동 복구 시도: %s", e)
             resolved = await resolve_files_after_404(
                 prep.files, prep.llm_input,
                 model=prep.llm_input.get("model"),

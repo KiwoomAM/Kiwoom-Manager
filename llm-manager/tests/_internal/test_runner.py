@@ -9,10 +9,12 @@ from datetime import UTC, datetime
 
 import pytest
 
+from llm_manager._internal import runner
 from llm_manager._internal.file_processing.resolver import ResolvedFiles
+from llm_manager._internal.handler_client.exceptions import HandlerError
 from llm_manager._internal.handler_client.models import LLMResponse, Part
 from llm_manager._internal.runner import _apply_resolved, _build_server_call_input, _Prepared
-from llm_manager.models import FileInput
+from llm_manager.models import FileInput, StoredFile
 
 # ── 헬퍼 ──────────────────────────────────────────────────────
 
@@ -931,3 +933,57 @@ def test_to_stream_chunk_carries_every_field():
 
     dropped = [f for f in StreamChunk.model_fields if getattr(chunk, f) is None]
     assert dropped == [], f"_to_stream_chunk 가 옮기지 않은 필드: {dropped}"
+
+
+# ── 만료 첨부 복구 (llm_request 경로) ──────────────────────────
+
+
+class TestExpiredAttachmentRecovery:
+    """지워진 Files API 첨부로 지면 주소 기록을 지우고 다시 올려 1회 재시도한다.
+
+    404 만 보면 놓친다 — Gemini 는 없는 파일에 403 을 주고 llm-handler 가 그것을
+    `handler_ops`(502)로 바꿔 올린다(2026-09-17 실측).
+    """
+
+    @staticmethod
+    def _stored_file() -> StoredFile:
+        return StoredFile(
+            file_path="path/a.pdf", file_name="a.pdf", file_size=100,
+            file_mtime=1700000000, mime_type="application/pdf", extension=".pdf",
+        )
+
+    @staticmethod
+    def _patch(monkeypatch, sent: list, recovered: list):
+        async def fake_resolve_files(files, llm_input, **kwargs):
+            return ResolvedFiles(inline_parts=[], uri_parts=[_make_uri_part("files/old")],
+                                 cached_content=None)
+
+        async def fake_after_404(files, llm_input, **kwargs):
+            recovered.append("재해소")
+            return ResolvedFiles(inline_parts=[], uri_parts=[_make_uri_part("files/new")],
+                                 cached_content=None)
+
+        async def fake_call(**kwargs):
+            sent.append(kwargs)
+            if len(sent) == 1:
+                raise HandlerError("Gemini call 권한/인증 실패 (gemini_status=403)",
+                                   status_code=502, error_type="handler_ops")
+            return LLMResponse(text="복구 후 응답", model="gemini-2.5-flash", request_id="r-2")
+
+        monkeypatch.setattr(runner, "resolve_files", fake_resolve_files)
+        monkeypatch.setattr(runner, "resolve_files_after_404", fake_after_404)
+        monkeypatch.setattr(runner, "aio_call", fake_call)
+
+    async def test_gemini_403_reresolves_and_retries_once(self, monkeypatch):
+        sent: list = []
+        recovered: list = []
+        self._patch(monkeypatch, sent, recovered)
+
+        response, _meta = await runner.llm_request_async(
+            {"contents": "질문", "model": "gemini-2.5-flash"},
+            stored_files=[self._stored_file()], cache_mode=False, save_mode=False,
+        )
+
+        assert response.text == "복구 후 응답"
+        assert recovered == ["재해소"]
+        assert [c["contents"][0].file_uri for c in sent] == ["files/old", "files/new"]
