@@ -35,17 +35,18 @@ llm-manager/
 ├── llm_manager/                  # 단일 SDK manager 패키지
 │   ├── __init__.py               # 공개 API (llm_request_async + 큐레이션한 handler primitive)
 │   ├── aio.py                    # 비동기 공개 표면 (call/stream/embed/session — handler_client.aio 큐레이션)
-│   ├── models.py                 # StoredFile, ResponseMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
+│   ├── models.py                 # StoredFile, ChatMessage, ResponseMeta, FileKeyingMeta, Expire* (+ 내부 FileInput)
 │   ├── exceptions.py             # 공개 예외 (LLMManagerError 계층)
 │   └── _internal/                # manager 로직 (외부 사용 X)
 │       ├── handler_client/       # 흡수한 handler HTTP 클라이언트 (구 llm-handler/sdk)
 │       │                         #   call/stream/embed/session, _client, models, exceptions, aio
 │       ├── runner.py             # LLM 호출 (캐시 조회/저장 + standby dedup)
+│       ├── chat.py               # 대화 호출 (첨부를 Files API 주소로 해소 + 404 복구, 캐시 없음)
 │       ├── keying.py             # 캐시 키 생성
 │       ├── done_check.py         # 캐시 조회
 │       ├── store.py              # MongoDB 캐시 저장/조회
 │       ├── meta.py               # 저장용 메타 생성
-│       ├── gemini_errors.py      # Gemini 404 / too-small 판별
+│       ├── gemini_errors.py      # 첨부 재업로드 신호(404·403) / too-small 판별
 │       ├── context_cache_lifecycle.py  # context cache expire
 │       ├── stored_file_resolver.py     # stored_files → FileInput (lazy fetch)
 │       ├── _config.py            # 하드코딩 handler URL + lazy 초기화
@@ -289,6 +290,7 @@ except FileResolveError:
 | `llm_request` | `tuple[LLMResponse, ResponseMeta]` | 동기 단건 (`asyncio.run` 래퍼) |
 | `llm_request_stream_async` | `tuple[AsyncIterator[dict], dict]` | 비동기 스트리밍 — `(stream, meta)` 튜플 |
 | `llm_request_stream` | `tuple[Iterator[dict], dict]` | 동기 스트리밍 — `(stream, meta)` 튜플 |
+| `llm_chat_stream_async` / `llm_chat_async` | `AsyncIterator[StreamChunk]` / `LLMResponse` | 대화(여러 턴·함수 호출) 호출 — 첨부는 `messages` 안 원래 위치에 `StoredFile` 로. 캐시·저장·meta 없음 ([llm_chat](#llm_chat--대화-호출)) |
 | `done_check` | `DoneCheckResult` | 캐시 존재 여부만 확인 (LLM 호출 없음) |
 | `fetch_by_cache_key` | `tuple[LLMResponse, ResponseMeta]` | 캐시 키로 직접 조회 |
 | `file_preprocessing_async` / `file_preprocessing` | `dict[str, str] \| list[list[str]]` | 파일 전처리만 (Files API 업로드 + opt-in Context Cache 생성, LLM 호출 없음) |
@@ -311,6 +313,8 @@ except FileResolveError:
 ### llm_input 구조
 
 `llm_request_async`의 첫 번째 인자. **handler 생성 호출(`call()`)의 파라미터 대부분과 동일하며, 파일 관련만 `contents`에서 빼고 별도의 `stored_files=[StoredFile]` 인자로 분리**한 점이 차이다. `llm_input`에는 텍스트 프롬프트와 생성 파라미터만 넣고, 파일은 file-manager `register_or_get` 으로 등록 후 받은 6 필드를 `StoredFile` 로 구성해 `stored_files=` 로 넘기면 내부에서 file-manager 에서 bytes 를 fetch 해 inline / Files API 분류·업로드·캐싱을 자동 처리한다.
+
+`llm_input` 은 **단발 호출용**이다. `contents` 뒤에는 항상 새 `user` 발화가 붙고 `stored_files` 는 파일이 어느 발화에 딸렸는지 담지 못해, 함수 결과로 끝나는 대화나 여러 턴에 첨부가 흩어진 대화는 표현할 수 없다. 대화는 [llm_chat](#llm_chat--대화-호출) 을 쓴다.
 
 ```python
 response, meta = await llm_request_async(
@@ -511,6 +515,42 @@ if meta.file_meta:
 ```
 
 > 응답 shape — stored_files 가 있을 때만 `meta.file_meta` 키가 들어가고 (MongoDB doc 의 `file_meta` 동작과 거울), 없으면 키 자체 부재. 옛 SDK 사용 시 `ResponseMeta` 가 모르는 키는 Pydantic v2 기본 `extra="ignore"` 로 폐기 — 자연 호환.
+
+## llm_chat — 대화 호출
+
+여러 턴 대화나 함수 호출 결과를 이어 보내는 대화는 `llm_chat_stream_async`(스트리밍) / `llm_chat_async`(단건)를 쓴다. 대화 전체를 `messages` 로 받고, 첨부는 그 파일이 딸린 발화의 원래 위치에 `StoredFile` 로 넣는다. 설계 근거는 [docs/38](docs/38.chat-function.md).
+
+```python
+from llm_manager import ChatMessage, Part, StoredFile, llm_chat_stream_async
+
+messages = [
+    ChatMessage(role="user", content=[StoredFile(**sf_dict), Part(type="text", text="이 보고서 요약해줘")]),
+    ChatMessage(role="model", content=[Part(type="text", text="요약입니다 …")]),
+    ChatMessage(role="user", content=[Part(type="text", text="3장만 더 자세히")]),
+]
+
+calls = []
+async for chunk in llm_chat_stream_async(messages, model="gemini-2.5-flash", tools=tools, tool_config="auto"):
+    if chunk.text:
+        print(chunk.text, end="")
+    calls += chunk.function_calls or []      # ← 덮어쓰지 말고 누적
+```
+
+| 항목 | 동작 |
+| --- | --- |
+| 인자 | `messages` 외에는 `aio.stream` / `aio.call` 과 같다. `contents`·`history`·`cached_content` 는 받지 않는다 |
+| `role` | `user`·`model` 만 받는다. `assistant` → `model` 변환은 호출하는 쪽이 한다 |
+| `content` | `StoredFile` 과 파일이 아닌 `Part`(글·함수 호출·함수 결과 등)를 받는다. `inline`·`file` 조각은 `pydantic.ValidationError` 를 낸다 |
+| 첨부 | 파일마다 Files API 주소 조각으로 바꿔 원래 위치에 넣는다. Redis 에 주소가 있으면 재사용하고, 없으면 파일매니저에서 받아 올린다. 분할된 PDF 는 조각 여러 개가 된다 |
+| 첨부 실패 | 파일마다 60초 상한이 있다. 넘기거나 그 파일에만 매인 이유(file-manager 에 없음·형식·크기·분할 불가)로 실패한 파일만 `[{file_name}: 첨부를 불러오지 못했습니다]` 로 바뀌고 호출은 계속되며, 그 실패는 로그에만 남는다. Redis·file-manager·Gemini 업로드 장애는 덮지 않고 예외로 올라온다 |
+| 만료된 첨부 | 첨부를 못 쓴다는 응답(Gemini 404, 또는 지워진 파일에 오는 403 — handler 가 `handler_ops` 502 로 바꿔 올린다)이면 주소로 보낸 파일들의 Redis 기록을 지우고 다시 풀어 1회 재시도한다. 스트림은 첫 청크가 나오기 전일 때만 재시도한다 |
+| `service_name` | env `SERVICE_NAME` 에서 넣는다. 없으면 Gemini 를 부르기 전에 `llm_manager.ValidationError` 를 낸다(`ChatMessage` 검증의 `pydantic.ValidationError` 와 다른 클래스다). 스트림은 async generator 라 부를 때가 아니라 첫 반복에서 난다 |
+| 반환 | 스트림은 `StreamChunk` 객체를, 단건은 `LLMResponse` 를 돌려준다. meta 는 없다 |
+| 캐시·저장 | 응답 캐시·MDB 저장·Context Cache 를 쓰지 않는다 |
+
+> ⚠️ **호출을 감싼 시간 상한은 첨부 해소 시간까지 잡는다.** 해소는 첫 청크 전에 제너레이터 안에서 일어난다. `asyncio.timeout(60)` 으로 감싸면 Redis 에 주소가 없는 첨부(처음 붙였거나 47시간이 지난 것)를 푸는 사이에 상한이 끝날 수 있으니, 첨부를 올리는 시간까지 덮게 잡는다.
+
+> 청크의 리스트 5종(`function_calls` 등)은 [스트리밍 이벤트](#스트리밍-이벤트) 와 같은 이유로 이어붙여 누적한다. 병렬 함수 호출 N 개는 N 개 청크에 1 개씩 나뉘어 온다.
 
 ## done_check
 
@@ -1036,6 +1076,41 @@ LLM 호출 중 예외가 발생하면 저장 단계로 진입하지 않아 캐�
 | **공개 API 시그니처·호출** | — | **불변** (`llm_request_async`, `stored_files`, `meta.*` 그대로) |
 
 > 핵심: **호출 코드는 거의 그대로**다. 바뀌는 건 (1) 설치 경로, (2) 서버 안 띄움, (3) `except ServiceError` 쓰던 곳을 구체 예외로 교체. `ServiceError` 를 import 하던 코드만 수정 필요.
+
+## `aio.stream` 직접 호출 → `llm_chat_*` (대화 소비자)
+
+`aio.stream(messages=[Content])` 를 직접 부르며 첨부를 스스로 Files API 주소로 풀던 대화 코드는, 새 함수로 옮기면 첨부 해소·파일 단위 실패 격리·404 복구를 매니저에 맡긴다. 결정 근거는 [docs/38](docs/38.chat-function.md) §5.
+
+| 바꿀 곳 | 전 | 후 |
+| --- | --- | --- |
+| 호출 | `llm_manager.aio.stream(messages=...)` | `llm_manager.llm_chat_stream_async(messages=...)` |
+| 메시지 타입 | `llm_manager._internal.handler_client.Content` | `llm_manager.ChatMessage` |
+| 첨부 | `file_preprocessing_async` 로 푼 주소를 `Part.from_uri` 로 넣는다 | `StoredFile` 을 그 위치에 그대로 넣는다 |
+| 시간 상한 | LLM 스트림만 감싼다 | 첨부 해소 시간까지 덮게 늘린다 |
+| 청크 읽기 | `StreamChunk` 속성으로 읽는다 | 그대로 둔다 |
+
+**`StoredFile` 을 만들지 못한 블록은 호출하는 쪽이 안내 문구로 바꾼다.** 매니저는 `StoredFile` 만 받으므로, 저장된 대화에 필드가 빠진 옛 블록이 섞여 있으면 `ChatMessage` 를 만들 때 `pydantic.ValidationError` 가 난다.
+
+**바이트로 남은 첨부는 소비자가 고른다.** 파일매니저 등록이 실패해 바이트(`inline`)로 남은 첨부를 새 함수는 받지 않는다. 그 대화를 기존 `aio.stream` 경로로 보내 폴백을 유지할지, 안내 문구로 바꿔 폴백을 뺄지 고른다.
+
+**턴 기억 보호가 사라진다.** 새 함수는 호출 단위로만 해소한다. 60초를 넘겨 끊긴 첨부는 같은 턴의 다음 호출에서 다시 60초를 기다린다.
+
+**소비자 테스트도 같이 고친다.** 주소를 소비자가 직접 풀던 계약을 붙든 테스트가 함께 깨진다. Kiwoom-Rag `71cb713e` 를 이 방식으로 고쳐 실측했더니 6개 파일 33건이 실패했다(첨부 해소 21건, LLM 스트림·어댑터 12건).
+
+**바이트로 떨어지는 다른 경로도 함께 본다.** 소비자가 바이트 블록을 안내 문구로 바꾸면, 사용자 첨부뿐 아니라 같은 블록 모양을 쓰는 다른 경로도 함께 바뀐다. Kiwoom-Rag 에서는 사내규정 PDF 가 파일매니저 등록에 실패할 때 바이트로 떨어지므로 그 경로도 안내 문구가 된다.
+
+### Kiwoom-Rag 챗봇 — 폴백을 빼면 지울 수 있는 코드 (`71cb713e` 기준)
+
+| 파일 | 대상 | 줄 수 | 처분 |
+| --- | --- | --- | --- |
+| `utils/client.py` | `ATTACHMENT_RESOLVE_TIMEOUT` (35–38) | 4 | 삭제 |
+| `utils/client.py` | 턴 기억 `_URI_MEMO`·`attachment_uri_memo` (40–67) | 28 | 삭제 |
+| `utils/client.py` | `_resolve_uris` (102–156) | 55 | 삭제 |
+| `utils/client.py` | `to_llm_messages` 의 바이트 블록 분기 (221–237) | 17 | 삭제 |
+| `core/graph/chat_graph.py` | 턴 기억 감싸기의 설명과 `with` 줄 (890–892, 894) | 4 | 삭제하고 블록 들여쓰기를 한 단계 줄인다 |
+| `utils/client.py` | `_addressed_files`·`_addressed_parts` (70–99, 159–178) | 50 | 블록마다 `StoredFile` 을 만들고 실패하면 안내 문구를 넣는 짧은 코드로 바꾼다 |
+
+통째로 지우는 것이 108줄이고, 50줄은 짧은 코드로 바뀐다. 첨부할 때 바이트 블록을 만드는 `utils/file_processors.py` 의 `_addressed_or_inline`(184)은 바이트 대신 안내 문구 블록을 만들도록 바꾼다. 폴백을 유지하면 기존 경로가 앞선 턴의 주소 블록을 풀어야 해서 위 코드는 모두 남고, 이력에 바이트 블록이 있는지로 경로를 가르는 판정이 더해진다.
 
 # 13. 주의사항
 
