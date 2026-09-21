@@ -9,6 +9,54 @@ from typing import Any, Dict, List, Optional, Tuple
 from vdb_manager._client import SyncClient
 
 
+_EMPTY_PAYLOAD_REASON = "바꿀 내용 없음, 비우려면 clear_payload 사용"
+
+
+def _reject_if_empty(name: str, value: Any, reason: str) -> None:
+    """빈 인자를 서버에 보내기 전에 막는다.
+
+    서버도 422 로 거부하지만 층이 다른 두 방어다. 서버의 것은 모든 소비자(다른
+    언어·curl·다음에 생길 SDK)를 향하고, 이것은 이 SDK 사용자에게 왕복 전에
+    알린다.
+
+    빈 것만 막고 형식은 판정하지 않는다. u64 범위나 UUID 모양까지 흉내 내면 서버가
+    규칙을 넓힐 때마다 SDK 가 정당한 요청을 막는다.
+
+    Args:
+        name: 인자 이름. 메시지에 그대로 실린다.
+        value: 검사할 값.
+        reason: 왜 막는지. 호출자마다 다르다.
+
+    Raises:
+        ValueError: `value` 가 비었을 때.
+    """
+    if not value:
+        raise ValueError(f"{name} 비어 있음 — {reason}")
+
+
+def _warn_if_index_cannot_be_deleted(field: str) -> None:
+    """지울 수 없는 index 를 만들려 할 때 그 자리에서 알린다.
+
+    되돌릴 수 없게 만드는 행위는 만드는 쪽이다. 지우는 시점에 알려 주면 이미
+    늦다. 막지는 않는다 — 슬래시 든 필드에 index 를 거는 것은 정당한 요구이고,
+    걸면 조회가 실제로 빨라진다. 못 하는 것은 지우는 일뿐이다.
+
+    KiwoomAM/Kiwoom-Handler#74 가 고쳐지면 함께 걷어낼 임시 조치다.
+
+    Args:
+        field: index 를 걸 payload 필드명.
+    """
+    if "/" not in field:
+        return
+    warnings.warn(
+        f"필드명 '{field}' 에 슬래시 있음 — index 를 만들 수는 있으나 지울 수 없음"
+        " (벤더 클라이언트 한계, KiwoomAM/Kiwoom-Handler#74)."
+        " 지울 수 있어야 하면 슬래시 없는 필드명 사용",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 class CollectionClient:
     """Service의 /v1/collections 엔드포인트를 호출하는 클라이언트"""
 
@@ -277,6 +325,262 @@ class CollectionClient:
             ValueError: payload_filter 가 빈 dict 일 때 (`count_points` 와 같다).
         """
         return self.count_points(collection_name, payload_filter) > 0
+
+    # ------------------------------------------------------------------
+    # payload 부분 수정
+    # ------------------------------------------------------------------
+
+    def set_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """포인트 payload 에 주는 키만 더하거나 덮는다. 나머지 키는 보존된다.
+
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
+        벡터는 건드리지 않으므로 필드 하나를 고치자고 임베딩을 다시 돌릴 필요가
+        없다. 스키마가 바뀌어 기존 포인트를 채워 넣는 백필이 이 메서드의 자리다.
+
+        payload 를 통째로 바꾸려면 `overwrite_payload` 를 쓴다. 둘은 같은 경로로
+        가고 HTTP 메서드만 다르므로, 잘못 고르면 주지 않은 키가 조용히 사라진다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id. 부호 없는 정수 또는 UUID 만 허용되며 형식 검증은
+                서버가 한다. 수천 개를 한 번에 보내지 말 것 — 아래 Note 참고.
+            payload: 더하거나 덮을 key-value.
+
+        Returns:
+            `{"status": "updated", "collection": ..., "requested": ...}`.
+            `requested` 는 요청한 id 수다. Qdrant 가 실제 변경 건수를 돌려주지 않아
+            셀 수가 없으므로 이름으로 그 사실을 드러낸다 — `count_points` 가
+            돌려주는 `count` 는 진짜로 센 값이라 서로 다른 것이다.
+
+        Raises:
+            ValueError: `ids` 나 `payload` 가 비었을 때.
+
+        Note:
+            큰 id 목록은 호출자가 끊어 보낸다. 한 요청에 다 실으면 Qdrant 가
+            처리하는 동안 HTTP 요청 하나가 열려 있고, 타임아웃이 나면 예외는
+            실패라고 말하는데 서버 작업은 되돌려지지 않아 일부가 적용된 상태로
+            남는다. 어디까지 갔는지는 호출자의 루프만 알 수 있다.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
+        return self._client.patch(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "payload": payload},
+        )
+
+    def overwrite_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """포인트 payload 를 통째로 주는 것으로 바꾼다. 기존 키는 전부 사라진다.
+
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
+        스키마를 전면 개편할 때 남은 키를 하나씩 지우지 않아도 되게 하는 경로다.
+        주지 않은 키를 남기려면 `set_payload` 를 쓴다.
+
+        어떤 키도 보호하지 않는다 — 소비자가 존재 확인에 쓰는 정체성 키도 함께
+        사라진다. 그 결정의 근거는 KiwoomAM/Kiwoom-Handler 의 ADR 0002 에 있다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id. `set_payload` 와 같다.
+            payload: 새 payload 전체.
+
+        Returns:
+            `{"status": "replaced", "collection": ..., "requested": ...}`.
+            `requested` 의 의미는 `set_payload` 와 같다.
+
+        Raises:
+            ValueError: `ids` 나 `payload` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
+        return self._client.put(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "payload": payload},
+        )
+
+    def delete_payload_keys(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+        keys: List[str],
+    ) -> Dict[str, Any]:
+        """포인트 payload 에서 주는 키만 지운다.
+
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
+        폐기된 필드를 컬렉션에서 걷어내는 정리 작업의 자리다. payload 를 통째로
+        비우려면 `clear_payload` 를 쓴다 — `keys` 를 생략해서 도달할 수 있는
+        연산이 아니다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id.
+            keys: 지울 payload 키. 필수다.
+
+        Returns:
+            `{"status": ..., "collection": ..., "requested": ..., "ids": [...],
+            "keys": [...]}`. 무엇을 어디서 지웠는지가 응답에 실린다 — 되돌릴
+            수단이 없는 연산이라 호출자가 로그로 남길 수 있어야 한다.
+
+        Raises:
+            ValueError: `ids` 나 `keys` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        _reject_if_empty("keys", keys, "지울 키 없음, 전부 비우려면 clear_payload 사용")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/points/payload",
+            json={"ids": ids, "keys": keys},
+        )
+
+    def clear_payload(
+        self,
+        collection_name: str,
+        ids: List[int | str],
+    ) -> Dict[str, Any]:
+        """포인트 payload 를 통째로 비운다.
+
+        주는 id 중 없는 것은 고르지 않는다. 서버가 그렇게 보내기 때문이며, 예전에는
+        Qdrant 가 404 를 내면서 있는 포인트의 변경은 이미 끝내 놓아 호출자가 아무
+        일도 없었다고 오해했다. 무엇이 살아 있었는지 알아야 하면 `get_points` 로
+        읽는다 — 존재 판정은 쓰기가 아니라 읽기의 일이다.
+
+        잘못 채워진 포인트를 초기화하는 경로다. 벡터는 남고 payload 만 사라진다.
+
+        `keys` 를 받지 않는다. 받으면 키 삭제와 구분이 흐려지고, 인자를 빠뜨렸다는
+        이유로 전체가 지워지는 길이 열린다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 대상 포인트 id.
+
+        Returns:
+            `{"status": "cleared", "collection": ..., "requested": ...,
+            "ids": [...]}`.
+
+        Raises:
+            ValueError: `ids` 가 비었을 때.
+        """
+        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/points/payload/all",
+            json={"ids": ids},
+        )
+
+    # ------------------------------------------------------------------
+    # payload index
+    # ------------------------------------------------------------------
+
+    def create_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+        schema: str,
+    ) -> Dict[str, Any]:
+        """payload 필드에 index 를 만든다.
+
+        조건 조회(`count_points`·`has_points`·검색의 `payload_filter`)에 쓰는
+        필드에 index 가 없으면 Qdrant 가 전수 스캔하므로, 비용이 컬렉션 크기와 함께
+        늘어난다. index 를 걸면 그 비용을 크기에서 떼어 낼 수 있다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            field: index 를 걸 payload 필드명.
+            schema: index 종류. 받는 값의 정의는 서버의
+                `vdb-handler/app/models/requests.py::PayloadIndexSchema` 가 단일
+                출처이며 그 밖은 422 로 거부한다. 기본값을 두지 않는 이유는 틀린
+                선택이 조용하기 때문이다 — 오타는 서버가 잡지만, 날짜 필드에
+                `keyword` 를 거는 것은 유효한 요청이라 성공하고 range 질의만 index 를
+                타지 못한 채 느려진다.
+
+        Returns:
+            `{"status": ..., "collection": ..., "field": ..., "schema": ...}`.
+
+        Raises:
+            ValueError: `field` 나 `schema` 가 비었을 때.
+
+        Warns:
+            UserWarning: `field` 에 슬래시가 있을 때. 아래 Note 참고.
+
+        Note:
+            이름에 슬래시가 든 필드는 index 를 지울 수 없다. 원인은 벤더 클라이언트가
+            필드명을 URL 경로에 percent-encoding 없이 넣는 것이며 Qdrant 자체는
+            인코딩된 경로를 받아들인다. KiwoomAM/Kiwoom-Handler#74 에 실측이 있다.
+            같은 원리로 URL 경로에서 의미를 갖는 다른 문자도 깨질 수 있으나, 실제로
+            측정한 것은 슬래시 하나라 그것만 경고한다.
+        """
+        _reject_if_empty("field", field, "대상 필드 없음")
+        _reject_if_empty("schema", schema, "index 종류 없음")
+        _warn_if_index_cannot_be_deleted(field)
+        return self._client.post(
+            f"/v1/collections/{collection_name}/indexes",
+            json={"field": field, "schema": schema},
+        )
+
+    def list_payload_indexes(self, collection_name: str) -> Dict[str, str]:
+        """어떤 필드에 어떤 index 가 걸려 있는지 본다.
+
+        배포 전에 index 가 실제로 걸렸는지 확인하는 자리다. index 가 하나도 없는 것은
+        오류가 아니라 흔한 상태다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+
+        Returns:
+            필드명에서 index 종류로 가는 매핑. 예: `{"source_pdf": "keyword"}`.
+            index 가 없으면 빈 dict.
+        """
+        resp = self._client.get(f"/v1/collections/{collection_name}/indexes")
+        return resp["indexes"]
+
+    def delete_payload_index(
+        self,
+        collection_name: str,
+        field: str,
+    ) -> Dict[str, Any]:
+        """payload index 를 지운다. payload 값은 그대로 남는다.
+
+        잘못 만든 index 가 메모리를 영구히 먹지 않게 하는 경로다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            field: index 를 지울 payload 필드명.
+
+        Returns:
+            `{"status": ..., "collection": ..., "field": ...}`.
+
+        Raises:
+            ValueError: `field` 가 비었을 때.
+
+        Note:
+            이름에 슬래시가 든 필드는 index 가 있어도 404 가 돌아온다. 필드명을 잘못
+            적어서가 아니라 벤더 클라이언트의 한계이며
+            KiwoomAM/Kiwoom-Handler#74 에 실측과 대안이 있다.
+        """
+        _reject_if_empty("field", field, "대상 필드 없음")
+        return self._client.delete(
+            f"/v1/collections/{collection_name}/indexes",
+            json={"field": field},
+        )
 
     @property
     def is_ready(self) -> bool:
