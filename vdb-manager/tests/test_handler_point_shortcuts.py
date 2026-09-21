@@ -231,3 +231,45 @@ def test_slash_warning_survives_the_shortcut():
 
     with pytest.warns(UserWarning, match="종목/분류명"):
         handler.create_payload_index(COLLECTION, field="종목/분류명", schema="keyword")
+
+
+@pytest.mark.parametrize(
+    "method,kwargs,http_method,path_suffix",
+    [
+        ("set_payload", {"ids": [1], "payload": {"a": 1}}, "PATCH", "/points/payload"),
+        ("overwrite_payload", {"ids": [1], "payload": {"a": 1}}, "PUT", "/points/payload"),
+        ("delete_payload_keys", {"ids": [1], "keys": ["a"]}, "DELETE", "/points/payload"),
+        ("clear_payload", {"ids": [1]}, "DELETE", "/points/payload/all"),
+        ("create_payload_index", {"field": "source_pdf", "schema": "keyword"}, "POST", "/indexes"),
+        ("list_payload_indexes", {}, "GET", "/indexes"),
+        ("delete_payload_index", {"field": "source_pdf"}, "DELETE", "/indexes"),
+    ],
+)
+def test_shortcut_signatures_match_the_real_client(
+    make_collection, method, kwargs, http_method, path_suffix
+):
+    """바로가기가 진짜 CollectionClient 와 맞물리는지 본다.
+
+    위의 위임 테스트는 FakeCollection 을 주입하므로 "인자가 그대로 넘어갔는가" 까지만
+    본다. 받는 쪽이 그 인자를 실제로 받을 수 있는지는 증명하지 않는다. 변이로
+    확인했다 — `CollectionClient.set_payload` 의 첫 인자 이름만 `collection_name` 에서
+    `name` 으로 바꾸면(같은 파일의 `create`·`info`·`delete` 가 이미 쓰는 이름이라
+    정리하다 나올 수 있다) 84건이 전부 초록인 채 `handler.set_payload` 호출자가 전부
+    런타임에 죽는다.
+
+    바로가기 층을 손으로 두 벌 관리하는 한 이 구멍은 계속 생긴다. 그것을 없애는 것이
+    KiwoomAM/Kiwoom-Manager#114 이고, 그때 이 테스트도 함께 사라질 것이다.
+    """
+    from vdb_manager import VDBManager
+
+    collection, client = make_collection({"status": "ok", "indexes": {}})
+    handler = VDBManager()
+    handler.collection = collection  # type: ignore[assignment]
+
+    getattr(handler, method)(COLLECTION, **kwargs)
+
+    call = client.calls[0]
+    assert call["method"] == http_method
+    assert call["path"].endswith(path_suffix)
+    if kwargs:
+        assert call["json"] == kwargs

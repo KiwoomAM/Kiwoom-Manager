@@ -20,7 +20,7 @@ UUID_A = "3f2b0c4e-1d5a-4c9b-8e7f-2a6b4c8d0e1f"
 
 
 def test_set_payload_merges_with_patch(make_collection):
-    col, client = make_collection({"status": "updated", "count": 2})
+    col, client = make_collection({"status": "updated", "requested": 2})
 
     col.set_payload(COLLECTION, ids=[1, UUID_A], payload={"file_path": "x"})
 
@@ -31,7 +31,7 @@ def test_set_payload_merges_with_patch(make_collection):
 
 
 def test_overwrite_payload_replaces_with_put(make_collection):
-    col, client = make_collection({"status": "replaced", "count": 2})
+    col, client = make_collection({"status": "replaced", "requested": 2})
 
     col.overwrite_payload(COLLECTION, ids=[1, UUID_A], payload={"file_path": "x"})
 
@@ -72,7 +72,7 @@ def test_delete_payload_keys_sends_keys(make_collection):
 
 
 def test_clear_payload_uses_its_own_path(make_collection):
-    col, client = make_collection({"status": "cleared", "count": 2})
+    col, client = make_collection({"status": "cleared", "requested": 2})
 
     col.clear_payload(COLLECTION, ids=[1, 2])
 
@@ -154,8 +154,13 @@ def test_id_format_is_left_to_the_server(make_collection):
 
 
 def test_response_is_returned_as_is(make_collection):
-    """status 와 count 중 무엇이 쓸모 있는지는 호출자마다 다르다."""
-    body = {"status": "updated", "collection": COLLECTION, "count": 3}
+    """status 와 requested 중 무엇이 쓸모 있는지는 호출자마다 다르다.
+
+    필드 이름이 `count` 가 아니라 `requested` 인 것은 서버가 실제로 바뀐 개수를
+    돌려주지 않아 셀 수 없기 때문이다. 여기서 옛 이름을 쓰면 테스트로 계약을
+    배우는 사람이 `resp["count"]` 를 쓰고 운영에서 KeyError 를 받는다.
+    """
+    body = {"status": "updated", "collection": COLLECTION, "requested": 3}
     col, _ = make_collection(body)
 
     assert col.set_payload(COLLECTION, ids=[1, 2, 3], payload={"a": 1}) == body
