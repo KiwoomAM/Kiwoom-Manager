@@ -75,16 +75,16 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   어떤 payload 항목을 받을지(SELECT)이고 뒤는 어떤 포인트를 고를지(WHERE)다. 이름이 비슷해
   뒤바뀌기 쉬운데 축이 달라 조용히 다른 결과가 나온다. 용어 정의는 @CONTEXT.md.
 - **모르는 payload 항목명은 막지 않는다 — 막을 대상이 없다**: Qdrant payload 는 포인트마다
-  스키마가 없어 "항목명이 틀렸다"와 "그 키를 가진 포인트가 없다"가 같은 상태다. SDK 도 서버도
+  스키마가 없어 "항목명이 틀렸다"와 "그 키를 가진 포인트가 없다"가 같은 상태다. SDK 도 `vdb-handler`도
   판정하지 않으며 빈 payload 가 그대로 온다. 빈 결과가 정상인지는 컬렉션의 도메인을 아는
   호출자만 안다 (`KiwoomAM/Kiwoom-Handler` 의 ADR 0004). SDK 가 대신 판정하려 들지 말 것.
 - **빈 목록은 막고 항목명 형식은 판정하지 않는다**: `with_payload=[]` 는 왕복 전 `ValueError`
   이지만 `["  "]` 는 그대로 보낸다. `_reject_if_empty` 가 보는 것은 언제나 "컨테이너가
-  비었는가" 이고, 원소 단위 검사는 형식 판정이라 서버 규칙을 흉내 내기 시작하는 자리다.
+  비었는가" 이고, 원소 단위 검사는 형식 판정이라 `vdb-handler` 의 규칙을 흉내 내기 시작하는 자리다.
 - **순회의 끝은 `next_offset is None` 이다**: `0` 은 실재하는 포인트 id 라 falsy 로 판정하면
   첫 페이지에서 멈춘다. `iter_points` 가 이 판정을 삼키므로 전수 순회는 그것을 쓴다.
-- **게이트웨이 응답은 봉투째 돌려준다**: `get_points`·`scroll_points` 는 서버 응답을 그대로
-  준다. 알맹이만 꺼내면 서버가 그 봉투에 새 정보를 실을 때 SDK 가 조용히 가린다. 검색 3종이
+- **`vdb-handler` 의 응답은 봉투째 돌려준다**: `get_points`·`scroll_points` 는 `vdb-handler` 의 응답을 그대로
+  준다. 알맹이만 꺼내면 `vdb-handler`가 그 봉투에 새 정보를 실을 때 SDK 가 조용히 가린다. 검색 3종이
   아직 알맹이만 주는 것은 소비자와 함께 움직여야 해서이며 통일은 #118 이다 (`docs/adr/0001`).
 - **바로가기 시그니처는 테스트가 소스에서 세어 와 대조한다**: `tests/test_shortcut_signatures.py`
   가 `VDBManager` 의 위임 관계를 ast 로 읽어 원본과 인자를 비교한다. 새 바로가기를 만들면

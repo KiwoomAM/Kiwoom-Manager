@@ -2,11 +2,11 @@
 """받을 payload 항목 고르기의 계약.
 
 순회는 문서마다 저장된 정보를 통째로 끌어온다. 필요한 것이 파일 이름 하나뿐이어도
-리포트 본문까지 함께 온다. 게이트웨이가 고르는 통로를 열었으므로(KiwoomAM/Kiwoom-Handler#76)
+리포트 본문까지 함께 온다. `vdb-handler`가 고르는 통로를 열었으므로(KiwoomAM/Kiwoom-Handler#76)
 SDK 가 그 인자를 통과시킨다.
 
 여기서 보는 것은 "인자가 요청 body 에 실려 나가는가" 다. 정말로 덜 받는지는 진짜
-서버에 물어야 알고, 그것은 게이트웨이 쪽 e2e 가 본다.
+`vdb-handler`에 물어야 알고, 그것은 `vdb-handler` 쪽 e2e 가 본다.
 """
 
 from typing import Any, Dict, List
@@ -83,7 +83,7 @@ def test_id_조회도_같은_인자를_받는다(make_collection):
 def test_빈_목록은_왕복_전에_막는다(make_collection):
     """`[]` 는 "고르지 않음" 이 아니라 "고르려다 비어서 나온" 상태다.
 
-    서버도 422 로 막지만 층이 다른 두 방어다. 여기서 막으면 호출 자리에서 알게 된다.
+    `vdb-handler`도 422 로 막지만 층이 다른 두 방어다. 여기서 막으면 호출 자리에서 알게 된다.
     """
     collection, client = make_collection(_page([], None))
 
@@ -106,8 +106,8 @@ def test_공백뿐인_항목명은_SDK_가_판정하지_않는다(make_collectio
     """빈 것만 막고 형식은 판정하지 않는다.
 
     `"  "` 가 비었는지 알려면 `.strip()` 을 해야 하고 그것은 형식 판정이다. SDK 가
-    서버 규칙을 흉내 내기 시작하면 서버가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한
-    요청을 막는다. 서버가 422 로 거부하며 항목 번호까지 짚어 준다.
+    `vdb-handler` 의 규칙을 흉내 내기 시작하면 `vdb-handler`가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한
+    요청을 막는다. `vdb-handler`가 422 로 거부하며 항목 번호까지 짚어 준다.
     """
     collection, client = make_collection(_page([], None))
 
@@ -117,12 +117,12 @@ def test_공백뿐인_항목명은_SDK_가_판정하지_않는다(make_collectio
 
 
 # ----------------------------------------------------------------------
-# id 조회는 서버가 준 봉투를 그대로 돌려준다
+# id 조회는 `vdb-handler`가 준 봉투를 그대로 돌려준다
 # ----------------------------------------------------------------------
 
 
-def test_id_조회는_서버_응답을_그대로_돌려준다(make_collection):
-    """알맹이만 꺼내면 서버가 그 봉투에 새 정보를 실을 때 SDK 가 조용히 가린다."""
+def test_id_조회는_vdb_handler_응답을_그대로_돌려준다(make_collection):
+    """알맹이만 꺼내면 `vdb-handler`가 그 봉투에 새 정보를 실을 때 SDK 가 조용히 가린다."""
     collection, _ = make_collection({"points": [{"id": 1}], "count": 1})
 
     got = collection.get_points(collection_name="c", ids=[1])

@@ -41,7 +41,7 @@ def _reject_empty_selection(with_payload: Any) -> None:
     정말 필요 없으면 False 를 준다.
 
     빈 것만 보고 항목명의 형식은 판정하지 않는다. 공백뿐인 항목명까지 흉내 내면
-    서버가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다.
+    `vdb-handler`가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다.
 
     Args:
         with_payload: True/False 또는 받을 항목명 목록.
@@ -263,7 +263,7 @@ class CollectionClient:
             with_vectors: 벡터를 함께 받을지 여부.
             with_payload: True 면 payload 전체, False 면 받지 않음, 항목명 목록이면
                 그 항목만. 중첩 경로(`a.b`)와 감싼 키(`'"종목/분류명"'`)도 쓸 수 있다.
-                모르는 항목명은 서버가 막지 않고 빈 payload 로 돌려준다.
+                모르는 항목명은 `vdb-handler`가 막지 않고 빈 payload 로 돌려준다.
 
         Returns:
             `{"points": [...], "count": N}`. 없는 id 는 조용히 빠지므로 count 가
@@ -355,7 +355,7 @@ class CollectionClient:
 
         Raises:
             ValueError: with_payload 가 빈 목록일 때. 순회를 시작하기 전에 터진다.
-            RuntimeError: 서버가 같은 이어받기 키를 두 번 줄 때. 그대로 두면 순회가
+            RuntimeError: `vdb-handler`가 같은 이어받기 키를 두 번 줄 때. 그대로 두면 순회가
                 끝나지 않아 배치가 조용히 멈춰 선다. 이것은 순회 도중에 터진다.
         """
         # 가드를 제너레이터 밖에 둔다. 안에 두면 첫 `next()` 까지 실행이 미뤄져
@@ -415,7 +415,7 @@ class CollectionClient:
 
         Raises:
             ValueError: payload_filter 가 빈 dict 일 때. 조건을 만들려다 비어서 나온
-                상태이고, 그 결과가 "이미 적재됨" 으로 읽히면 적재가 누락된다. 서버도
+                상태이고, 그 결과가 "이미 적재됨" 으로 읽히면 적재가 누락된다. `vdb-handler`도
                 422 로 거부하지만 여기서 막으면 호출 자리에서 알게 된다.
         """
         if payload_filter is not None and not payload_filter:

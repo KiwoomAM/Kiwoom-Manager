@@ -1,6 +1,6 @@
 # VDB Manager
 
-Kiwoom 코드가 vector DB 를 쓰는 통로다. 임베딩 추론과 Qdrant 접근은 게이트웨이
+Kiwoom 코드가 vector DB 를 쓰는 통로다. 임베딩 추론과 Qdrant 접근은 `vdb-handler`
 (VDB Handler Service)가 맡고, 이 패키지는 그 앞에 서는 HTTP 클라이언트다. 여기 적는
 것은 이 영역에서 낱말이 무엇을 가리키는가이지 어떻게 구현했는가가 아니다.
 
@@ -45,10 +45,11 @@ _Avoid_: 커서, 오프셋
 
 ### 층
 
-**게이트웨이**:
-이 패키지가 HTTP 로 부르는 서버(`KiwoomAM/Kiwoom-Handler` 의 vdb-handler). 임베딩과
-Qdrant 접근이 전부 그쪽 소관이다.
-_Avoid_: 서버, 핸들러, 서비스 — 형제 패키지마다 가리키는 대상이 달라진다.
+**`vdb-handler`**:
+이 패키지가 HTTP 로 부르는 서비스. `KiwoomAM/Kiwoom-Handler` 레포의 `vdb-handler/` 이고
+운영에서는 `192.7.9.45:8500` 에 떠 있다. 임베딩 추론과 Qdrant 접근이 전부 그쪽 소관이다.
+_Avoid_: 게이트웨이, 서버, 핸들러, 서비스 — 앞의 둘은 무엇을 가리키는지 좁혀지지 않고,
+뒤의 둘은 형제 패키지마다 가리키는 대상이 달라진다. 실제 이름으로 부른다.
 
 **바로가기**:
 `VDBManager` 가 하위 클라이언트의 메서드를 같은 이름·같은 인자로 한 벌 더 갖는 것.
