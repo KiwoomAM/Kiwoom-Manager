@@ -181,6 +181,30 @@ def test_순회가_고른_항목을_모든_페이지에_싣는다():
     ]
 
 
+def test_순회는_빈_목록을_순회_시작_전에_막는다():
+    """제너레이터 안에 가드를 두면 첫 `next()` 까지 아무 일도 일어나지 않는다.
+
+    호출 자리에서 알리는 것이 이 가드의 존재 이유이므로, 여기서는 반복을 시작하지
+    않고도 터져야 한다. 가드를 제너레이터 본체로 옮기면 이 테스트만 빨개진다.
+    """
+    client = PagingClient([_page([], None)])
+    collection = CollectionClient(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="with_payload"):
+        collection.iter_points(collection_name="c", with_payload=[])
+
+    assert client.calls == [], "막았는데 요청이 나갔다"
+
+
+def test_바로가기_순회도_호출_자리에서_막는다():
+    handler = VDBManager()
+    client = PagingClient([_page([], None)])
+    handler.collection = CollectionClient(client)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="with_payload"):
+        handler.iter_points(collection_name="c", with_payload=[])
+
+
 def test_순회는_같은_자리를_두_번_받으면_멈추고_알린다():
     """이어받기 키가 나아가지 않으면 영원히 돈다.
 

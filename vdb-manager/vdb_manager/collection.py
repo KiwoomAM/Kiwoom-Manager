@@ -350,14 +350,28 @@ class CollectionClient:
             with_payload: True 면 payload 전체, False 면 받지 않음, 항목명 목록이면
                 그 항목만. 전수 순회는 이 인자의 효과가 가장 큰 자리다.
 
-        Yields:
-            포인트 하나. 페이지 경계는 호출자에게 드러나지 않는다.
+        Returns:
+            포인트를 하나씩 돌려주는 iterator. 페이지 경계는 드러나지 않는다.
 
         Raises:
-            ValueError: with_payload 가 빈 목록일 때.
+            ValueError: with_payload 가 빈 목록일 때. 순회를 시작하기 전에 터진다.
             RuntimeError: 서버가 같은 이어받기 키를 두 번 줄 때. 그대로 두면 순회가
-                끝나지 않아 배치가 조용히 멈춰 선다.
+                끝나지 않아 배치가 조용히 멈춰 선다. 이것은 순회 도중에 터진다.
         """
+        # 가드를 제너레이터 밖에 둔다. 안에 두면 첫 `next()` 까지 실행이 미뤄져
+        # 호출 자리에서는 아무 일도 일어나지 않는다 — 왕복 전에 알린다는 가드의
+        # 존재 이유가 이 메서드에서만 성립하지 않게 된다.
+        _reject_empty_selection(with_payload)
+        return self._iter_pages(collection_name, limit, with_vectors, with_payload)
+
+    def _iter_pages(
+        self,
+        collection_name: str,
+        limit: int,
+        with_vectors: bool,
+        with_payload: bool | List[str],
+    ) -> Iterator[Dict[str, Any]]:
+        """`iter_points` 의 제너레이터 본체. 인자 검사는 호출 쪽에서 이미 끝났다."""
         offset: Optional[int | str] = None
         while True:
             page = self.scroll_points(
