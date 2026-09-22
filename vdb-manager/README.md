@@ -124,7 +124,6 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `info(name)` | `Dict` | 컬렉션 정보 조회 |
 | `delete(name)` | `Dict` | 컬렉션 삭제 |
 | `upsert_points(collection_name, texts, dense_vectors, metadatas, ids, sparse_vectors, batch_size)` | `Dict` | 데이터 업로드. **포인트 id 를 직접 지정** |
-| `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | Deprecated — `upsert_points` 사용 |
 | `count_points(collection_name, payload_filter)` | `int` | 조건에 맞는 포인트 수 (벡터·query 불필요) |
 | `has_points(collection_name, payload_filter)` | `bool` | 조건에 맞는 포인트가 있는지 |
 | `get_points(collection_name, ids, with_vectors, with_payload)` | `Dict` | ID로 포인트 조회 (`{"points": [...], "count": N}`) |
@@ -162,17 +161,20 @@ handler.hybrid.search("질문", collection_name="kw_gp")
 
 | 바로가기 | 위임 대상 |
 |---------|----------|
-| `embed()`, `embed_batch()` | `handler.dense` |
+| `embed()`, `embed_batch()`, `get_embedding_dimension()` | `handler.dense` |
 | `sparse_embed()`, `sparse_embed_batch()` | `handler.sparse` |
 | `hybrid_search()`, `dense_search()`, `sparse_search()` | `handler.hybrid` / `handler.dense` / `handler.sparse` |
-| `create_collection()`, `get_collection_info()`, `delete_collection()`, `upsert()` | `handler.collection` |
+| `create_collection()`, `get_collection_info()`, `delete_collection()` | `handler.collection` |
 | `get_points()`, `delete_points()`, `scroll_points()`, `iter_points()` | `handler.collection` |
 | `count_points()`, `has_points()`, `upsert_points()` | `handler.collection` |
 | `set_payload()`, `overwrite_payload()`, `delete_payload_keys()`, `clear_payload()` | `handler.collection` |
 | `create_payload_index()`, `list_payload_indexes()`, `delete_payload_index()` | `handler.collection` |
+| `hybrid_embed()`, `hybrid_embed_batch()` | `handler.hybrid` |
 | `rerank()` | `handler.reranker` |
 
-바로가기와 원본의 시그니처가 어긋나면 인자가 조용히 기본값으로 떨어진다. 그래서 테스트가 위임 관계를 소스에서 읽어 인자를 대조한다 — 새 바로가기를 더해도 등록할 것이 없다.
+**바로가기 본문은 사람이 적지 않는다.** `vdb_manager/_shortcuts.py` 의 표에 한 줄을 더하고 `uv run python scripts/generate_shortcuts.py` 를 돌리면 원본 시그니처 그대로 만들어진다. 생성물이 낡으면 테스트가 잡는다. 미러링하지 않는 것은 같은 파일의 `NOT_MIRRORED` 에 **이유와 함께** 등록해야 하며, 등록도 미러링도 없는 메서드가 있으면 테스트가 실패한다.
+
+`is_ready` 는 다섯 하위 클라이언트가 각각 갖지만 바로가기를 열지 않았다. 다섯을 각각 부르면 왕복이 다섯 번인데 `status()` 가 한 번에 넷을 다 준다.
 
 ### 예외
 
@@ -354,10 +356,9 @@ for r in results:
 - **task_type**: 문서 저장 시 `"RETRIEVAL_DOCUMENT"`, 검색 쿼리 시 `"RETRIEVAL_QUERY"` 사용 권장
 - **타임아웃**: 기본 120초 (SyncClient 기준)
 - **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors`·`ids` 전달 시 동일 길이 필수
-- **`upsert()`는 Deprecated**: 호출 시 `DeprecationWarning` 발생. 서버가 `start_id + j`로 채번하므로 호출자가 커서를 정확히 기억할 때만 안전하고, 기본값 `0`은 0번부터 기존 포인트를 덮어쓴다. 신규 적재는 `upsert_points(..., ids=[...])`
+- **`upsert()`는 제거됨**: 서버가 `start_id + j`로 채번해 호출자가 커서를 정확히 기억할 때만 안전했고, 기본값 `0`은 0번부터 기존 포인트를 덮어썼다. 조용한 덮어쓰기는 에러로 드러나지 않는다. `upsert_points(..., ids=[...])`를 쓴다
 - **포인트 id**: 부호 없는 정수 또는 UUID만 허용(형식 검증은 Service). 문서에서 유도한 id를 쓸 때 **폭을 줄이지 말 것** — 작은 범위로 접으면 기존 순번 id 구간을 덮어쓴다
 - **빈 조건은 거부됨**: `payload_filter`를 받는 모든 메서드(`count_points()`·`has_points()`·검색 3종)에 빈 dict(`{}`)를 넘기면 왕복 전에 `ValueError`. `{}`는 "조건 없음"이 아니라 **조건을 만들려다 비어서 나온** 상태다. Service도 422로 거부하지만 여기서 막으면 호출 자리에서 알게 된다. 조건 없이 전체를 대상으로 하려면 인자를 생략
-- **Deprecation 경고가 안 보일 수 있음**: 파이썬 기본 설정은 `__main__`에서 난 `DeprecationWarning`만 표시한다. 서비스 모듈 안에서 `upsert()`를 부르면 화면에 안 뜨므로, 남은 호출부를 찾으려면 `PYTHONWARNINGS=default::DeprecationWarning` 또는 `python -W default::DeprecationWarning`으로 켠다
 - **병합과 교체를 헷갈리지 말 것**: `set_payload()`는 주는 키만 더하거나 덮고 나머지를 남기지만, `overwrite_payload()`는 payload를 통째로 바꿔 **주지 않은 키가 전부 사라진다.** 둘은 같은 경로로 가고 HTTP 메서드만 다르다
 - **어떤 payload 키도 보호되지 않음**: 존재 확인에 쓰는 정체성 키(`source_pdf` 등)도 `overwrite_payload()`·`clear_payload()`로 사라진다. 재적재 여부는 도메인 소비자가 판단할 일이라 Service가 막지 않는다 (근거는 `KiwoomAM/Kiwoom-Handler`의 ADR 0002)
 - **없는 id 는 조용히 건너뛴다**: payload 쓰기에 없는 point id 를 섞어도 오류가 아니라 200이다. 있는 것에만 적용되고 없는 것은 대상이 되지 않는다. **무엇이 살아 있었는지 알아야 하면 `get_points(ids=...)`로 읽을 것** — 없는 id 를 섞어도 200에 있는 것만 돌려준다. 존재 판정은 쓰기가 아니라 읽기의 일이다
@@ -374,5 +375,5 @@ for r in results:
 - **순회 종료는 `next_offset is None`으로 판정**: `scroll_points()`를 직접 쓸 때의 이야기다. `0`은 실재하는 포인트 id라 falsy로 끝을 판정하면 첫 페이지에서 멈춘다. `iter_points()`는 이 판정을 대신한다
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장
-- **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection`, `create_hybrid_collection`, `upsert_hybrid` 등)은 alias로 유지됨
+- **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection` 등)은 alias로 유지됨. 다만 `upsert()`·`upsert_hybrid()`는 **제거**됐다 — 조용한 덮어쓰기를 부르는 API 라 남겨 둘 수 없었다
 - **mode**: 컬렉션 생성 시 `"dense"` 또는 `"hybrid"` 선택 가능 (기본: `"hybrid"`)

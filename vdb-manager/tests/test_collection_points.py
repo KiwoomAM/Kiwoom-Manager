@@ -161,37 +161,20 @@ def test_upsert_points_sends_sparse_vectors_as_lists():
 # ------------------------------------------------------------------
 
 
-def test_upsert_warns_and_points_at_replacement():
-    col, client = _collection({"status": "upserted"})
+def test_deprecated_upsert_is_gone():
+    """`upsert` 는 제거됐다. 되살리지 않는다.
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        col.upsert(
-            COLLECTION,
-            texts=["a"],
-            dense_vectors=[[0.1]],
-            metadatas=[{}],
-            start_id=100,
-        )
+    서버가 `start_id + j` 로 채번해 호출자가 커서를 정확히 기억할 때만 안전했고,
+    기본값 `0` 이라 인자 없이 부르면 0번부터 기존 포인트를 덮었다. 조용한 덮어쓰기는
+    에러로 드러나지 않는다. 대신 `upsert_points(..., ids=[...])` 를 쓴다.
 
-    deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert deprecations, "DeprecationWarning 이 나야 한다"
-    assert "upsert_points" in " ".join(str(w.message) for w in deprecations)
+    한 연산에 이름이 셋(`upsert`·`_upsert_legacy`·`VDBManager.upsert`)이던 구조도
+    이 삭제로 함께 사라졌다 (#114).
+    """
+    for gone in ("upsert", "_upsert_legacy", "upsert_hybrid"):
+        assert not hasattr(CollectionClient, gone), f"{gone} 이 되살아났다"
 
-
-def test_upsert_keeps_working_while_deprecated():
-    """경고만 더한다 — 동작을 바꾸면 소비자 전환 전에 적재가 멈춘다."""
-    col, client = _collection({"status": "upserted"})
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        col.upsert(
-            COLLECTION, texts=["a"], dense_vectors=[[0.1]], metadatas=[{}], start_id=100
-        )
-
-    call = client.calls[0]
-    assert call["path"] == f"/v1/collections/{COLLECTION}/upsert"
-    assert call["json"]["start_id"] == 100
+    assert hasattr(CollectionClient, "upsert_points")
 
 
 # ------------------------------------------------------------------
