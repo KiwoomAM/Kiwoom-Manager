@@ -62,6 +62,10 @@ handler.collection.create("my_col")                    # hybrid (기본)
 handler.collection.create("my_col", mode="dense")      # dense-only
 handler.collection.get_points("my_col", ids=[1, 2])
 
+# 전수 순회 — 필요한 항목만 받는다
+for point in handler.collection.iter_points("my_col", with_payload=["source_pdf"]):
+    ...
+
 # ColBERT 리랭킹
 reranked = handler.reranker.rerank("질문", documents=results, top_k=5)
 
@@ -123,9 +127,10 @@ VDBManager는 5개의 서브 클라이언트를 통해 기능을 분리합니다
 | `upsert(collection_name, texts, dense_vectors, metadatas, sparse_vectors, start_id, batch_size)` | `Dict` | Deprecated — `upsert_points` 사용 |
 | `count_points(collection_name, payload_filter)` | `int` | 조건에 맞는 포인트 수 (벡터·query 불필요) |
 | `has_points(collection_name, payload_filter)` | `bool` | 조건에 맞는 포인트가 있는지 |
-| `get_points(collection_name, ids, with_vectors)` | `List[Dict]` | ID로 포인트 조회 |
+| `get_points(collection_name, ids, with_vectors, with_payload)` | `Dict` | ID로 포인트 조회 (`{"points": [...], "count": N}`) |
 | `delete_points(collection_name, ids)` | `Dict` | ID로 포인트 삭제 |
-| `scroll_points(collection_name, limit, offset, with_vectors)` | `Dict` | 포인트 페이지네이션 조회 |
+| `scroll_points(collection_name, limit, offset, with_vectors, with_payload)` | `Dict` | 포인트 페이지네이션 조회 (`{"points": [...], "next_offset": ...}`) |
+| `iter_points(collection_name, limit, with_vectors, with_payload)` | `Iterator[Dict]` | 전수 순회. 페이지 이어받기와 종료 판정을 대신한다 |
 | `set_payload(collection_name, ids, payload)` | `Dict` | payload에 주는 키만 더하거나 덮기 (나머지 보존) |
 | `overwrite_payload(collection_name, ids, payload)` | `Dict` | payload를 통째로 교체 (기존 키 사라짐) |
 | `delete_payload_keys(collection_name, ids, keys)` | `Dict` | payload에서 주는 키만 삭제 |
@@ -161,7 +166,7 @@ handler.hybrid.search("질문", collection_name="kw_gp")
 | `sparse_embed()`, `sparse_embed_batch()` | `handler.sparse` |
 | `hybrid_search()`, `dense_search()`, `sparse_search()` | `handler.hybrid` / `handler.dense` / `handler.sparse` |
 | `create_collection()`, `get_collection_info()`, `delete_collection()`, `upsert()` | `handler.collection` |
-| `get_points()`, `delete_points()`, `scroll_points()` | `handler.collection` |
+| `get_points()`, `delete_points()`, `scroll_points()`, `iter_points()` | `handler.collection` |
 | `count_points()`, `has_points()`, `upsert_points()` | `handler.collection` |
 | `set_payload()`, `overwrite_payload()`, `delete_payload_keys()`, `clear_payload()` | `handler.collection` |
 | `create_payload_index()`, `list_payload_indexes()`, `delete_payload_index()` | `handler.collection` |
@@ -342,6 +347,10 @@ for r in results:
 - **이름에 슬래시가 든 필드의 index 는 지울 수 없음**: 만들 수는 있고 조회에도 보이지만 삭제가 404로 돌아온다. 필드명을 잘못 적어서가 아니라 벤더 클라이언트 한계이며, `create_payload_index()`가 만드는 시점에 경고한다 (`KiwoomAM/Kiwoom-Handler#74`)
 - **`has_points()`는 "적재 완료"가 아님**: 조건에 맞는 포인트가 하나라도 있으면 True다. 문서 하나가 포인트 여럿이 되는(청킹) 소비자가 이것을 완료 판정으로 쓰면 부분 적재가 영구히 굳는다
 - **delete()**: 비가역적. 모든 데이터가 영구 삭제됨
+- **받을 payload 항목을 고를 수 있음**: `get_points()`·`scroll_points()`·`iter_points()`의 `with_payload`는 `True`(전체) | `False`(받지 않음) | 항목명 목록이다. 전수 순회에서 효과가 가장 크다 — 운영 컬렉션 실측으로 100포인트가 344,732B에서 11,756B가 됐다. 빈 목록(`[]`)은 왕복 전에 `ValueError`이며, payload가 정말 필요 없으면 `False`를 준다
+- **`with_payload`와 `payload_filter`를 헷갈리지 말 것**: 앞은 고른 포인트에서 **어떤 항목을 받을지**(SELECT)이고 뒤는 **어떤 포인트를 고를지**(WHERE)다. 이름이 비슷해 바꿔 쓰기 쉬운데, 서로 다른 축이라 한쪽을 다른 쪽 자리에 주면 조용히 다른 결과가 나온다
+- **모르는 항목명은 막히지 않음**: Qdrant payload는 포인트마다 스키마가 없어 "항목명이 틀렸다"와 "그 키를 가진 포인트가 없다"가 같은 상태다. 오타를 내면 빈 payload가 돌아올 뿐 오류가 아니다. 빈 결과가 정상인지는 컬렉션의 도메인을 아는 호출자만 판단할 수 있다 — 순회 전체로 누적한 뒤 검사한다 (근거는 `KiwoomAM/Kiwoom-Handler`의 ADR 0004)
+- **순회 종료는 `next_offset is None`으로 판정**: `scroll_points()`를 직접 쓸 때의 이야기다. `0`은 실재하는 포인트 id라 falsy로 끝을 판정하면 첫 페이지에서 멈춘다. `iter_points()`는 이 판정을 대신한다
 - **distance 옵션**: `"Cosine"`, `"Euclid"`, `"Dot"` 지원 (기본: `"Cosine"`)
 - **에러 처리**: HTTP 통신 기반이므로 `VDBConnectionError`/`VDBHandlerError` 처리 권장
 - **하위호환**: v2 메서드명(`embed_text`, `encode`, `create_collection`, `create_hybrid_collection`, `upsert_hybrid` 등)은 alias로 유지됨

@@ -5,10 +5,11 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
 서버측에 위임한다. 외부 에이전트가 GitHub에서 import해 쓰는 것을 전제로 한다.
 
 > 사용자 가이드·예시는 @README.md 참조. 이 문서는 코드 수정 시 알아야 할 것만 담는다.
+> 낱말이 무엇을 가리키는지는 @CONTEXT.md, 되돌리기 비싼 결정은 `docs/adr/` 에 있다.
 
 ## 편집 범위
 
-- **이 패키지(`packages/vdb-manager/`)만 수정한다.** mdb-manager·redis-manager는 같은 팀
+- **이 패키지(레포 최상위 `vdb-manager/`)만 수정한다.** mdb-manager·redis-manager는 같은 팀
   영역이지만 그 외 `*-manager` / `*-handler`는 **다른 담당자 영역 — 절대 수정 금지.**
 - 임베딩 모델 로드·SPLADE/ColBERT 추론·Qdrant 직접 접근은 **서버측(`packages/vdb-handler`)**
   소관이다. 이 패키지는 HTTP 클라이언트일 뿐 모델을 직접 로드하지 않는다.
@@ -70,6 +71,25 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   고쳐지면 함께 걷어낼 임시 조치다.
 - **이 레포의 `#74`는 다른 이슈다**: 이슈 번호를 적을 때 레포를 함께 쓴다. `Kiwoom-Manager#74`는
   llm-manager 건이라, `#74`로만 적으면 GitHub이 엉뚱한 이슈로 링크를 건다.
+- **`with_payload`는 항목 고르기, `payload_filter`는 포인트 고르기다**: 앞은 고른 포인트에서
+  어떤 payload 항목을 받을지(SELECT)이고 뒤는 어떤 포인트를 고를지(WHERE)다. 이름이 비슷해
+  뒤바뀌기 쉬운데 축이 달라 조용히 다른 결과가 나온다. 용어 정의는 @CONTEXT.md.
+- **모르는 payload 항목명은 막지 않는다 — 막을 대상이 없다**: Qdrant payload 는 포인트마다
+  스키마가 없어 "항목명이 틀렸다"와 "그 키를 가진 포인트가 없다"가 같은 상태다. SDK 도 서버도
+  판정하지 않으며 빈 payload 가 그대로 온다. 빈 결과가 정상인지는 컬렉션의 도메인을 아는
+  호출자만 안다 (`KiwoomAM/Kiwoom-Handler` 의 ADR 0004). SDK 가 대신 판정하려 들지 말 것.
+- **빈 목록은 막고 항목명 형식은 판정하지 않는다**: `with_payload=[]` 는 왕복 전 `ValueError`
+  이지만 `["  "]` 는 그대로 보낸다. `_reject_if_empty` 가 보는 것은 언제나 "컨테이너가
+  비었는가" 이고, 원소 단위 검사는 형식 판정이라 서버 규칙을 흉내 내기 시작하는 자리다.
+- **순회의 끝은 `next_offset is None` 이다**: `0` 은 실재하는 포인트 id 라 falsy 로 판정하면
+  첫 페이지에서 멈춘다. `iter_points` 가 이 판정을 삼키므로 전수 순회는 그것을 쓴다.
+- **게이트웨이 응답은 봉투째 돌려준다**: `get_points`·`scroll_points` 는 서버 응답을 그대로
+  준다. 알맹이만 꺼내면 서버가 그 봉투에 새 정보를 실을 때 SDK 가 조용히 가린다. 검색 3종이
+  아직 알맹이만 주는 것은 소비자와 함께 움직여야 해서이며 통일은 #118 이다 (`docs/adr/0001`).
+- **바로가기 시그니처는 테스트가 소스에서 세어 와 대조한다**: `tests/test_shortcut_signatures.py`
+  가 `VDBManager` 의 위임 관계를 ast 로 읽어 원본과 인자를 비교한다. 새 바로가기를 만들면
+  등록하지 않아도 검사 대상이 되고, 인자를 `**kwargs` 로 뭉개면 실패한다 — 그렇게 하면 IDE
+  자동완성과 타입 검사가 사라지고 오타가 SDK 안쪽에서 터진다 (#114).
 - **Singleton**: `VDBManager()`는 항상 같은 인스턴스. 재초기화는 `VDBManager.reset()` 또는 프로세스 재시작.
 
 ## Environment Variables
