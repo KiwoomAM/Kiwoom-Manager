@@ -90,6 +90,24 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   가 `VDBManager` 의 위임 관계를 ast 로 읽어 원본과 인자를 비교한다. 새 바로가기를 만들면
   등록하지 않아도 검사 대상이 되고, 인자를 `**kwargs` 로 뭉개면 실패한다 — 그렇게 하면 IDE
   자동완성과 타입 검사가 사라지고 오타가 SDK 안쪽에서 터진다 (#114).
+- **503 만 전용 예외로 올린다**: `VDBUnavailableError(VDBHandlerError)` 다. 게이트웨이가
+  "닿지 못했다"(503)와 "닿았는데 실패했다"(500)를 나눠 답하는데(ADR 0003) 그 구분이 SDK
+  에서 숫자로만 남던 것을 타입으로 올렸다. **코드마다 클래스를 만들지 말 것** — 서버의
+  분류 체계를 복제하면 서버가 규칙을 넓힐 때 SDK 만 옛 규칙으로 남는다. 근거는
+  `docs/adr/0002`.
+- **재시도는 SDK 가 하지 않는다**: 갈래만 알려 주고 언제 몇 번 다시 부를지는 호출자 몫이다.
+  형제 SDK 들도 같다 — 실제 재시도 루프는 llm-manager 의 업로드 한 곳뿐이다.
+- **오류 본문은 한 모양이다**: 게이트웨이가 검증 실패까지 `{"error": "..."}` 로 정규화했다.
+  위치(`body.ids.0: ...`)와 여러 건 잇기(` / `)도 서버가 한다. SDK 에 평탄화 코드를 다시
+  넣지 말 것 — 닿지 않는 경로가 서버 계약처럼 읽힌다.
+- **왕복 전에 막는 것은 `_guards.py` 한 곳에 있다**: `payload_filter` 를 받는 자리가 컬렉션과
+  검색 셋에 흩어져 있어, 가드를 각 파일에 복사하면 한쪽만 고쳐지고 나머지가 남는다.
+  `tests/test_empty_filter_guard.py` 가 그 인자를 받는 메서드를 시그니처에서 세어 와 전부
+  검사하므로, 새 메서드가 생기면 등록하지 않아도 대상이 된다.
+- **서비스 상태 조회의 정규 이름은 `status()`**: `health_check` 는 같은 것을 가리키는 옛
+  이름이며 경고를 붙이지 않는다. 바로가기에서 경고를 내면 `stacklevel` 이 SDK 내부를 짚어
+  호출부를 못 찾고, 우회하려다 같은 일에 메서드가 하나 더 생긴다(`upsert` 가 그렇게 셋이
+  됐다). 이 메서드가 치는 것은 `/health` 가 아니라 `/v1/admin/status` 다.
 - **Singleton**: `VDBManager()`는 항상 같은 인스턴스. 재초기화는 `VDBManager.reset()` 또는 프로세스 재시작.
 
 ## Environment Variables
@@ -106,5 +124,5 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   검증하는 것이 이 패키지의 관례다. 공용 더블과 `make_collection` fixture 는
   `tests/conftest.py` 에 있다 — `tests/test_collection_points.py` 에도 `patch`·`put` 을
   모르는 오래된 사본이 있으며, 통합은 클라이언트 경계를 Protocol 로 세우는 #108 소관이다.
-  실제 연동 확인이 필요하면 Service 를 띄우고 `VDBManager().health_check()`.
+  실제 연동 확인이 필요하면 Service 를 띄우고 `VDBManager().status()`.
 - 클라이언트 동작을 바꾸면 회귀 방지를 위해 최소 단위 테스트 추가를 우선 고려한다.
