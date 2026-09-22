@@ -472,9 +472,23 @@ class VDBManager:
             field=field,
         )
 
-    def health_check(self) -> Dict[str, Any]:
-        """서비스 상태 확인"""
+    def status(self) -> Dict[str, Any]:
+        """서비스와 각 모델의 상태를 조회한다.
+
+        `GET /v1/admin/status` 를 부른다. `vdb-handler`에는 모델 로드와 무관하게 뜨는
+        가벼운 `/health` 가 따로 있는데 그것과는 다른 경로이고, 돌려주는 것도 많다.
+
+        Returns:
+            `{"dense": {...}, "sparse": {...}, "colbert": {...}, "qdrant": {...}}`.
+            각 항목이 무엇을 담는지는 `vdb-handler`가 아직 계약으로 적지 않았다
+            (`KiwoomAM/Kiwoom-Handler#83`).
+        """
         return self._client.get("/v1/admin/status")
+
+    # 옛 이름. 경고는 붙이지 않는다 — 여기서 경고를 내면 stacklevel 이 SDK 내부를 짚어
+    # 호출자가 자기 호출부를 찾지 못하고, 그것을 우회하려다 같은 일에 메서드가 하나 더
+    # 생긴다. `upsert` 가 그렇게 셋이 됐다 (#114).
+    health_check = status
 
     def close(self) -> None:
         if self._client is not None:

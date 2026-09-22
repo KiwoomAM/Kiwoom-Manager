@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
+from vdb_manager._guards import reject_empty_filter
 from vdb_manager.dense import DenseClient
 from vdb_manager.sparse import SparseClient
 
@@ -80,7 +81,13 @@ class HybridClient:
         rerank_top_k: int = 50,
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
-        """Dense + Sparse 하이브리드 검색"""
+        """Dense + Sparse 하이브리드 검색
+
+        Raises:
+            ValueError: payload_filter 가 빈 dict 일 때. 왜 막는지는
+                `_guards.reject_empty_filter` 가 단일 출처다.
+        """
+        reject_empty_filter(payload_filter)
         resp = self._client.post(
             "/v1/search/hybrid",
             json={

@@ -7,55 +7,14 @@ import warnings
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
+from vdb_manager._guards import (
+    reject_empty_filter,
+    reject_empty_selection,
+    reject_if_empty,
+)
 
 
 _EMPTY_PAYLOAD_REASON = "바꿀 내용 없음, 비우려면 clear_payload 사용"
-
-
-def _reject_if_empty(name: str, value: Any, reason: str) -> None:
-    """빈 인자를 서버에 보내기 전에 막는다.
-
-    서버도 422 로 거부하지만 층이 다른 두 방어다. 서버의 것은 모든 소비자(다른
-    언어·curl·다음에 생길 SDK)를 향하고, 이것은 이 SDK 사용자에게 왕복 전에
-    알린다.
-
-    빈 것만 막고 형식은 판정하지 않는다. u64 범위나 UUID 모양까지 흉내 내면 서버가
-    규칙을 넓힐 때마다 SDK 가 정당한 요청을 막는다.
-
-    Args:
-        name: 인자 이름. 메시지에 그대로 실린다.
-        value: 검사할 값.
-        reason: 왜 막는지. 호출자마다 다르다.
-
-    Raises:
-        ValueError: `value` 가 비었을 때.
-    """
-    if not value:
-        raise ValueError(f"{name} 비어 있음 — {reason}")
-
-
-def _reject_empty_selection(with_payload: Any) -> None:
-    """고를 payload 항목 목록이 비었으면 왕복 전에 막는다.
-
-    빈 목록은 "고르지 않음" 이 아니라 "고르려다 비어서 나온" 상태다. payload 가
-    정말 필요 없으면 False 를 준다.
-
-    빈 것만 보고 항목명의 형식은 판정하지 않는다. 공백뿐인 항목명까지 흉내 내면
-    `vdb-handler`가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다.
-
-    Args:
-        with_payload: True/False 또는 받을 항목명 목록.
-
-    Raises:
-        ValueError: 항목명 목록이 비었을 때.
-    """
-    if isinstance(with_payload, bool):
-        return
-    _reject_if_empty(
-        "with_payload",
-        with_payload,
-        "고르려다 비어서 나온 상태, payload 가 필요 없으면 False 사용",
-    )
 
 
 def _warn_if_index_cannot_be_deleted(field: str) -> None:
@@ -273,7 +232,7 @@ class CollectionClient:
         Raises:
             ValueError: with_payload 가 빈 목록일 때.
         """
-        _reject_empty_selection(with_payload)
+        reject_empty_selection(with_payload)
         return self._client.post(
             f"/v1/collections/{collection_name}/points",
             json={"ids": ids, "with_vectors": with_vectors, "with_payload": with_payload},
@@ -319,7 +278,7 @@ class CollectionClient:
         Raises:
             ValueError: with_payload 가 빈 목록일 때.
         """
-        _reject_empty_selection(with_payload)
+        reject_empty_selection(with_payload)
         return self._client.post(
             f"/v1/collections/{collection_name}/scroll",
             json={
@@ -361,7 +320,7 @@ class CollectionClient:
         # 가드를 제너레이터 밖에 둔다. 안에 두면 첫 `next()` 까지 실행이 미뤄져
         # 호출 자리에서는 아무 일도 일어나지 않는다 — 왕복 전에 알린다는 가드의
         # 존재 이유가 이 메서드에서만 성립하지 않게 된다.
-        _reject_empty_selection(with_payload)
+        reject_empty_selection(with_payload)
         return self._iter_pages(collection_name, limit, with_vectors, with_payload)
 
     def _iter_pages(
@@ -414,15 +373,10 @@ class CollectionClient:
             조건에 맞는 포인트 수.
 
         Raises:
-            ValueError: payload_filter 가 빈 dict 일 때. 조건을 만들려다 비어서 나온
-                상태이고, 그 결과가 "이미 적재됨" 으로 읽히면 적재가 누락된다. `vdb-handler`도
-                422 로 거부하지만 여기서 막으면 호출 자리에서 알게 된다.
+            ValueError: payload_filter 가 빈 dict 일 때. 왜 막는지는
+                `_guards.reject_empty_filter` 가 단일 출처다.
         """
-        if payload_filter is not None and not payload_filter:
-            raise ValueError(
-                "payload_filter 가 빈 dict — 조건을 만들려다 비어서 나온 상태, "
-                "전체 개수를 원하면 인자를 생략"
-            )
+        reject_empty_filter(payload_filter)
 
         resp = self._client.post(
             f"/v1/collections/{collection_name}/count",
@@ -498,8 +452,8 @@ class CollectionClient:
             실패라고 말하는데 서버 작업은 되돌려지지 않아 일부가 적용된 상태로
             남는다. 어디까지 갔는지는 호출자의 루프만 알 수 있다.
         """
-        _reject_if_empty("ids", ids, "대상 포인트 없음")
-        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
+        reject_if_empty("ids", ids, "대상 포인트 없음")
+        reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
         return self._client.patch(
             f"/v1/collections/{collection_name}/points/payload",
             json={"ids": ids, "payload": payload},
@@ -536,8 +490,8 @@ class CollectionClient:
         Raises:
             ValueError: `ids` 나 `payload` 가 비었을 때.
         """
-        _reject_if_empty("ids", ids, "대상 포인트 없음")
-        _reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
+        reject_if_empty("ids", ids, "대상 포인트 없음")
+        reject_if_empty("payload", payload, _EMPTY_PAYLOAD_REASON)
         return self._client.put(
             f"/v1/collections/{collection_name}/points/payload",
             json={"ids": ids, "payload": payload},
@@ -573,8 +527,8 @@ class CollectionClient:
         Raises:
             ValueError: `ids` 나 `keys` 가 비었을 때.
         """
-        _reject_if_empty("ids", ids, "대상 포인트 없음")
-        _reject_if_empty("keys", keys, "지울 키 없음, 전부 비우려면 clear_payload 사용")
+        reject_if_empty("ids", ids, "대상 포인트 없음")
+        reject_if_empty("keys", keys, "지울 키 없음, 전부 비우려면 clear_payload 사용")
         return self._client.delete(
             f"/v1/collections/{collection_name}/points/payload",
             json={"ids": ids, "keys": keys},
@@ -608,7 +562,7 @@ class CollectionClient:
         Raises:
             ValueError: `ids` 가 비었을 때.
         """
-        _reject_if_empty("ids", ids, "대상 포인트 없음")
+        reject_if_empty("ids", ids, "대상 포인트 없음")
         return self._client.delete(
             f"/v1/collections/{collection_name}/points/payload/all",
             json={"ids": ids},
@@ -656,8 +610,8 @@ class CollectionClient:
             같은 원리로 URL 경로에서 의미를 갖는 다른 문자도 깨질 수 있으나, 실제로
             측정한 것은 슬래시 하나라 그것만 경고한다.
         """
-        _reject_if_empty("field", field, "대상 필드 없음")
-        _reject_if_empty("schema", schema, "index 종류 없음")
+        reject_if_empty("field", field, "대상 필드 없음")
+        reject_if_empty("schema", schema, "index 종류 없음")
         _warn_if_index_cannot_be_deleted(field)
         return self._client.post(
             f"/v1/collections/{collection_name}/indexes",
@@ -704,7 +658,7 @@ class CollectionClient:
             적어서가 아니라 벤더 클라이언트의 한계이며
             KiwoomAM/Kiwoom-Handler#74 에 실측과 대안이 있다.
         """
-        _reject_if_empty("field", field, "대상 필드 없음")
+        reject_if_empty("field", field, "대상 필드 없음")
         return self._client.delete(
             f"/v1/collections/{collection_name}/indexes",
             json={"field": field},

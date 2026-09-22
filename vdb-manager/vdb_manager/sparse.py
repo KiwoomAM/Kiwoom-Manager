@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
+from vdb_manager._guards import reject_empty_filter
 
 
 class SparseClient:
@@ -51,7 +52,13 @@ class SparseClient:
         score_threshold: Optional[float] = None,
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
-        """Sparse 벡터 단독 검색 (SPLADE)"""
+        """Sparse 벡터 단독 검색 (SPLADE)
+
+        Raises:
+            ValueError: payload_filter 가 빈 dict 일 때. 왜 막는지는
+                `_guards.reject_empty_filter` 가 단일 출처다.
+        """
+        reject_empty_filter(payload_filter)
         resp = self._client.post(
             "/v1/search/sparse",
             json={

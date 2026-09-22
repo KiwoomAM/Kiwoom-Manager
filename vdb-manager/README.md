@@ -70,7 +70,7 @@ for point in handler.collection.iter_points("my_col", with_payload=["source_pdf"
 reranked = handler.reranker.rerank("질문", documents=results, top_k=5)
 
 # 서비스 상태 확인
-status = handler.health_check()
+status = handler.status()   # 옛 이름 health_check() 도 같은 것
 handler.close()
 ```
 
@@ -172,24 +172,45 @@ handler.hybrid.search("질문", collection_name="kw_gp")
 | `create_payload_index()`, `list_payload_indexes()`, `delete_payload_index()` | `handler.collection` |
 | `rerank()` | `handler.reranker` |
 
+바로가기와 원본의 시그니처가 어긋나면 인자가 조용히 기본값으로 떨어진다. 그래서 테스트가 위임 관계를 소스에서 읽어 인자를 대조한다 — 새 바로가기를 더해도 등록할 것이 없다.
+
 ### 예외
 
 ```
-VDBError                    # 기본 에러
-├── VDBConnectionError      # 서비스 연결 실패
-└── VDBHandlerError         # 서비스 에러 응답 (HTTP 4xx/5xx, status_code 포함)
+VDBError                        # 기본 에러
+├── VDBConnectionError          # 서비스에 닿지 못함 (status_code=0)
+└── VDBHandlerError             # 서비스가 에러 응답을 반환 (status_code 포함)
+    └── VDBUnavailableError     # 서비스가 저장소에 닿지 못함 (503)
 ```
 
+`VDBUnavailableError`는 `VDBHandlerError`를 상속하므로 기존 `except VDBHandlerError`가 그대로 잡는다. 재시도 여부를 타입으로 갈라 쓰려는 호출자만 따로 잡으면 된다.
+
+| 상태 코드 | 뜻 | 무엇이 여기 들어오나 |
+|---|---|---|
+| (연결 실패, `status_code=0`) | 서비스에 닿지도 못함 | 서비스가 안 떠 있거나 네트워크가 끊김 |
+| **503** | 서비스가 **지금 이 요청을 받지 못함** | 저장소 미도달 · SPLADE/ColBERT 로딩 중 · **그 모델이 꺼져 있음** · 동시 처리 한계 초과 |
+| 500 | 서비스가 **받아서 처리하다 실패** | Qdrant 의 5xx · **Gemini 임베딩 오류** · 그 밖의 내부 실패 |
+| 422 | 보낸 요청이 잘못됨 | 모르는 키, id 형식, 빈 조건, 길이 불일치 |
+| 404 | 대상이 없음 | 없는 컬렉션, 슬래시 든 필드의 index 삭제 |
+
+**재시도해도 되는지는 상태 코드가 말해 주지 않는다.** 503 에는 다시 부르면 되는 것(로딩 중·과부하)과 영영 안 되는 것(꺼진 모델)이 섞이고, 500 에도 다시 부르면 되는 것(Gemini 일시 오류)이 섞인다. 무엇이 일시적인지는 부르는 쪽만 안다.
+
 ```python
-from vdb_manager import VDBConnectionError, VDBHandlerError
+from vdb_manager import VDBConnectionError, VDBHandlerError, VDBUnavailableError
 
 try:
     results = handler.hybrid.search("쿼리", collection_name="kw_gp")
 except VDBConnectionError:
-    print("서비스 연결 실패")
+    print("서비스에 닿지 못했다")
+except VDBUnavailableError as e:
+    # 503 — 지금은 받지 못하는 상태. 로딩 중이나 과부하면 잠시 뒤 되지만,
+    # 모델이 꺼져 있으면 설정을 바꾸기 전까지 계속 이 상태다. 메시지를 보고 판단한다.
+    print(f"지금은 받지 못한다: {e}")
 except VDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e}")
 ```
+
+**재시도는 SDK 가 하지 않는다.** 무엇이 일시적인지는 부르는 쪽의 도메인이고, SDK 는 상태를 갈라 주는 데까지만 한다.
 
 ## 사용 패턴
 
@@ -335,7 +356,7 @@ for r in results:
 - **upsert 정합성**: `texts`, `dense_vectors`, `metadatas`는 동일 길이 필수. `sparse_vectors`·`ids` 전달 시 동일 길이 필수
 - **`upsert()`는 Deprecated**: 호출 시 `DeprecationWarning` 발생. 서버가 `start_id + j`로 채번하므로 호출자가 커서를 정확히 기억할 때만 안전하고, 기본값 `0`은 0번부터 기존 포인트를 덮어쓴다. 신규 적재는 `upsert_points(..., ids=[...])`
 - **포인트 id**: 부호 없는 정수 또는 UUID만 허용(형식 검증은 Service). 문서에서 유도한 id를 쓸 때 **폭을 줄이지 말 것** — 작은 범위로 접으면 기존 순번 id 구간을 덮어쓴다
-- **빈 조건은 거부됨**: `count_points()`·`has_points()`에 빈 dict(`{}`)를 넘기면 `ValueError`. Service는 빈 조건을 "필터 없음"으로 보아 컬렉션 전체를 세므로, 조건을 코드로 만들다 비어서 나오면 그 결과가 "이미 적재됨"으로 읽혀 적재가 누락된다. 전체 개수를 원하면 인자를 생략
+- **빈 조건은 거부됨**: `payload_filter`를 받는 모든 메서드(`count_points()`·`has_points()`·검색 3종)에 빈 dict(`{}`)를 넘기면 왕복 전에 `ValueError`. `{}`는 "조건 없음"이 아니라 **조건을 만들려다 비어서 나온** 상태다. Service도 422로 거부하지만 여기서 막으면 호출 자리에서 알게 된다. 조건 없이 전체를 대상으로 하려면 인자를 생략
 - **Deprecation 경고가 안 보일 수 있음**: 파이썬 기본 설정은 `__main__`에서 난 `DeprecationWarning`만 표시한다. 서비스 모듈 안에서 `upsert()`를 부르면 화면에 안 뜨므로, 남은 호출부를 찾으려면 `PYTHONWARNINGS=default::DeprecationWarning` 또는 `python -W default::DeprecationWarning`으로 켠다
 - **병합과 교체를 헷갈리지 말 것**: `set_payload()`는 주는 키만 더하거나 덮고 나머지를 남기지만, `overwrite_payload()`는 payload를 통째로 바꿔 **주지 않은 키가 전부 사라진다.** 둘은 같은 경로로 가고 HTTP 메서드만 다르다
 - **어떤 payload 키도 보호되지 않음**: 존재 확인에 쓰는 정체성 키(`source_pdf` 등)도 `overwrite_payload()`·`clear_payload()`로 사라진다. 재적재 여부는 도메인 소비자가 판단할 일이라 Service가 막지 않는다 (근거는 `KiwoomAM/Kiwoom-Handler`의 ADR 0002)
