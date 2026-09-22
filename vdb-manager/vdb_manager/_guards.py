@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """왕복 전에 막는 것들.
 
-게이트웨이도 같은 것을 422 로 거부한다. 층이 다른 두 방어다 — 서버의 것은 모든
+`vdb-handler`도 같은 것을 422 로 거부한다. 층이 다른 두 방어다 — `vdb-handler`의 것은 모든
 소비자(다른 언어·curl·다음에 생길 SDK)를 향하고, 이것은 이 SDK 사용자에게 호출
 자리에서 알린다.
 
 **빈 것만 보고 형식은 판정하지 않는다.** u64 범위나 UUID 모양, 항목명의 공백까지
-흉내 내면 서버가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다. 서버가
+흉내 내면 `vdb-handler`가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다. `vdb-handler`가
 판정하지 않는 사실(슬래시 든 필드명의 index 한계)만 경고로 전한다.
 
 이 모듈에 모아 두는 이유는 `payload_filter` 를 받는 자리가 컬렉션과 검색 셋에
@@ -19,7 +19,7 @@ from typing import Any
 
 
 def reject_if_empty(name: str, value: Any, reason: str) -> None:
-    """빈 인자를 서버에 보내기 전에 막는다.
+    """빈 인자를 `vdb-handler`에 보내기 전에 막는다.
 
     Args:
         name: 인자 이름. 메시지에 그대로 실린다.

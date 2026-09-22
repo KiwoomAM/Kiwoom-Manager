@@ -233,8 +233,8 @@ def test_scroll_points_forwards_uuid_offset():
 def test_empty_filter_is_rejected_before_any_request(method):
     """`{}` 는 "조건 없음" 이 아니라 "조건을 만들려다 비어서 나온" 상태다.
 
-    서버도 422 로 거부하지만 층이 다른 두 방어다. 여기서 막으면 호출 자리에서
-    알게 된다. (서버가 빈 조건을 필터 없음으로 읽어 전체를 세던 시절이 있었고 그때
+    `vdb-handler`도 422 로 거부하지만 층이 다른 두 방어다. 여기서 막으면 호출 자리에서
+    알게 된다. (`vdb-handler`가 빈 조건을 필터 없음으로 읽어 전체를 세던 시절이 있었고 그때
     이 가드가 생겼다. 그 동작은 `KiwoomAM/Kiwoom-Handler#71` 에서 사라졌지만,
     왕복 전에 알리는 값은 남는다.)
     """

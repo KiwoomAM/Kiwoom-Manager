@@ -373,9 +373,8 @@ class CollectionClient:
             조건에 맞는 포인트 수.
 
         Raises:
-            ValueError: payload_filter 가 빈 dict 일 때. 조건을 만들려다 비어서 나온
-                상태이고, 그 결과가 "이미 적재됨" 으로 읽히면 적재가 누락된다. `vdb-handler`도
-                422 로 거부하지만 여기서 막으면 호출 자리에서 알게 된다.
+            ValueError: payload_filter 가 빈 dict 일 때. 왜 막는지는
+                `_guards.reject_empty_filter` 가 단일 출처다.
         """
         reject_empty_filter(payload_filter)
 

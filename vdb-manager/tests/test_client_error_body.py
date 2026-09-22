@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""서버가 내는 오류 본문에서 무엇을 읽는가.
+"""`vdb-handler`가 내는 오류 본문에서 무엇을 읽는가.
 
-게이트웨이는 자체 예외든 요청 검증 실패든 `{"error": "..."}` 하나로 답한다. 위치가
-필요한 검증 실패는 서버가 `body.ids.0: ...` 꼴로 앞에 붙이고 여러 건은 ` / ` 로
+`vdb-handler`는 자체 예외든 요청 검증 실패든 `{"error": "..."}` 하나로 답한다. 위치가
+필요한 검증 실패는 `vdb-handler`가 `body.ids.0: ...` 꼴로 앞에 붙이고 여러 건은 ` / ` 로
 이어 보내므로, SDK 가 다시 조립할 것이 없다.
 
 한때는 검증 실패가 FastAPI 기본인 `{"detail": [...]}` 로 나가 SDK 가 그것을
-평탄화했다. 서버가 한 모양으로 정규화하면서(`KiwoomAM/Kiwoom-Handler#71`) 그 코드는
-닿지 않게 되어 걷어냈다 — 닿지 않는 코드를 남겨 두면 다음 사람이 그것을 서버 계약으로
+평탄화했다. `vdb-handler`가 한 모양으로 정규화하면서(`KiwoomAM/Kiwoom-Handler#71`) 그 코드는
+닿지 않게 되어 걷어냈다 — 닿지 않는 코드를 남겨 두면 다음 사람이 그것을 `vdb-handler` 의 계약으로
 읽는다. 배포본이 하나뿐이라는 것은 확인했다.
 """
 
@@ -38,7 +38,7 @@ def test_error_envelope_is_read(monkeypatch):
 
 
 def test_여러_건이_이어진_메시지도_그대로_쓴다(monkeypatch):
-    """위치를 붙이고 이어 붙이는 일은 서버가 한다. SDK 는 다시 조립하지 않는다."""
+    """위치를 붙이고 이어 붙이는 일은 `vdb-handler`가 한다. SDK 는 다시 조립하지 않는다."""
     response = httpx.Response(
         422,
         json={"error": "body.ids.0: UUID 아님: 'nope' / body.limit: 1 이상이어야 함"},

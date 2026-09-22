@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """오류가 어떤 갈래로 올라오는가.
 
-게이트웨이는 "닿지 못했다"(503)와 "닿았는데 실패했다"(500)를 구분해 답한다. 앞은
+`vdb-handler`는 "닿지 못했다"(503)와 "닿았는데 실패했다"(500)를 구분해 답한다. 앞은
 재시도가 의미 있고 뒤는 없다 — 그 구분을 만든 이유가 그것이다
 (`KiwoomAM/Kiwoom-Handler` 의 ADR 0003).
 
@@ -80,7 +80,7 @@ def test_호출자_잘못은_전용_예외가_아니다():
 
 
 def test_연결_자체가_안_되면_다른_갈래다():
-    """서비스에 닿지도 못한 것은 서버가 503 을 준 것과 다르다."""
+    """서비스에 닿지도 못한 것은 `vdb-handler`가 503 을 준 것과 다르다."""
     client = SyncClient()
     client._http = httpx.Client(base_url="http://test", transport=httpx.MockTransport(
         lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused"))

@@ -84,9 +84,8 @@ class HybridClient:
         """Dense + Sparse 하이브리드 검색
 
         Raises:
-            ValueError: payload_filter 가 빈 dict 일 때. `{}` 는 조건 없음이 아니라
-                조건을 만들려다 비어서 나온 상태다. 조건 없이 전체를 대상으로 하려면
-                인자를 생략한다.
+            ValueError: payload_filter 가 빈 dict 일 때. 왜 막는지는
+                `_guards.reject_empty_filter` 가 단일 출처다.
         """
         reject_empty_filter(payload_filter)
         resp = self._client.post(

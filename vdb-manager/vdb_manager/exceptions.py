@@ -30,7 +30,7 @@ class VDBHandlerError(VDBError):
 class VDBUnavailableError(VDBHandlerError):
     """서비스가 저장소에 닿지 못했을 때 (503).
 
-    게이트웨이는 "닿지 못했다" 와 "닿았는데 실패했다" 를 다른 코드로 답한다. 앞은
+    `vdb-handler`는 "닿지 못했다" 와 "닿았는데 실패했다" 를 다른 코드로 답한다. 앞은
     재시도가 의미 있고 뒤는 없다 — 그 구분을 만든 이유가 그것이다
     (`KiwoomAM/Kiwoom-Handler` 의 ADR 0003).
 

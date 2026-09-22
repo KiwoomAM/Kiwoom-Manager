@@ -475,12 +475,12 @@ class VDBManager:
     def status(self) -> Dict[str, Any]:
         """서비스와 각 모델의 상태를 조회한다.
 
-        `GET /v1/admin/status` 를 부른다. 게이트웨이에는 모델 로드와 무관하게 뜨는
+        `GET /v1/admin/status` 를 부른다. `vdb-handler`에는 모델 로드와 무관하게 뜨는
         가벼운 `/health` 가 따로 있는데 그것과는 다른 경로이고, 돌려주는 것도 많다.
 
         Returns:
             `{"dense": {...}, "sparse": {...}, "colbert": {...}, "qdrant": {...}}`.
-            각 항목이 무엇을 담는지는 게이트웨이가 아직 계약으로 적지 않았다
+            각 항목이 무엇을 담는지는 `vdb-handler`가 아직 계약으로 적지 않았다
             (`KiwoomAM/Kiwoom-Handler#83`).
         """
         return self._client.get("/v1/admin/status")
