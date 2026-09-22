@@ -14,7 +14,8 @@ from vdb_manager.exceptions import (
     VDBUnavailableError,
 )
 
-# 저장소에 닿지 못했다는 뜻. 재시도가 의미 있는 유일한 상태 코드다.
+# 저장소에 닿지 못했다는 뜻. 상태 코드 중에서는 이것만 재시도가 의미 있다
+# (서비스에 닿지도 못한 경우는 상태 코드가 없고 `VDBConnectionError` 로 간다).
 _UNAVAILABLE = 503
 
 BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")

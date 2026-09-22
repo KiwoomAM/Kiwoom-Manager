@@ -320,7 +320,7 @@ class CollectionClient:
         # 가드를 제너레이터 밖에 둔다. 안에 두면 첫 `next()` 까지 실행이 미뤄져
         # 호출 자리에서는 아무 일도 일어나지 않는다 — 왕복 전에 알린다는 가드의
         # 존재 이유가 이 메서드에서만 성립하지 않게 된다.
-        _reject_empty_selection(with_payload)
+        reject_empty_selection(with_payload)
         return self._iter_pages(collection_name, limit, with_vectors, with_payload)
 
     def _iter_pages(

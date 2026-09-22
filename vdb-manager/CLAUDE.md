@@ -59,7 +59,7 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
 - **payload 쓰기 응답 필드는 `requested`**: `count` 가 아니다. 셀 수 없는 값에 센 값처럼
   읽히는 이름을 붙이지 않는다. `/count` 응답의 `count` 와 `/upsert_points` 의 `count` 는
   그대로이며 서로 다른 값이다.
-- **SDK는 빈 것만 막고 형식은 판정하지 않는다**: `_reject_if_empty`가 보는 것은 빈 `ids`·
+- **SDK는 빈 것만 막고 형식은 판정하지 않는다**: `_guards.reject_if_empty`가 보는 것은 빈 `ids`·
   `payload`·`keys`·`field`·`schema`뿐이다. u64 폭이나 UUID 모양까지 흉내 내면 서버가 규칙을 넓힐 때
   SDK만 옛 규칙으로 정당한 요청을 막는다. 서버가 판정하지 **않는** 사실(슬래시 한계)만 SDK가
   경고로 전한다.
@@ -79,7 +79,7 @@ Vector DB HTTP 클라이언트 패키지. VDB Handler Service(`packages/vdb-hand
   판정하지 않으며 빈 payload 가 그대로 온다. 빈 결과가 정상인지는 컬렉션의 도메인을 아는
   호출자만 안다 (`KiwoomAM/Kiwoom-Handler` 의 ADR 0004). SDK 가 대신 판정하려 들지 말 것.
 - **빈 목록은 막고 항목명 형식은 판정하지 않는다**: `with_payload=[]` 는 왕복 전 `ValueError`
-  이지만 `["  "]` 는 그대로 보낸다. `_reject_if_empty` 가 보는 것은 언제나 "컨테이너가
+  이지만 `["  "]` 는 그대로 보낸다. `_guards.reject_if_empty` 가 보는 것은 언제나 "컨테이너가
   비었는가" 이고, 원소 단위 검사는 형식 판정이라 `vdb-handler` 의 규칙을 흉내 내기 시작하는 자리다.
 - **순회의 끝은 `next_offset is None` 이다**: `0` 은 실재하는 포인트 id 라 falsy 로 판정하면
   첫 페이지에서 멈춘다. `iter_points` 가 이 판정을 삼키므로 전수 순회는 그것을 쓴다.
