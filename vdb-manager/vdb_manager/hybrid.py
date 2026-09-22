@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
+from vdb_manager._guards import reject_empty_filter
 from vdb_manager.dense import DenseClient
 from vdb_manager.sparse import SparseClient
 
@@ -81,6 +82,7 @@ class HybridClient:
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense + Sparse 하이브리드 검색"""
+        reject_empty_filter(payload_filter)
         resp = self._client.post(
             "/v1/search/hybrid",
             json={

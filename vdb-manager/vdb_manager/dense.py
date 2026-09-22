@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from vdb_manager._client import SyncClient
+from vdb_manager._guards import reject_empty_filter
 
 
 class DenseClient:
@@ -53,6 +54,7 @@ class DenseClient:
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Dense 벡터 단독 검색"""
+        reject_empty_filter(payload_filter)
         resp = self._client.post(
             "/v1/search/dense",
             json={
