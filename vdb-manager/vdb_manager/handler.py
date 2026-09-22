@@ -36,7 +36,6 @@ VDBManager - 통합 진입점 (Singleton)
 from __future__ import annotations
 
 import logging
-import warnings
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
@@ -44,15 +43,7 @@ from vdb_manager.dense import DenseClient
 from vdb_manager.sparse import SparseClient
 from vdb_manager.hybrid import HybridClient
 from vdb_manager.collection import CollectionClient
-# 리랭킹 기본값은 `RerankerClient` 가 단일 출처다. 바로가기가 같은 값을 다시
-# 적으면 한쪽만 바뀌었을 때 호출 경로에 따라 동작이 갈린다 (#114).
-from vdb_manager.reranker import (
-    _DEFAULT_GEMINI_MODEL,
-    _DEFAULT_MAX_DOC_LENGTH,
-    _DEFAULT_MAX_DOCS,
-    _DEFAULT_TIMEOUT,
-    RerankerClient,
-)
+from vdb_manager.reranker import RerankerClient
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +80,18 @@ class VDBManager:
         self._initialized = True
         logger.info("VDBManager 초기화 완료")
 
-    # ------------------------------------------------------------------
-    # Dense 임베딩 (바로가기)
-    # ------------------------------------------------------------------
+    # >>> 여기부터 생성된 바로가기 — scripts/generate_shortcuts.py 가 쓴다. 손으로 고치지 말 것
 
     def embed(
-        self, text: str, task_type: str = "RETRIEVAL_DOCUMENT"
+        self,
+        text: str,
+        task_type: str = "RETRIEVAL_DOCUMENT",
     ) -> List[float]:
-        """단일 텍스트 dense 임베딩"""
-        return self.dense.embed(text, task_type=task_type)
-
-    # 하위호환
-    embed_text = embed
+        """`DenseClient.embed` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.dense.embed(
+            text=text,
+            task_type=task_type,
+        )
 
     def embed_batch(
         self,
@@ -108,32 +99,62 @@ class VDBManager:
         batch_size: int = 100,
         task_type: str = "RETRIEVAL_DOCUMENT",
     ) -> List[List[float]]:
-        """배치 dense 임베딩"""
-        return self.dense.embed_batch(texts, batch_size=batch_size, task_type=task_type)
+        """`DenseClient.embed_batch` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.dense.embed_batch(
+            texts=texts,
+            batch_size=batch_size,
+            task_type=task_type,
+        )
 
-    # ------------------------------------------------------------------
-    # Sparse 임베딩 (바로가기)
-    # ------------------------------------------------------------------
+    def get_embedding_dimension(self) -> int:
+        """`DenseClient.get_embedding_dimension` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.dense.get_embedding_dimension()
 
-    def sparse_embed(self, text: str) -> Tuple[List[int], List[float]]:
-        """단일 텍스트 sparse 임베딩"""
-        return self.sparse.embed(text)
-
-    # 하위호환
-    sparse_encode = sparse_embed
+    def sparse_embed(
+        self,
+        text: str,
+    ) -> Tuple[List[int], List[float]]:
+        """`SparseClient.embed` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.sparse.embed(
+            text=text,
+        )
 
     def sparse_embed_batch(
-        self, texts: List[str], batch_size: int = 8
+        self,
+        texts: List[str],
+        batch_size: int = 8,
     ) -> List[Tuple[List[int], List[float]]]:
-        """배치 sparse 임베딩"""
-        return self.sparse.embed_batch(texts, batch_size=batch_size)
+        """`SparseClient.embed_batch` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.sparse.embed_batch(
+            texts=texts,
+            batch_size=batch_size,
+        )
 
-    # 하위호환
-    sparse_encode_batch = sparse_embed_batch
+    def hybrid_embed(
+        self,
+        text: str,
+        task_type: str = "RETRIEVAL_DOCUMENT",
+    ) -> Dict[str, Any]:
+        """`HybridClient.embed` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.hybrid.embed(
+            text=text,
+            task_type=task_type,
+        )
 
-    # ------------------------------------------------------------------
-    # 리랭킹 (바로가기)
-    # ------------------------------------------------------------------
+    def hybrid_embed_batch(
+        self,
+        texts: List[str],
+        dense_batch_size: int = 100,
+        sparse_batch_size: int = 8,
+        task_type: str = "RETRIEVAL_DOCUMENT",
+    ) -> Dict[str, Any]:
+        """`HybridClient.embed_batch` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.hybrid.embed_batch(
+            texts=texts,
+            dense_batch_size=dense_batch_size,
+            sparse_batch_size=sparse_batch_size,
+            task_type=task_type,
+        )
 
     def rerank(
         self,
@@ -143,12 +164,12 @@ class VDBManager:
         text_key: str = "text",
         method: str = "colbert",
         *,
-        model: str = _DEFAULT_GEMINI_MODEL,
-        max_docs: int = _DEFAULT_MAX_DOCS,
-        timeout: float = _DEFAULT_TIMEOUT,
-        max_doc_length: int = _DEFAULT_MAX_DOC_LENGTH,
+        model: str = "gemini-3.1-flash-lite",
+        max_docs: int = 50,
+        timeout: float = 10.0,
+        max_doc_length: int = 500,
     ) -> List[Dict[str, Any]]:
-        """문서 리랭킹 (method: "colbert" 서버 위임 | "gemini" LLM 리랭킹)"""
+        """`RerankerClient.rerank` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.reranker.rerank(
             query=query,
             documents=documents,
@@ -161,10 +182,6 @@ class VDBManager:
             max_doc_length=max_doc_length,
         )
 
-    # ------------------------------------------------------------------
-    # 검색 (바로가기)
-    # ------------------------------------------------------------------
-
     def hybrid_search(
         self,
         query: str,
@@ -174,7 +191,7 @@ class VDBManager:
         rerank_top_k: int = 50,
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
-        """Dense + Sparse 하이브리드 검색"""
+        """`HybridClient.search` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.hybrid.search(
             query=query,
             collection_name=collection_name,
@@ -192,7 +209,7 @@ class VDBManager:
         score_threshold: Optional[float] = None,
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
-        """Dense 벡터 단독 검색"""
+        """`DenseClient.search` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.dense.search(
             query=query,
             collection_name=collection_name,
@@ -209,7 +226,7 @@ class VDBManager:
         score_threshold: Optional[float] = None,
         payload_filter: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
-        """Sparse 벡터 단독 검색 (SPLADE)"""
+        """`SparseClient.search` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.sparse.search(
             query=query,
             collection_name=collection_name,
@@ -217,10 +234,6 @@ class VDBManager:
             score_threshold=score_threshold,
             payload_filter=payload_filter,
         )
-
-    # ------------------------------------------------------------------
-    # 컬렉션 관리 (바로가기)
-    # ------------------------------------------------------------------
 
     def create_collection(
         self,
@@ -230,54 +243,32 @@ class VDBManager:
         recreate: bool = False,
         mode: str = "hybrid",
     ) -> Dict[str, str]:
-        """컬렉션 생성 (mode: 'dense' | 'hybrid')"""
+        """`CollectionClient.create` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.create(
-            name=name, dense_dim=dense_dim, distance=distance, recreate=recreate, mode=mode
+            name=name,
+            dense_dim=dense_dim,
+            distance=distance,
+            recreate=recreate,
+            mode=mode,
         )
 
-    def get_collection_info(self, name: str) -> Dict[str, Any]:
-        """컬렉션 정보 조회"""
-        return self.collection.info(name)
-
-    def delete_collection(self, name: str) -> Dict[str, str]:
-        """컬렉션 삭제"""
-        return self.collection.delete(name)
-
-    def upsert(
+    def get_collection_info(
         self,
-        collection_name: str,
-        texts: List[str],
-        dense_vectors: List[List[float]],
-        metadatas: List[Dict[str, Any]],
-        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
-        start_id: int = 0,
-        batch_size: int = 100,
+        name: str,
     ) -> Dict[str, Any]:
-        """[DEPRECATED] 데이터 업로드 (sparse_vectors 생략 시 dense-only).
-
-        Use ``VDBManager.upsert_points(..., ids=[...])`` instead.
-        근거는 `CollectionClient.upsert` docstring 에 있다.
-        """
-        warnings.warn(
-            "VDBManager.upsert is deprecated. "
-            "Use VDBManager.upsert_points(..., ids=[...]) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # 경고를 여기서 냈으므로 공개 메서드를 다시 부르지 않는다. 두 번 경고하면
-        # 둘 중 하나가 SDK 내부 줄을 가리켜 호출자가 자기 코드를 못 찾는다.
-        return self.collection._upsert_legacy(
-            collection_name=collection_name,
-            texts=texts,
-            dense_vectors=dense_vectors,
-            metadatas=metadatas,
-            sparse_vectors=sparse_vectors,
-            start_id=start_id,
-            batch_size=batch_size,
+        """`CollectionClient.info` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.collection.info(
+            name=name,
         )
 
-    # 하위호환
-    upsert_hybrid = upsert
+    def delete_collection(
+        self,
+        name: str,
+    ) -> Dict[str, str]:
+        """`CollectionClient.delete` 바로가기. 설명은 원본 docstring 에 있다."""
+        return self.collection.delete(
+            name=name,
+        )
 
     def upsert_points(
         self,
@@ -289,7 +280,7 @@ class VDBManager:
         sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
         batch_size: int = 100,
     ) -> Dict[str, Any]:
-        """포인트 id 를 직접 정해 적재"""
+        """`CollectionClient.upsert_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.upsert_points(
             collection_name=collection_name,
             texts=texts,
@@ -300,10 +291,6 @@ class VDBManager:
             batch_size=batch_size,
         )
 
-    # ------------------------------------------------------------------
-    # 포인트 CRUD (바로가기)
-    # ------------------------------------------------------------------
-
     def get_points(
         self,
         collection_name: str,
@@ -311,7 +298,7 @@ class VDBManager:
         with_vectors: bool = False,
         with_payload: bool | List[str] = True,
     ) -> Dict[str, Any]:
-        """ID로 포인트 조회"""
+        """`CollectionClient.get_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.get_points(
             collection_name=collection_name,
             ids=ids,
@@ -324,7 +311,7 @@ class VDBManager:
         collection_name: str,
         ids: List[int | str],
     ) -> Dict[str, Any]:
-        """ID로 포인트 삭제"""
+        """`CollectionClient.delete_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.delete_points(
             collection_name=collection_name,
             ids=ids,
@@ -338,7 +325,7 @@ class VDBManager:
         with_vectors: bool = False,
         with_payload: bool | List[str] = True,
     ) -> Dict[str, Any]:
-        """포인트 스크롤 조회 (페이지네이션)"""
+        """`CollectionClient.scroll_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.scroll_points(
             collection_name=collection_name,
             limit=limit,
@@ -354,7 +341,7 @@ class VDBManager:
         with_vectors: bool = False,
         with_payload: bool | List[str] = True,
     ) -> Iterator[Dict[str, Any]]:
-        """컬렉션 전수 순회 (페이지 이어받기와 종료 판정을 대신한다)"""
+        """`CollectionClient.iter_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.iter_points(
             collection_name=collection_name,
             limit=limit,
@@ -362,16 +349,12 @@ class VDBManager:
             with_payload=with_payload,
         )
 
-    # ------------------------------------------------------------------
-    # 상태 확인 / 생명주기
-    # ------------------------------------------------------------------
-
     def count_points(
         self,
         collection_name: str,
         payload_filter: Optional[dict] = None,
     ) -> int:
-        """조건에 맞는 포인트 수 조회"""
+        """`CollectionClient.count_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.count_points(
             collection_name=collection_name,
             payload_filter=payload_filter,
@@ -382,15 +365,11 @@ class VDBManager:
         collection_name: str,
         payload_filter: Optional[dict] = None,
     ) -> bool:
-        """조건에 맞는 포인트가 하나라도 있는지 확인"""
+        """`CollectionClient.has_points` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.has_points(
             collection_name=collection_name,
             payload_filter=payload_filter,
         )
-
-    # ------------------------------------------------------------------
-    # payload 수정 / index
-    # ------------------------------------------------------------------
 
     def set_payload(
         self,
@@ -398,7 +377,7 @@ class VDBManager:
         ids: List[int | str],
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """payload 에 주는 키만 더하거나 덮기 (나머지 키 보존)"""
+        """`CollectionClient.set_payload` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.set_payload(
             collection_name=collection_name,
             ids=ids,
@@ -411,7 +390,7 @@ class VDBManager:
         ids: List[int | str],
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """payload 를 통째로 교체 (기존 키는 사라짐)"""
+        """`CollectionClient.overwrite_payload` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.overwrite_payload(
             collection_name=collection_name,
             ids=ids,
@@ -424,7 +403,7 @@ class VDBManager:
         ids: List[int | str],
         keys: List[str],
     ) -> Dict[str, Any]:
-        """payload 에서 주는 키만 삭제"""
+        """`CollectionClient.delete_payload_keys` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.delete_payload_keys(
             collection_name=collection_name,
             ids=ids,
@@ -436,7 +415,7 @@ class VDBManager:
         collection_name: str,
         ids: List[int | str],
     ) -> Dict[str, Any]:
-        """payload 를 통째로 비우기"""
+        """`CollectionClient.clear_payload` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.clear_payload(
             collection_name=collection_name,
             ids=ids,
@@ -448,15 +427,18 @@ class VDBManager:
         field: str,
         schema: str,
     ) -> Dict[str, Any]:
-        """payload 필드에 index 생성"""
+        """`CollectionClient.create_payload_index` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.create_payload_index(
             collection_name=collection_name,
             field=field,
             schema=schema,
         )
 
-    def list_payload_indexes(self, collection_name: str) -> Dict[str, str]:
-        """필드별 index 현황 조회"""
+    def list_payload_indexes(
+        self,
+        collection_name: str,
+    ) -> Dict[str, str]:
+        """`CollectionClient.list_payload_indexes` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.list_payload_indexes(
             collection_name=collection_name,
         )
@@ -466,11 +448,17 @@ class VDBManager:
         collection_name: str,
         field: str,
     ) -> Dict[str, Any]:
-        """payload index 삭제"""
+        """`CollectionClient.delete_payload_index` 바로가기. 설명은 원본 docstring 에 있다."""
         return self.collection.delete_payload_index(
             collection_name=collection_name,
             field=field,
         )
+
+    embed_text = embed
+    sparse_encode = sparse_embed
+    sparse_encode_batch = sparse_embed_batch
+
+    # <<< 생성된 바로가기 끝
 
     def status(self) -> Dict[str, Any]:
         """서비스와 각 모델의 상태를 조회한다.
@@ -485,9 +473,9 @@ class VDBManager:
         """
         return self._client.get("/v1/admin/status")
 
-    # 옛 이름. 경고는 붙이지 않는다 — 여기서 경고를 내면 stacklevel 이 SDK 내부를 짚어
-    # 호출자가 자기 호출부를 찾지 못하고, 그것을 우회하려다 같은 일에 메서드가 하나 더
-    # 생긴다. `upsert` 가 그렇게 셋이 됐다 (#114).
+    # 옛 이름. 경고는 붙이지 않는다 — 바로가기에서 경고를 내면 stacklevel 이 SDK 내부를
+    # 짚어 호출자가 자기 호출부를 찾지 못한다. 전에 `upsert` 가 그 우회 때문에 한 연산에
+    # 이름이 셋이었고, 그 메서드를 지우면서 우회도 함께 사라졌다 (#114).
     health_check = status
 
     def close(self) -> None:
