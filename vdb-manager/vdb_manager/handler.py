@@ -37,14 +37,22 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
 from vdb_manager.dense import DenseClient
 from vdb_manager.sparse import SparseClient
 from vdb_manager.hybrid import HybridClient
 from vdb_manager.collection import CollectionClient
-from vdb_manager.reranker import RerankerClient
+# 리랭킹 기본값은 `RerankerClient` 가 단일 출처다. 바로가기가 같은 값을 다시
+# 적으면 한쪽만 바뀌었을 때 호출 경로에 따라 동작이 갈린다 (#114).
+from vdb_manager.reranker import (
+    _DEFAULT_GEMINI_MODEL,
+    _DEFAULT_MAX_DOC_LENGTH,
+    _DEFAULT_MAX_DOCS,
+    _DEFAULT_TIMEOUT,
+    RerankerClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +142,11 @@ class VDBManager:
         top_k: int = 10,
         text_key: str = "text",
         method: str = "colbert",
-        **gemini_kwargs: Any,
+        *,
+        model: str = _DEFAULT_GEMINI_MODEL,
+        max_docs: int = _DEFAULT_MAX_DOCS,
+        timeout: float = _DEFAULT_TIMEOUT,
+        max_doc_length: int = _DEFAULT_MAX_DOC_LENGTH,
     ) -> List[Dict[str, Any]]:
         """문서 리랭킹 (method: "colbert" 서버 위임 | "gemini" LLM 리랭킹)"""
         return self.reranker.rerank(
@@ -143,7 +155,10 @@ class VDBManager:
             top_k=top_k,
             text_key=text_key,
             method=method,
-            **gemini_kwargs,
+            model=model,
+            max_docs=max_docs,
+            timeout=timeout,
+            max_doc_length=max_doc_length,
         )
 
     # ------------------------------------------------------------------
@@ -294,12 +309,14 @@ class VDBManager:
         collection_name: str,
         ids: List[int | str],
         with_vectors: bool = False,
-    ) -> List[Dict[str, Any]]:
+        with_payload: bool | List[str] = True,
+    ) -> Dict[str, Any]:
         """ID로 포인트 조회"""
         return self.collection.get_points(
             collection_name=collection_name,
             ids=ids,
             with_vectors=with_vectors,
+            with_payload=with_payload,
         )
 
     def delete_points(
@@ -319,6 +336,7 @@ class VDBManager:
         limit: int = 20,
         offset: Optional[int | str] = None,
         with_vectors: bool = False,
+        with_payload: bool | List[str] = True,
     ) -> Dict[str, Any]:
         """포인트 스크롤 조회 (페이지네이션)"""
         return self.collection.scroll_points(
@@ -326,6 +344,22 @@ class VDBManager:
             limit=limit,
             offset=offset,
             with_vectors=with_vectors,
+            with_payload=with_payload,
+        )
+
+    def iter_points(
+        self,
+        collection_name: str,
+        limit: int = 20,
+        with_vectors: bool = False,
+        with_payload: bool | List[str] = True,
+    ) -> Iterator[Dict[str, Any]]:
+        """컬렉션 전수 순회 (페이지 이어받기와 종료 판정을 대신한다)"""
+        return self.collection.iter_points(
+            collection_name=collection_name,
+            limit=limit,
+            with_vectors=with_vectors,
+            with_payload=with_payload,
         )
 
     # ------------------------------------------------------------------

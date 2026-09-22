@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from vdb_manager._client import SyncClient
 
@@ -32,6 +32,30 @@ def _reject_if_empty(name: str, value: Any, reason: str) -> None:
     """
     if not value:
         raise ValueError(f"{name} 비어 있음 — {reason}")
+
+
+def _reject_empty_selection(with_payload: Any) -> None:
+    """고를 payload 항목 목록이 비었으면 왕복 전에 막는다.
+
+    빈 목록은 "고르지 않음" 이 아니라 "고르려다 비어서 나온" 상태다. payload 가
+    정말 필요 없으면 False 를 준다.
+
+    빈 것만 보고 항목명의 형식은 판정하지 않는다. 공백뿐인 항목명까지 흉내 내면
+    서버가 규칙을 넓힐 때 SDK 만 옛 규칙으로 정당한 요청을 막는다.
+
+    Args:
+        with_payload: True/False 또는 받을 항목명 목록.
+
+    Raises:
+        ValueError: 항목명 목록이 비었을 때.
+    """
+    if isinstance(with_payload, bool):
+        return
+    _reject_if_empty(
+        "with_payload",
+        with_payload,
+        "고르려다 비어서 나온 상태, payload 가 필요 없으면 False 사용",
+    )
 
 
 def _warn_if_index_cannot_be_deleted(field: str) -> None:
@@ -229,13 +253,31 @@ class CollectionClient:
         collection_name: str,
         ids: List[int | str],
         with_vectors: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """ID로 포인트 조회"""
-        resp = self._client.post(
+        with_payload: bool | List[str] = True,
+    ) -> Dict[str, Any]:
+        """id 로 포인트를 조회한다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            ids: 조회할 포인트 id 목록.
+            with_vectors: 벡터를 함께 받을지 여부.
+            with_payload: True 면 payload 전체, False 면 받지 않음, 항목명 목록이면
+                그 항목만. 중첩 경로(`a.b`)와 감싼 키(`'"종목/분류명"'`)도 쓸 수 있다.
+                모르는 항목명은 서버가 막지 않고 빈 payload 로 돌려준다.
+
+        Returns:
+            `{"points": [...], "count": N}`. 없는 id 는 조용히 빠지므로 count 가
+            요청한 개수보다 작을 수 있다 — 어느 id 가 빠졌는지는 돌려받은 포인트의
+            id 로 가려낸다.
+
+        Raises:
+            ValueError: with_payload 가 빈 목록일 때.
+        """
+        _reject_empty_selection(with_payload)
+        return self._client.post(
             f"/v1/collections/{collection_name}/points",
-            json={"ids": ids, "with_vectors": with_vectors},
+            json={"ids": ids, "with_vectors": with_vectors, "with_payload": with_payload},
         )
-        return resp["points"]
 
     def delete_points(
         self,
@@ -254,16 +296,88 @@ class CollectionClient:
         limit: int = 20,
         offset: Optional[int | str] = None,
         with_vectors: bool = False,
+        with_payload: bool | List[str] = True,
     ) -> Dict[str, Any]:
-        """포인트 스크롤 조회 (페이지네이션)"""
+        """포인트를 페이지 단위로 조회한다.
+
+        전수 순회에는 `iter_points` 가 있다. 이어받기와 종료 판정을 직접 다뤄야 할
+        때만 이 메서드를 쓴다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            limit: 한 페이지에 받을 포인트 수.
+            offset: 이어받기 키. 첫 페이지는 None.
+            with_vectors: 벡터를 함께 받을지 여부.
+            with_payload: True 면 payload 전체, False 면 받지 않음, 항목명 목록이면
+                그 항목만. 순회 전송량이 문제라면 여기서 줄인다.
+
+        Returns:
+            `{"points": [...], "next_offset": ...}`. 다음 페이지는 next_offset 을
+            offset 으로 넘겨 받는다. 순회의 끝은 next_offset 이 None 인 것으로
+            판정한다 — 0 은 실재하는 포인트 id 라 falsy 로 보면 첫 페이지에서 멈춘다.
+
+        Raises:
+            ValueError: with_payload 가 빈 목록일 때.
+        """
+        _reject_empty_selection(with_payload)
         return self._client.post(
             f"/v1/collections/{collection_name}/scroll",
             json={
                 "limit": limit,
                 "offset": offset,
                 "with_vectors": with_vectors,
+                "with_payload": with_payload,
             },
         )
+
+    def iter_points(
+        self,
+        collection_name: str,
+        limit: int = 20,
+        with_vectors: bool = False,
+        with_payload: bool | List[str] = True,
+    ) -> Iterator[Dict[str, Any]]:
+        """컬렉션의 포인트를 처음부터 끝까지 하나씩 돌려준다.
+
+        `scroll_points` 를 페이지마다 부르며 이어받기 키를 넘긴다. 호출자가 종료
+        조건을 직접 다루지 않아도 되는 것이 이 메서드의 존재 이유다 — 이어받기 키
+        0 은 실재하는 포인트 id 라, falsy 로 끝을 판정하면 첫 페이지에서 멈춘다.
+
+        Args:
+            collection_name: 대상 컬렉션.
+            limit: 한 번에 받아 올 페이지 크기. 돌려주는 단위는 포인트 하나다.
+            with_vectors: 벡터를 함께 받을지 여부.
+            with_payload: True 면 payload 전체, False 면 받지 않음, 항목명 목록이면
+                그 항목만. 전수 순회는 이 인자의 효과가 가장 큰 자리다.
+
+        Yields:
+            포인트 하나. 페이지 경계는 호출자에게 드러나지 않는다.
+
+        Raises:
+            ValueError: with_payload 가 빈 목록일 때.
+            RuntimeError: 서버가 같은 이어받기 키를 두 번 줄 때. 그대로 두면 순회가
+                끝나지 않아 배치가 조용히 멈춰 선다.
+        """
+        offset: Optional[int | str] = None
+        while True:
+            page = self.scroll_points(
+                collection_name=collection_name,
+                limit=limit,
+                offset=offset,
+                with_vectors=with_vectors,
+                with_payload=with_payload,
+            )
+            yield from page.get("points") or []
+
+            next_offset = page.get("next_offset")
+            if next_offset is None:
+                return
+            if next_offset == offset:
+                raise RuntimeError(
+                    f"이어받기 키가 나아가지 않음 — 같은 자리 {next_offset!r} 를 두 번 받음, "
+                    "그대로 두면 순회가 끝나지 않으므로 멈춤"
+                )
+            offset = next_offset
 
     def count_points(
         self,
@@ -286,14 +400,14 @@ class CollectionClient:
             조건에 맞는 포인트 수.
 
         Raises:
-            ValueError: payload_filter 가 빈 dict 일 때. 서버는 그것을 필터 없음으로
-                보아 전체를 세는데, 조건을 만들다 비어서 나온 경우 그 결과가
-                "이미 적재됨" 으로 읽혀 적재가 누락된다.
+            ValueError: payload_filter 가 빈 dict 일 때. 조건을 만들려다 비어서 나온
+                상태이고, 그 결과가 "이미 적재됨" 으로 읽히면 적재가 누락된다. 서버도
+                422 로 거부하지만 여기서 막으면 호출 자리에서 알게 된다.
         """
         if payload_filter is not None and not payload_filter:
             raise ValueError(
-                "payload_filter 가 빈 dict — 빈 조건은 서버에서 필터 없음이 되어 "
-                "컬렉션 전체를 셈, 전체 개수를 원하면 인자를 생략"
+                "payload_filter 가 빈 dict — 조건을 만들려다 비어서 나온 상태, "
+                "전체 개수를 원하면 인자를 생략"
             )
 
         resp = self._client.post(
