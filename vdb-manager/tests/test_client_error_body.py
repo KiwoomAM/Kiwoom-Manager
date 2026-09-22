@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""서버가 내는 422 의 본문 모양이 둘이라 한쪽만 읽으면 메시지가 깨진다.
+"""서버가 내는 오류 본문에서 무엇을 읽는가.
 
-- 핸들러 자체 예외(`InvalidPayloadFilterError` 등) → `{"error": "..."}`
-- FastAPI 의 요청 검증 실패(extra 금지·id 형식·길이 불일치) → `{"detail": [...]}`
+게이트웨이는 자체 예외든 요청 검증 실패든 `{"error": "..."}` 하나로 답한다. 위치가
+필요한 검증 실패는 서버가 `body.ids.0: ...` 꼴로 앞에 붙이고 여러 건은 ` / ` 로
+이어 보내므로, SDK 가 다시 조립할 것이 없다.
 
-둘째를 못 읽으면 소비자가 보는 예외 메시지가 날것의 JSON 덩어리가 된다.
+한때는 검증 실패가 FastAPI 기본인 `{"detail": [...]}` 로 나가 SDK 가 그것을
+평탄화했다. 서버가 한 모양으로 정규화하면서(`KiwoomAM/Kiwoom-Handler#71`) 그 코드는
+닿지 않게 되어 걷어냈다 — 닿지 않는 코드를 남겨 두면 다음 사람이 그것을 서버 계약으로
+읽는다. 배포본이 하나뿐이라는 것은 확인했다.
 """
 
 from __future__ import annotations
@@ -33,48 +37,34 @@ def test_error_envelope_is_read(monkeypatch):
     assert exc.value.message == "지원하지 않는 필터 절: ['filter']"
 
 
-def test_validation_detail_is_flattened(monkeypatch):
+def test_여러_건이_이어진_메시지도_그대로_쓴다(monkeypatch):
+    """위치를 붙이고 이어 붙이는 일은 서버가 한다. SDK 는 다시 조립하지 않는다."""
     response = httpx.Response(
         422,
-        json={
-            "detail": [
-                {
-                    "type": "value_error",
-                    "loc": ["body", "ids", 0],
-                    "msg": "Value error, ids[0] — UUID 아님: 'nope'",
-                    "input": "nope",
-                }
-            ]
-        },
+        json={"error": "body.ids.0: UUID 아님: 'nope' / body.limit: 1 이상이어야 함"},
     )
+    client = _client_returning(response, monkeypatch)
+
+    with pytest.raises(VDBHandlerError) as exc:
+        client.post("/v1/collections/c/upsert_points", json={})
+
+    assert exc.value.message == "body.ids.0: UUID 아님: 'nope' / body.limit: 1 이상이어야 함"
+
+
+def test_봉투가_없는_본문은_조립하지_않고_그대로_싣는다(monkeypatch):
+    """되돌리기로 옛 이미지가 잠깐 뜨면 `{"detail": [...]}` 가 올 수 있다.
+
+    그때 메시지는 날것의 JSON 이 되지만 예외 갈래와 상태 코드는 그대로다. 못생겨질
+    뿐 깨지지 않는다 — 그 퇴화를 감수하는 대신 닿지 않는 평탄화 코드를 없앴다.
+    """
+    response = httpx.Response(422, json={"detail": [{"loc": ["body"], "msg": "무엇인가"}]})
     client = _client_returning(response, monkeypatch)
 
     with pytest.raises(VDBHandlerError) as exc:
         client.post("/v1/collections/c/upsert_points", json={})
 
     assert exc.value.status_code == 422
-    assert "UUID 아님" in exc.value.message
-    assert "body.ids.0" in exc.value.message
-    assert '"type"' not in exc.value.message, "날것의 JSON 이 그대로 새면 안 된다"
-
-
-def test_multiple_validation_errors_are_all_reported(monkeypatch):
-    response = httpx.Response(
-        422,
-        json={
-            "detail": [
-                {"loc": ["body", "ids"], "msg": "길이 불일치"},
-                {"loc": ["body", "start_id"], "msg": "Extra inputs are not permitted"},
-            ]
-        },
-    )
-    client = _client_returning(response, monkeypatch)
-
-    with pytest.raises(VDBHandlerError) as exc:
-        client.post("/v1/collections/c/upsert_points", json={})
-
-    assert "길이 불일치" in exc.value.message
-    assert "Extra inputs are not permitted" in exc.value.message
+    assert "무엇인가" in exc.value.message
 
 
 def test_non_json_body_falls_back_to_text(monkeypatch):

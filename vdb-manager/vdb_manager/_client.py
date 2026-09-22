@@ -8,7 +8,14 @@ from typing import Any
 
 import httpx
 
-from vdb_manager.exceptions import VDBConnectionError, VDBHandlerError
+from vdb_manager.exceptions import (
+    VDBConnectionError,
+    VDBHandlerError,
+    VDBUnavailableError,
+)
+
+# 저장소에 닿지 못했다는 뜻. 재시도가 의미 있는 유일한 상태 코드다.
+_UNAVAILABLE = 503
 
 BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")
 
@@ -16,16 +23,19 @@ BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")
 def _error_message(response: httpx.Response) -> str:
     """에러 응답에서 사람이 읽을 메시지를 뽑는다.
 
-    Service 는 두 가지 모양으로 답한다. 자체 예외는 `{"error": "..."}` 로 나가지만,
-    요청 검증 실패(모르는 키·id 형식·길이 불일치)는 FastAPI 기본인
-    `{"detail": [{"loc": [...], "msg": "..."}]}` 로 나간다. 앞의 것만 읽으면 뒤의
-    경우 날것의 JSON 덩어리가 그대로 예외 메시지가 된다.
+    Service 는 자체 예외든 요청 검증 실패든 `{"error": "..."}` 하나로 답한다. 위치가
+    필요한 검증 실패는 서버가 `body.ids.0: ...` 꼴로 앞에 붙여 주고 여러 건은 ` / ` 로
+    이어 보내므로, 여기서 다시 조립할 것이 없다.
+
+    전에는 검증 실패가 FastAPI 기본인 `{"detail": [...]}` 로 나가 SDK 가 그것을
+    평탄화했다. 서버가 한 모양으로 정규화하면서 그 경로는 닿지 않게 됐고, 닿지 않는
+    코드를 남겨 두면 다음 사람이 그것을 서버 계약으로 읽는다.
 
     Args:
         response: 4xx/5xx 응답.
 
     Returns:
-        한 줄로 정리한 메시지. 형식을 알아볼 수 없으면 본문 텍스트 그대로.
+        서버가 준 한 줄. 형식을 알아볼 수 없으면 본문 텍스트 그대로.
     """
     try:
         body = response.json()
@@ -38,29 +48,7 @@ def _error_message(response: httpx.Response) -> str:
     if "error" in body:
         return str(body["error"])
 
-    detail = body.get("detail")
-    if isinstance(detail, list) and detail:
-        return "; ".join(_validation_line(item) for item in detail)
-    if detail is not None:
-        return str(detail)
-
     return response.text
-
-
-def _validation_line(item: Any) -> str:
-    """FastAPI 검증 오류 항목 하나를 한 줄로 만든다.
-
-    Args:
-        item: `{"loc": [...], "msg": "..."}` 형태의 항목.
-
-    Returns:
-        `body.ids: Value error, …` 처럼 위치와 메시지를 붙인 한 줄.
-    """
-    if not isinstance(item, dict):
-        return str(item)
-    location = ".".join(str(x) for x in item.get("loc", []))
-    message = str(item.get("msg", item))
-    return f"{location}: {message}" if location else message
 
 
 class SyncClient:
@@ -81,6 +69,9 @@ class SyncClient:
             raise VDBConnectionError(
                 f"VDB Handler Service 연결 실패: {e}"
             ) from e
+
+        if response.status_code == _UNAVAILABLE:
+            raise VDBUnavailableError(_error_message(response))
 
         if response.status_code >= 400:
             raise VDBHandlerError(

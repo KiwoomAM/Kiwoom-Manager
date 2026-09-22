@@ -28,7 +28,7 @@ vdb_manager - VDB Handler SDK
     reranked = handler.reranker.rerank("질문", documents=[...])
 
     # 상태 확인 / 종료
-    handler.health_check()
+    handler.status()
     handler.close()
 
 환경변수:
@@ -41,7 +41,12 @@ from .sparse import SparseClient, SparseEmbedClient
 from .hybrid import HybridClient
 from .collection import CollectionClient
 from .reranker import RerankerClient
-from .exceptions import VDBError, VDBConnectionError, VDBHandlerError
+from .exceptions import (
+    VDBError,
+    VDBConnectionError,
+    VDBHandlerError,
+    VDBUnavailableError,
+)
 
 __all__ = [
     "VDBManager",
@@ -55,4 +60,5 @@ __all__ = [
     "VDBError",
     "VDBConnectionError",
     "VDBHandlerError",
+    "VDBUnavailableError",
 ]
