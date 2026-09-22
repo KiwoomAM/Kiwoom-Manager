@@ -1,0 +1,30 @@
+# `vdb-handler`가 준 응답을 뜯지 않고 그대로 돌려준다
+
+이 SDK 는 얇은 HTTP 래퍼다. `vdb-handler`가 `{"points": [...], "count": N}` 처럼 봉투에
+싸서 주면 알맹이만 꺼내 주고 싶은 유혹이 있는데, 그러면 **SDK 가 `vdb-handler` 의 구현 세부에
+기대게 된다** — 지금 `count` 가 `len(points)` 인 것은 `vdb-handler`가 그렇게 만들기 때문이지
+계약이 아니다. `vdb-handler`가 그 봉투에 새 정보를 실으면 알맹이만 꺼내는 SDK 가 그것을
+조용히 가린다. 그래서 `get_points` 와 `scroll_points` 는 응답을 그대로 돌려준다.
+
+## 검색 3종은 아직 예외다
+
+`hybrid.search`·`dense.search`·`sparse.search` 와 `reranker.rerank`·
+`list_payload_indexes` 는 여전히 알맹이만 돌려준다. 결정이 달라서가 아니라 **소비자와
+함께 움직여야 하기 때문**이다.
+
+`KiwoomAM/Kiwoom-RAG` 이 검색 반환을 리스트로 쓰는데, 한 파일 안에서 네 자리가
+동시에 깨진다(`len(results)` · `if not results:` · `len(results) > top_k` ·
+`for result in results`). 게다가 그 함수 전체가 `except Exception` 으로 감싸여 있어
+**깨져도 예외가 아니라 "검색 중 오류가 발생했습니다" 문자열로 사용자에게 나간다.**
+테스트가 아니라 런타임에 조용히 나타난다는 뜻이다.
+
+**이 비대칭을 보고 "통일" 하려는 사람이 이 ADR 이 막으려는 대상이다.** 통일은
+`KiwoomAM/Kiwoom-Manager#118` 에서 그 레포와 함께 한다.
+
+## 고려한 대안
+
+- **알맹이만 꺼내 주기** — 기각. 호출자가 한 줄 덜 쓰는 대가로 `vdb-handler`가 무엇을 더
+  주는지 영영 모르게 된다. `next_offset` 이 그 예다. 그것은 `len()` 으로 얻을 수 없어
+  봉투째 흘리고 있었고, 그래서 순회가 가능하다.
+- **봉투에서 알맹이를 꺼내되 새 키가 생기면 그때 바꾸기** — 기각. 새 키가 생긴 것을
+  알아차릴 방법이 없다. SDK 가 이미 가려 놓았기 때문이다.

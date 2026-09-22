@@ -219,6 +219,7 @@ __marimo__/
 certs/
 docs/
 !llm-manager/docs/
+!vdb-manager/docs/
 llm-manager/guide-doc/
 
 # serena MCP
