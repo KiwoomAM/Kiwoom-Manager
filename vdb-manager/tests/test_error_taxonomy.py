@@ -62,6 +62,21 @@ def test_그_예외를_기존_except_가_그대로_잡는다():
         _client(503, {"error": "x"}).get("/v1/admin/status")
 
 
+def test_모델이_준비되지_않은_것도_같은_갈래다():
+    """503 은 "저장소 미도달" 만이 아니다.
+
+    SPLADE·ColBERT 가 로딩 중이거나 **꺼져 있을 때**도 게이트웨이는 503 을 낸다. 꺼진
+    모델은 설정을 바꾸기 전까지 계속 503 이므로, 이 예외를 "재시도하면 되는 오류" 로
+    읽으면 호출자가 영영 끝나지 않는 재시도를 돈다. 이 예외가 말하는 것은 재시도 여부가
+    아니라 "지금 받지 못했다" 는 상태다.
+    """
+    with pytest.raises(VDBUnavailableError) as caught:
+        _client(503, {"error": "모델 'SPLADE (disabled)'이 아직 준비되지 않았습니다"}).post("/v1/embed/sparse")
+
+    assert caught.value.status_code == 503
+    assert "SPLADE" in caught.value.message
+
+
 def test_닿았는데_실패한_것은_전용_예외가_아니다():
     """500 은 재시도해도 같은 답이 온다. 503 과 같은 갈래로 묶으면 구분이 사라진다."""
     with pytest.raises(VDBHandlerError) as caught:

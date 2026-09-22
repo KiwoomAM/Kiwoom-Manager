@@ -14,8 +14,9 @@ from vdb_manager.exceptions import (
     VDBUnavailableError,
 )
 
-# 저장소에 닿지 못했다는 뜻. 상태 코드 중에서는 이것만 재시도가 의미 있다
-# (서비스에 닿지도 못한 경우는 상태 코드가 없고 `VDBConnectionError` 로 간다).
+# "지금 이 요청을 받지 못한다" 는 뜻. 저장소 미도달·모델 미준비·동시성 한계가 여기 섞인다.
+# 재시도가 통하는 경우와 영영 통하지 않는 경우가 함께 있으므로(꺼진 모델은 계속 503),
+# 재시도 여부는 호출자가 판단한다.
 _UNAVAILABLE = 503
 
 BASE_URL = os.environ.get("VDB_HANDLER_URL", "http://192.7.9.45:8500")

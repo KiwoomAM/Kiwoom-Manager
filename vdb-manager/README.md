@@ -185,26 +185,32 @@ VDBError                        # 기본 에러
 
 `VDBUnavailableError`는 `VDBHandlerError`를 상속하므로 기존 `except VDBHandlerError`가 그대로 잡는다. 재시도 여부를 타입으로 갈라 쓰려는 호출자만 따로 잡으면 된다.
 
-| 상태 코드 | 뜻 | 재시도 |
+| 상태 코드 | 뜻 | 무엇이 여기 들어오나 |
 |---|---|---|
-| (연결 실패, `status_code=0`) | 서비스에 닿지 못함 | 의미 있음 |
-| **503** | 서비스는 답했으나 저장소에 닿지 못함 | **의미 있음** |
-| 500 | 서비스가 답했고 그 안에서 실패 | 없음 — 다시 불러도 같다 |
-| 422 | 보낸 요청이 잘못됨 (모르는 키, id 형식, 빈 조건, 길이 불일치) | 없음 — 요청을 고쳐야 한다 |
-| 404 | 대상이 없음 (컬렉션, 슬래시 든 필드의 index 삭제) | 없음 |
+| (연결 실패, `status_code=0`) | 서비스에 닿지도 못함 | 서비스가 안 떠 있거나 네트워크가 끊김 |
+| **503** | 서비스가 **지금 이 요청을 받지 못함** | 저장소 미도달 · SPLADE/ColBERT 로딩 중 · **그 모델이 꺼져 있음** · 동시 처리 한계 초과 |
+| 500 | 서비스가 **받아서 처리하다 실패** | Qdrant 의 5xx · **Gemini 임베딩 오류** · 그 밖의 내부 실패 |
+| 422 | 보낸 요청이 잘못됨 | 모르는 키, id 형식, 빈 조건, 길이 불일치 |
+| 404 | 대상이 없음 | 없는 컬렉션, 슬래시 든 필드의 index 삭제 |
+
+**재시도해도 되는지는 상태 코드가 말해 주지 않는다.** 503 에는 다시 부르면 되는 것(로딩 중·과부하)과 영영 안 되는 것(꺼진 모델)이 섞이고, 500 에도 다시 부르면 되는 것(Gemini 일시 오류)이 섞인다. 무엇이 일시적인지는 부르는 쪽만 안다.
 
 ```python
 from vdb_manager import VDBConnectionError, VDBHandlerError, VDBUnavailableError
 
 try:
     results = handler.hybrid.search("쿼리", collection_name="kw_gp")
-except (VDBConnectionError, VDBUnavailableError):
-    print("지금은 닿지 않는다 — 잠시 뒤 다시")
+except VDBConnectionError:
+    print("서비스에 닿지 못했다")
+except VDBUnavailableError as e:
+    # 503 — 지금은 받지 못하는 상태. 로딩 중이나 과부하면 잠시 뒤 되지만,
+    # 모델이 꺼져 있으면 설정을 바꾸기 전까지 계속 이 상태다. 메시지를 보고 판단한다.
+    print(f"지금은 받지 못한다: {e}")
 except VDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e}")
 ```
 
-**재시도는 SDK 가 하지 않는다.** 언제 몇 번 다시 부를지는 호출자의 사정이고, SDK 는 갈래를 알려 주는 데까지만 한다.
+**재시도는 SDK 가 하지 않는다.** 무엇이 일시적인지는 부르는 쪽의 도메인이고, SDK 는 상태를 갈라 주는 데까지만 한다.
 
 ## 사용 패턴
 
