@@ -7,9 +7,15 @@ import httpx
 import pandas as pd
 
 from winus_manager.exceptions import (
-    HandlerConnectionError,
-    HandlerError,
     QueryExecutionException,
+)
+from winus_manager._wire import (
+    dml_body,
+    dml_many_body,
+    ExecutionOptions,
+    error_from_response,
+    error_from_transport,
+    query_body,
 )
 from winus_manager.models import (
     DataFrameData,
@@ -32,46 +38,38 @@ class SyncClient:
     def close(self) -> None:
         self._http.close()
 
-    def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
-        """공통 HTTP 요청 처리."""
+    def _request(
+        self, method: str, path: str, *,
+        options: ExecutionOptions = ExecutionOptions(), **kwargs: object,
+    ) -> httpx.Response:
+        """공통 HTTP 요청 처리. 전송 실패는 조회가 돌았을 수 있는지로 구분해 올린다."""
         try:
             response = self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
-        except httpx.ConnectError as e:
-            raise HandlerConnectionError(f"[위너스 핸들러] 연결 실패: {e}") from e
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise error_from_transport(e, options) from e
 
         if response.status_code >= 400:
-            try:
-                body = response.json()
-                error_msg = body.get("error", response.text)
-                detail = body.get("detail")
-            except Exception:
-                error_msg = response.text
-                detail = None
-            raise HandlerError(f"[위너스 핸들러] {error_msg}", status_code=response.status_code, detail=detail)
+            raise error_from_response(response)
 
         return response
 
-    def _query_body(self, query: str, params: dict[str, Any] | None) -> dict:
-        """SELECT 요청 바디."""
-        body: dict[str, Any] = {"query": query}
-        if params is not None:
-            body["params"] = params
-        return body
-
-    def _dml_body(self, sql: str, params: dict[str, Any] | None) -> dict:
-        """DML 요청 바디."""
-        body: dict[str, Any] = {"sql": sql}
-        if params is not None:
-            body["params"] = params
-        return body
+    def _options(
+        self, client_query_id: str | None, query_timeout_ms: int | None,
+    ) -> ExecutionOptions:
+        """조회마다 붙이는 실행 옵션. 마감이 이 클라이언트의 소비자 타임아웃 안에 드는지 확인한다."""
+        options = ExecutionOptions(client_query_id=client_query_id, query_timeout_ms=query_timeout_ms)
+        options.check_within(self._http.timeout.read)
+        return options
 
     # ── SELECT ──────────────────────────────────────────
 
     def query_to_dataframe(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> pd.DataFrame:
         """SELECT → pandas DataFrame."""
-        resp = self._request("POST", "/v1/query/dataframe", json=self._query_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/query/dataframe", json=query_body(query, params, options), options=options)
         data = DataFrameData.model_validate(resp.json())
         df = pd.DataFrame(data.rows, columns=data.columns)
         # dtype 복원
@@ -88,62 +86,76 @@ class SyncClient:
         return df
 
     def fetch_all(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> list[tuple]:
         """SELECT → list of tuples."""
-        resp = self._request("POST", "/v1/query/all", json=self._query_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/query/all", json=query_body(query, params, options), options=options)
         data = RowsData.model_validate(resp.json())
         return [tuple(row) for row in data.rows]
 
     def fetch_all_dict(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> list[dict]:
         """SELECT → list of dicts."""
-        resp = self._request("POST", "/v1/query/all-dict", json=self._query_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/query/all-dict", json=query_body(query, params, options), options=options)
         data = DictRowsData.model_validate(resp.json())
         return data.rows
 
     def fetch_one(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> tuple | None:
         """SELECT → 첫 번째 row 또는 None."""
-        resp = self._request("POST", "/v1/query/one", json=self._query_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/query/one", json=query_body(query, params, options), options=options)
         data = OneRowData.model_validate(resp.json())
         return tuple(data.row) if data.row is not None else None
 
     # ── DML ────────────────────────────────────────────
 
     def execute_dml(
-        self, sql: str, params: dict[str, Any] | None = None,
+        self, sql: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> int:
         """일반 DML 실행."""
-        resp = self._request("POST", "/v1/dml/execute", json=self._dml_body(sql, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/dml/execute", json=dml_body(sql, params, options), options=options)
         return DmlResult.model_validate(resp.json()).rowcount
 
     def execute_many_dml(
-        self, sql: str, params_list: list[dict[str, Any]],
+        self, sql: str, params_list: list[dict[str, Any]], *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> int:
         """배치 DML 실행."""
+        options = self._options(client_query_id, query_timeout_ms)
         if not params_list:
             return 0
         resp = self._request(
             "POST", "/v1/dml/execute-many",
-            json={"sql": sql, "params_list": params_list},
+            json=dml_many_body(sql, params_list, options), options=options,
         )
         return DmlResult.model_validate(resp.json()).rowcount
 
     def execute_insert(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> int:
         """INSERT 전용."""
-        resp = self._request("POST", "/v1/dml/insert", json=self._dml_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/dml/insert", json=dml_body(query, params, options), options=options)
         return DmlResult.model_validate(resp.json()).rowcount
 
     def execute_update(
-        self, query: str, params: dict[str, Any] | None = None,
+        self, query: str, params: dict[str, Any] | None = None, *,
+        client_query_id: str | None = None, query_timeout_ms: int | None = None,
     ) -> int:
         """UPDATE 전용."""
-        resp = self._request("POST", "/v1/dml/update", json=self._dml_body(query, params))
+        options = self._options(client_query_id, query_timeout_ms)
+        resp = self._request("POST", "/v1/dml/update", json=dml_body(query, params, options), options=options)
         return DmlResult.model_validate(resp.json()).rowcount
 
     # ── Health ─────────────────────────────────────────

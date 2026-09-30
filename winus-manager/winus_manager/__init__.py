@@ -8,6 +8,9 @@
 Handler 접속 URL은 운영 서버(http://192.7.9.45:8200)로 고정되어 있으며,
 환경변수나 configure(base_url=...)로 변경할 수 없습니다. timeout 등 기타
 설정은 configure()로 조정 가능합니다.
+
+조회마다 이름(client_query_id)과 마감(query_timeout_ms)을 keyword 로 붙일 수 있습니다.
+뜻은 CONTEXT.md, 쓰는 법은 README.md 를 따릅니다.
 """
 
 from typing import Any
@@ -18,9 +21,11 @@ from winus_manager._config import HANDLER_BASE_URL
 from winus_manager._sync_client import SyncClient
 from winus_manager.exceptions import (
     ConnectionPoolException,
+    ConsumerTimeoutError,
     DatabaseException,
     HandlerConnectionError,
     HandlerError,
+    QueryCancelledError,
     QueryExecutionException,
     SDKError,
 )
@@ -48,7 +53,9 @@ __all__ = [
     # Exceptions (SDK)
     "SDKError",
     "HandlerConnectionError",
+    "ConsumerTimeoutError",
     "HandlerError",
+    "QueryCancelledError",
 ]
 
 _instance: SyncClient | None = None
@@ -87,62 +94,94 @@ def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
 
 
 def query_to_dataframe(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> pd.DataFrame:
     """SELECT → pandas DataFrame."""
-    return _get_client().query_to_dataframe(query, params)
+    return _get_client().query_to_dataframe(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def fetch_all(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> list[tuple]:
     """SELECT → list of tuples."""
-    return _get_client().fetch_all(query, params)
+    return _get_client().fetch_all(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def fetch_all_dict(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> list[dict]:
     """SELECT → list of dicts."""
-    return _get_client().fetch_all_dict(query, params)
+    return _get_client().fetch_all_dict(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def fetch_one(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> tuple | None:
     """SELECT → 첫 번째 row 또는 None."""
-    return _get_client().fetch_one(query, params)
+    return _get_client().fetch_one(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 # ── DML ────────────────────────────────────────────
 
 
 def execute_dml(
-    sql: str, params: dict[str, Any] | None = None,
+    sql: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> int:
     """일반 DML 실행."""
-    return _get_client().execute_dml(sql, params)
+    return _get_client().execute_dml(
+        sql, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def execute_many_dml(
-    sql: str, params_list: list[dict[str, Any]],
+    sql: str, params_list: list[dict[str, Any]], *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> int:
     """배치 DML 실행."""
-    return _get_client().execute_many_dml(sql, params_list)
+    return _get_client().execute_many_dml(
+        sql, params_list,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def execute_insert(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> int:
     """INSERT 전용."""
-    return _get_client().execute_insert(query, params)
+    return _get_client().execute_insert(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 def execute_update(
-    query: str, params: dict[str, Any] | None = None,
+    query: str, params: dict[str, Any] | None = None, *,
+    client_query_id: str | None = None, query_timeout_ms: int | None = None,
 ) -> int:
     """UPDATE 전용."""
-    return _get_client().execute_update(query, params)
+    return _get_client().execute_update(
+        query, params,
+        client_query_id=client_query_id, query_timeout_ms=query_timeout_ms,
+    )
 
 
 # ── Health ─────────────────────────────────────────
