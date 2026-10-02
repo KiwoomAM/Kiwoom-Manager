@@ -100,7 +100,7 @@ class HandlerError(SDKError):
 
 
 class QueryCancelledError(HandlerError):
-    """운영자나 마감이 원장에서 끊은 조회 (`409`).
+    """운영자나 마감, 또는 원본(DBA 세션 종료 등)이 원장에서 끊은 조회 (`409`).
 
     그대로 재시도하지 않는다. 쿼리가 틀린 것도 서버가 잠시 바쁜 것도 아니므로,
     재시도하면 운영자가 끊은 조회가 되살아난다. 사람이 읽을 사유는 `detail` 에

@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 try:
     rows = winus_manager.fetch_all_dict(sql, params, client_query_id="pf-nav-batch-20260930")
 except QueryCancelledError as e:
-    # 운영자나 마감이 원장에서 끊었다. 그대로 재시도하지 않는다.
+    # 운영자나 마감, 또는 원본(DBA 세션 종료 등)이 원장에서 끊었다. 그대로 재시도하지 않는다.
     logger.warning("조회 취소됨 [%s]: %s", e.request_id, e.detail)
 except ConsumerTimeoutError as e:
     # 응답을 기다리다 그만뒀다. 조회는 원장에서 아직 돌 수 있다.
@@ -87,6 +87,7 @@ except HandlerConnectionError:
     ...  # 핸들러에 닿지 못했다. 조회는 돌지 않았으므로 다시 보내도 된다.
 except HandlerError as e:
     ...  # e.status_code 로 구분한다. 503 은 잠시 뒤 다시 와도 된다.
+         # 500 은 DML 이 커밋 도중 끊겨 반영 여부를 모르는 경우도 포함하므로, 다시 쓰기 전에 반영됐는지 확인한다.
 ```
 
 - `QueryCancelledError` 는 `HandlerError` 의 하위라 기존 `except HandlerError` 에도 잡힌다.
@@ -94,6 +95,7 @@ except HandlerError as e:
 - `ConsumerTimeoutError` 뒤에 재시도하면 원장에 같은 조회가 둘 돌 수 있다. 재시도한다면 **같은
   `client_query_id`** 로 보내 운영자가 이름 하나로 둘 다 끊을 수 있게 한다. 기존의
   `except httpx.TimeoutException` 에도 잡히지만 임시 호환이며 다음 major 버전에서 뗀다.
+  DML 에서 이 예외가 나면 쓰기가 반영됐는지 알 수 없으므로, 다시 쓰기 전에 반영 여부를 확인한다.
 - 연결 시간 초과(`httpx.ConnectTimeout`·`PoolTimeout`)는 요청이 나가지 않은 것이라
   `HandlerConnectionError` 로 올라온다.
 - `e.request_id` 는 핸들러가 요청마다 발급한 번호다. 핸들러 로그와 관리 목록에서 그 요청을 찾는다.
