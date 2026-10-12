@@ -80,14 +80,19 @@ def close() -> None:
         _instance = None
 
 
-def configure(base_url: str | None = None, timeout: float = 30.0) -> None:
+def configure(
+    base_url: str | None = None, timeout: float = 30.0, auth_key: str | None = None,
+) -> None:
     """SDK 클라이언트를 수동 설정.
 
     base_url 인자는 운영 정책상 무시되며 핸들러 URL은 항상 192.7.9.45:8200으로 고정됩니다.
-    timeout만 적용됩니다.
+    timeout 과 auth_key 가 적용됩니다.
+
+    auth_key 는 핸들러의 접근 등급을 정하는 키입니다(레포 루트 CONTEXT.md 「auth_key」).
+    비워 두면 admin 키를 싣습니다. 기본값으로 두고, guest 동작을 시험할 때만 바꿉니다.
     """
     global _instance
-    _instance = SyncClient(base_url=_resolve_base_url(), timeout=timeout)
+    _instance = SyncClient(base_url=_resolve_base_url(), timeout=timeout, auth_key=auth_key)
 
 
 # ── SELECT ──────────────────────────────────────────
