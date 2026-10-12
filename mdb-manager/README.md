@@ -174,6 +174,13 @@ except MDBHandlerError as e:
     print(f"HTTP {e.status_code}: {e.message}")
 ```
 
+### 접근 등급
+
+SDK 는 요청마다 핸들러의 접근 등급을 정하는 키를 함께 보낸다(Kiwoom-Handler `docs/adr/0001`). 소비자가
+설정할 것은 없다 — SDK 를 거친 호출은 지금처럼 모든 기능을 쓴다. 핸들러가 키를 거절하면 `MDBHandlerError` 의
+`status_code` 가 `401`(키를 알아볼 수 없음)이나 `403`(그 등급에서 쓸 수 없는 경로)이다. 재시도하지 말고
+SDK 버전을 확인한다.
+
 ## SERVICE_NAME과 caller 식별
 
 `SERVICE_NAME` 환경변수는 `X-Caller-Service` 헤더로 부착되어 서버측 write ACL과 envelope

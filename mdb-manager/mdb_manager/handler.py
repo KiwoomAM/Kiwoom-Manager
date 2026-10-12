@@ -118,7 +118,18 @@ class MongoDBManager:
         uri: str = None,
         database: str = None,
         collection: str = None,
+        auth_key: str | None = None,
     ):
+        """
+        Args:
+            uri: 무시된다 — Service 측 설정을 쓴다.
+            database: 기본 database. 없으면 kw_ai.
+            collection: 기본 collection. 없으면 agent_data.
+            auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 비워 두면
+                admin 키를 싣는다. 기본값으로 두고, guest 동작을 시험할 때만 바꾼다.
+
+        Singleton 이라 처음 생성할 때의 인자만 쓰이고, 이후 생성자 인자는 무시된다(auth_key 도 같다).
+        """
         if self._initialized:
             return
 
@@ -132,7 +143,7 @@ class MongoDBManager:
         self.database = database or "kw_ai"
         self.collection_name = collection or "agent_data"
         try:
-            self._client = SyncClient()
+            self._client = SyncClient(auth_key=auth_key)
         except Exception:
             # 생성 실패(예: SERVICE_NAME 미설정) 시 Singleton 캐시를 비워
             # 다음 생성 시도가 정상 재초기화되도록 한다 (poisoned singleton 방지).
