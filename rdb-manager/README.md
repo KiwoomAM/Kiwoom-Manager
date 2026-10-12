@@ -136,6 +136,19 @@ affected = execute_many_dml(
 )
 ```
 
+### database 고르기
+
+조회·DML 함수는 keyword 인자 `database` 로 접속할 database 를 고른다. 고르지 않으면 핸들러의 기본
+database(`kw_ai`)에 붙는다. 고를 수 있는 이름은 핸들러가 정하며(지금 `kw_ai`·`kw_sandbox`), 그 밖의
+이름은 핸들러가 `422` 로 거절한다.
+
+```python
+from rdb_manager import execute_dml, fetch_all_dict
+
+execute_dml("CREATE TABLE my_schema.scratch (id int)", database="kw_sandbox")
+rows = fetch_all_dict("SELECT * FROM my_schema.scratch", database="kw_sandbox")
+```
+
 ---
 
 ## Async API (`rdb_manager.aio`)
@@ -171,14 +184,14 @@ sync(`from rdb_manager import ...`)와 async(`from rdb_manager.aio import ...`)�
 
 | 함수 | 반환값 | 설명 |
 |------|--------|------|
-| `query_to_dataframe(sql, params)` | `DataFrame` | SELECT 결과를 pandas DataFrame 으로 반환 |
-| `fetch_all(sql, params)` | `list[tuple]` | 전체 행을 튜플 리스트로 반환 |
-| `fetch_all_dict(sql, params)` | `list[dict]` | 전체 행을 딕셔너리 리스트로 반환 |
-| `fetch_one(sql, params)` | `tuple` 또는 `None` | 첫 번째 행만 반환 |
-| `execute_dml(sql, params)` | `int` | DML 실행, 자동 commit, 영향받은 행 수 반환 |
-| `execute_many_dml(sql, params_list)` | `int` | 배치 DML 실행 |
-| `execute_insert(sql, params)` | `int` | `execute_dml` 별칭 (의미상 INSERT 용도) |
-| `execute_update(sql, params)` | `int` | `execute_dml` 별칭 (의미상 UPDATE 용도) |
+| `query_to_dataframe(sql, params, *, database=None)` | `DataFrame` | SELECT 결과를 pandas DataFrame 으로 반환 |
+| `fetch_all(sql, params, *, database=None)` | `list[tuple]` | 전체 행을 튜플 리스트로 반환 |
+| `fetch_all_dict(sql, params, *, database=None)` | `list[dict]` | 전체 행을 딕셔너리 리스트로 반환 |
+| `fetch_one(sql, params, *, database=None)` | `tuple` 또는 `None` | 첫 번째 행만 반환 |
+| `execute_dml(sql, params, *, database=None)` | `int` | DML 실행, 자동 commit, 영향받은 행 수 반환 |
+| `execute_many_dml(sql, params_list, *, database=None)` | `int` | 배치 DML 실행 |
+| `execute_insert(sql, params, *, database=None)` | `int` | `execute_dml` 별칭 (의미상 INSERT 용도) |
+| `execute_update(sql, params, *, database=None)` | `int` | `execute_dml` 별칭 (의미상 UPDATE 용도) |
 | `check_database_connection()` | `bool` | 연결 테스트 |
 | `configure(base_url=None, timeout=30.0)` | `None` | timeout 만 적용 (base_url 무시, URL 고정) |
 | `close()` | `None` | 클라이언트/풀 정리 (async 는 `await close()`) |
@@ -216,6 +229,13 @@ SDKError                      # SDK 기본 에러
 
 > 레거시 예외(`DatabaseException` / `ConnectionPoolException` / `QueryExecutionException`)는
 > import 호환을 위해 export 만 유지되며, 현재 클라이언트 경로에서는 raise 되지 않습니다.
+
+### 접근 등급
+
+SDK 는 요청마다 핸들러의 접근 등급을 정하는 키를 함께 보낸다(Kiwoom-Handler `docs/adr/0001`). 소비자가
+설정할 것은 없다 — SDK 를 거친 호출은 지금처럼 모든 기능을 쓴다. 핸들러가 키를 거절하면 `HandlerError` 의
+`status_code` 가 `401`(키를 알아볼 수 없음)이나 `403`(그 등급에서 쓸 수 없는 경로)이다. 재시도하지 말고
+SDK 버전을 확인한다. `check_database_connection()` 은 이때도 `False` 를 돌려주되 원인을 ERROR 로그로 남긴다.
 
 ---
 
