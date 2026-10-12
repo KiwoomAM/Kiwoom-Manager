@@ -75,7 +75,8 @@ def configure(
     timeout 과 auth_key 가 적용됩니다.
 
     auth_key 는 핸들러의 접근 등급을 정하는 키입니다(레포 루트 CONTEXT.md 「auth_key」).
-    비워 두면 admin 키를 싣습니다. 기본값으로 두고, guest 동작을 시험할 때만 바꿉니다.
+    주지 않으면 admin 키를 싣습니다(빈 문자열은 그대로 실려 401 로 거절됩니다). 기본값으로 두고,
+    guest 동작을 시험할 때만 바꿉니다.
 
     주의: 동기 함수이므로 이전 인스턴스를 await close()할 수 없다. 이미
     인스턴스가 생성된 뒤 재설정하려면 먼저 `await close()`를 호출해 기존

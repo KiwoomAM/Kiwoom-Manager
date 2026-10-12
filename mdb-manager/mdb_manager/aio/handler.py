@@ -115,8 +115,9 @@ class AsyncMongoDBManager:
             collection: 기본 collection. 없으면 agent_data.
             base_url: 핸들러 URL. 없으면 MDB_HANDLER_URL 또는 운영 서버.
             timeout: 요청 타임아웃(초). 없으면 30.
-            auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 비워 두면
-                admin 키를 싣는다. 기본값으로 두고, guest 동작을 시험할 때만 바꾼다.
+            auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 주지 않으면
+                admin 키를 싣는다(빈 문자열은 그대로 실려 401 로 거절된다). 기본값으로 두고, guest 동작을
+                시험할 때만 바꾼다.
         """
         self.database = database or "kw_ai"
         self.collection_name = collection or "agent_data"

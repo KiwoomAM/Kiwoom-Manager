@@ -142,10 +142,13 @@ affected = execute_many_dml(
 database(`kw_ai`)에 붙는다. 고를 수 있는 이름은 핸들러가 정하며(지금 `kw_ai`·`kw_sandbox`), 그 밖의
 이름은 핸들러가 `422` 로 거절한다.
 
-```python
-from rdb_manager import execute_dml, fetch_all_dict
+> **주의 — Kiwoom-Handler#92 배포 전까지**: 지금 배포된 rdb-handler 는 `database` 필드를 모른 채 버린다.
+> 그래서 `database="kw_sandbox"` 를 주어도 SQL 이 `kw_ai` 에서 실행되고, 목록 밖 이름도 `422` 없이 `kw_ai` 에서
+> 실행된다. 배포가 끝나면 이 안내를 지운다.
 
-execute_dml("CREATE TABLE my_schema.scratch (id int)", database="kw_sandbox")
+```python
+from rdb_manager import fetch_all_dict
+
 rows = fetch_all_dict("SELECT * FROM my_schema.scratch", database="kw_sandbox")
 ```
 

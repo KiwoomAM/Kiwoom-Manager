@@ -129,3 +129,35 @@ def test_async_resolve_base_url_is_constant(monkeypatch):
     import winus_manager.aio as aio
     importlib.reload(aio)
     assert aio._resolve_base_url() == LOCKED_URL
+
+
+# ── configure 재호출 — auth_key 로 다시 부를 일이 생겨 이전 클라이언트를 정리한다 ──
+
+
+def test_sync_configure_closes_previous_client(monkeypatch):
+    first = _get_sync_client(None, monkeypatch)
+    assert first._http.is_closed is False
+
+    import winus_manager
+
+    winus_manager.configure(timeout=5.0)
+    # 이전 클라이언트의 httpx 풀이 닫혀야 한다 (누수 방지)
+    assert first._http.is_closed is True
+    assert winus_manager._get_client() is not first
+
+
+def test_async_configure_warns_when_instance_alive(monkeypatch, caplog):
+    monkeypatch.delenv("WINUS_HANDLER_URL", raising=False)
+    from winus_manager import aio
+
+    importlib.reload(aio)
+
+    # 살아있는 인스턴스가 없으면 경고 없음
+    with caplog.at_level("WARNING", logger="winus_manager.aio"):
+        aio.configure(timeout=5.0)
+    assert not caplog.records
+
+    # 살아있는 인스턴스를 두고 재호출하면 풀 누수 경고 — 동기 함수라 이전 AsyncClient 를 await 로 닫을 수 없다
+    with caplog.at_level("WARNING", logger="winus_manager.aio"):
+        aio.configure(timeout=6.0)
+    assert any("await close()" in r.message for r in caplog.records)

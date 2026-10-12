@@ -23,8 +23,7 @@ class AsyncClient:
     """RDB Handler 서비스와 통신하는 비동기 클라이언트."""
 
     def __init__(self, base_url: str, timeout: float = 30.0, auth_key: str | None = None) -> None:
-        self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout)
-        self._access_headers = access_headers(auth_key)
+        self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout, headers=access_headers(auth_key))
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -32,7 +31,7 @@ class AsyncClient:
     async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
         """공통 HTTP 요청 처리."""
         try:
-            response = await self._http.request(method, path, headers=self._access_headers, **kwargs)  # type: ignore[arg-type]
+            response = await self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
         except httpx.TimeoutException as e:
             raise HandlerConnectionError(f"[RDB 핸들러] 요청 시간 초과: {e}") from e
         except httpx.TransportError as e:  # ConnectError 포함 그 외 전송 계층 오류

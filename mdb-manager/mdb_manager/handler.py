@@ -128,8 +128,9 @@ class MongoDBManager:
             uri: 무시된다 — Service 측 설정을 쓴다.
             database: 기본 database. 없으면 kw_ai.
             collection: 기본 collection. 없으면 agent_data.
-            auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 비워 두면
-                admin 키를 싣는다. 기본값으로 두고, guest 동작을 시험할 때만 바꾼다.
+            auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 주지 않으면
+                admin 키를 싣는다(빈 문자열은 그대로 실려 401 로 거절된다). 기본값으로 두고, guest 동작을
+                시험할 때만 바꾼다.
         """
         if self._initialized:
             return

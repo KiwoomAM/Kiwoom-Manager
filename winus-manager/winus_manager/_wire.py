@@ -113,18 +113,19 @@ def access_headers(auth_key: str | None) -> dict[str, str]:
     """요청마다 싣는 접근 키 헤더. 뜻은 레포 루트 CONTEXT.md 「auth_key」를 따른다.
 
     Args:
-        auth_key: 소비자가 `configure(auth_key=)` 로 고른 키. 비어 있으면 admin 키를 싣는다.
+        auth_key: 소비자가 `configure(auth_key=)` 로 고른 키. 주지 않으면(None) admin 키를 싣는다.
+            빈 문자열도 그대로 실어 핸들러가 401 로 거절한다 — 비어 있는 키가 조용히 admin 이 되지 않게.
 
     Returns:
         `Authorization: Bearer <키>` 헤더.
     """
-    return {"Authorization": f"Bearer {auth_key or _ADMIN_KEY}"}
+    return {"Authorization": f"Bearer {_ADMIN_KEY if auth_key is None else auth_key}"}
 
 
-def log_if_access_rejected(error: Exception) -> None:
-    """연결 점검이 삼킨 실패가 접근 거절이면 ERROR 로 남긴다.
+def log_check_failure(error: Exception) -> None:
+    """연결 점검이 False 로 삼키는 실패를 남긴다.
 
-    점검은 실패를 False 로만 돌려주므로, 키가 어긋난 것이 DB 가 끊긴 것으로 읽히지 않게 원인을 남긴다.
+    접근 거절은 키가 어긋난 것이 DB 가 끊긴 것으로 읽히지 않게 ERROR 로 따로 남긴다.
 
     Args:
         error: 연결 점검 중에 난 예외.
@@ -135,6 +136,8 @@ def log_if_access_rejected(error: Exception) -> None:
             error.status_code,
             error,
         )
+    else:
+        logger.warning("DB 연결 확인 실패: %s", error)
 
 
 def error_from_response(response: httpx.Response) -> HandlerError:

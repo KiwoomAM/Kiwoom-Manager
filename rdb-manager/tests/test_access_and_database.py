@@ -141,12 +141,14 @@ def test_sends_admin_key_when_not_configured(handler, call, name, _path, args, _
 
 @pytest.mark.parametrize("surface", [rdb_manager, rdb_aio], ids=["sync", "aio"])
 @pytest.mark.parametrize(
-    ("auth_key", "sent"), [("guest", "Bearer guest"), ("", _ADMIN), (None, _ADMIN)]
+    ("auth_key", "sent"), [("guest", "Bearer guest"), ("", "Bearer "), (None, _ADMIN)]
 )
-def test_configure_sends_chosen_key_and_admin_when_empty(
+def test_configure_sends_chosen_key_as_is_and_admin_when_not_given(
     handler, surface, auth_key, sent
 ):
-    """configure 로 고른 키를 싣고, 비우면 admin 이다."""
+    """configure 로 고른 키를 그대로 싣고, 주지 않으면 admin 이다.
+
+    빈 문자열도 그대로 실어 핸들러가 401 로 거절한다 — 비어 있는 키가 조용히 admin 이 되지 않게."""
     surface.configure(auth_key=auth_key)
 
     call = _sync if surface is rdb_manager else _async

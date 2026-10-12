@@ -11,7 +11,7 @@ from winus_manager.exceptions import (
 )
 from winus_manager._wire import (
     access_headers,
-    log_if_access_rejected,
+    log_check_failure,
     dml_body,
     dml_many_body,
     ExecutionOptions,
@@ -35,8 +35,7 @@ class SyncClient:
     """WINUS Handler 서비스와 통신하는 동기 클라이언트."""
 
     def __init__(self, base_url: str, timeout: float = 30.0, auth_key: str | None = None) -> None:
-        self._http = httpx.Client(base_url=base_url, timeout=timeout)
-        self._access_headers = access_headers(auth_key)
+        self._http = httpx.Client(base_url=base_url, timeout=timeout, headers=access_headers(auth_key))
 
     def close(self) -> None:
         self._http.close()
@@ -47,7 +46,7 @@ class SyncClient:
     ) -> httpx.Response:
         """공통 HTTP 요청 처리. 전송 실패는 조회가 돌았을 수 있는지로 구분해 올린다."""
         try:
-            response = self._http.request(method, path, headers=self._access_headers, **kwargs)  # type: ignore[arg-type]
+            response = self._http.request(method, path, **kwargs)  # type: ignore[arg-type]
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             raise error_from_transport(e, options) from e
 
@@ -169,5 +168,5 @@ class SyncClient:
             resp = self._request("GET", "/v1/check")
             return resp.json().get("connected", False)
         except Exception as e:
-            log_if_access_rejected(e)
+            log_check_failure(e)
             return False

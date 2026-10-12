@@ -2,7 +2,7 @@
 
 말의 뜻은 레포 루트 CONTEXT.md 「auth_key」를 따른다. SDK 를 거친 호출은 모두 admin 이어야
 하므로, 아무것도 설정하지 않은 소비자도 admin 키를 싣는다. 네트워크 경계만 가짜로 두고 공개
-함수를 그대로 부른다 — 테스트 장치는 test_execution_options 의 것을 함께 쓴다(conftest.py).
+함수를 그대로 부른다 — 테스트 장치는 tests/_fakes.py 와 conftest.py 의 것을 함께 쓴다.
 """
 
 import logging
@@ -11,7 +11,7 @@ import pytest
 
 import winus_manager
 import winus_manager.aio as winus_aio
-from tests.test_execution_options import _CALL_IDS, _CALLS, _SURFACES, _async, _sync
+from tests._fakes import _CALL_IDS, _CALLS, _SURFACES, _async, _sync
 from winus_manager import HandlerError
 from winus_manager._config import _ADMIN_KEY
 
@@ -28,9 +28,9 @@ def test_설정하지_않으면_admin_키를_싣는다(handler, call, name, _pat
 
 @pytest.mark.parametrize("surface", [winus_manager, winus_aio], ids=["sync", "aio"])
 @pytest.mark.parametrize(
-    ("auth_key", "sent"), [("guest", "Bearer guest"), ("", _ADMIN), (None, _ADMIN)]
+    ("auth_key", "sent"), [("guest", "Bearer guest"), ("", "Bearer "), (None, _ADMIN)]
 )
-def test_configure_로_고른_키를_싣고_비우면_admin_이다(
+def test_configure_로_고른_키를_그대로_싣고_주지_않으면_admin_이다(
     handler, surface, auth_key, sent
 ):
     surface.configure(auth_key=auth_key)
@@ -78,3 +78,17 @@ def test_연결_점검은_접근_거절에_False_를_돌려주고_원인을_ERRO
 
     assert str(status) in caplog.text
     assert message in caplog.text
+
+
+@_SURFACES
+def test_연결_점검은_다른_실패도_False_와_함께_WARNING_으로_남긴다(
+    handler, call, caplog
+):
+    """rdb 와 같게, 핸들러 오류나 연결 실패도 원인을 남긴다 — 로그 없이 False 만 돌려주지 않는다."""
+    handler.fail_with(500, {"error": "원장 응답 없음"})
+
+    with caplog.at_level(logging.WARNING, logger="winus_manager"):
+        assert call("check_database_connection") is False
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("원장 응답 없음" in r.getMessage() for r in warnings)

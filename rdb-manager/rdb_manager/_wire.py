@@ -21,12 +21,13 @@ def access_headers(auth_key: str | None) -> dict[str, str]:
     """요청마다 싣는 접근 키 헤더.
 
     Args:
-        auth_key: 소비자가 `configure(auth_key=)` 로 고른 키. 비어 있으면 admin 키를 싣는다.
+        auth_key: 소비자가 `configure(auth_key=)` 로 고른 키. 주지 않으면(None) admin 키를 싣는다.
+            빈 문자열도 그대로 실어 핸들러가 401 로 거절한다 — 비어 있는 키가 조용히 admin 이 되지 않게.
 
     Returns:
         `Authorization: Bearer <키>` 헤더.
     """
-    return {"Authorization": f"Bearer {auth_key or _ADMIN_KEY}"}
+    return {"Authorization": f"Bearer {_ADMIN_KEY if auth_key is None else auth_key}"}
 
 
 def log_check_failure(error: Exception) -> None:

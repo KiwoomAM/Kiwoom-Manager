@@ -12,12 +12,15 @@ Handler 접속 URL은 운영 서버(http://192.7.9.45:8200)로 고정되어 있�
 뜻은 CONTEXT.md, 쓰는 법은 README.md 를 따릅니다.
 """
 
+import logging
 from typing import Any
 
 import pandas as pd
 
 from winus_manager._client import AsyncClient
 from winus_manager._config import HANDLER_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "configure",
@@ -64,9 +67,19 @@ def configure(
     timeout 과 auth_key 가 적용됩니다.
 
     auth_key 는 핸들러의 접근 등급을 정하는 키입니다(레포 루트 CONTEXT.md 「auth_key」).
-    비워 두면 admin 키를 싣습니다. 기본값으로 두고, guest 동작을 시험할 때만 바꿉니다.
+    주지 않으면 admin 키를 싣습니다(빈 문자열은 그대로 실려 401 로 거절됩니다). 기본값으로 두고,
+    guest 동작을 시험할 때만 바꿉니다.
+
+    동기 함수라 이전 인스턴스를 await close() 할 수 없습니다. 이미 인스턴스가 있을 때 재설정하려면
+    먼저 `await close()` 를 호출하세요 — 살아 있는 인스턴스를 두고 재호출하면 이전 AsyncClient 풀이
+    닫히지 못해 누수되므로 경고를 남깁니다.
     """
     global _instance
+    if _instance is not None:
+        logger.warning(
+            "winus_manager.aio.configure() 재호출: 동기 함수라 이전 AsyncClient 풀을 "
+            "닫을 수 없어 누수됨 — 재설정 전에 `await close()` 를 호출할 것"
+        )
     _instance = AsyncClient(base_url=_resolve_base_url(), timeout=timeout, auth_key=auth_key)
 
 

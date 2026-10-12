@@ -75,17 +75,17 @@ def test_async_manager_sends_admin_key_when_not_configured(handler):
     assert handler.requests[-1].headers["X-Caller-Service"] == "file-manager"
 
 
-@pytest.mark.parametrize(("auth_key", "sent"), [("guest", "Bearer guest"), ("", _ADMIN), (None, _ADMIN)])
-def test_sync_manager_sends_chosen_key_and_admin_when_empty(handler, auth_key, sent):
-    """생성자로 고른 키를 싣고, 비우면 admin 이다."""
+@pytest.mark.parametrize(("auth_key", "sent"), [("guest", "Bearer guest"), ("", "Bearer "), (None, _ADMIN)])
+def test_sync_manager_sends_chosen_key_as_is_and_admin_when_not_given(handler, auth_key, sent):
+    """생성자로 고른 키를 그대로 싣고, 주지 않으면 admin 이다 — 빈 문자열은 그대로 실려 401 로 드러난다."""
     MongoDBManager(auth_key=auth_key).list_collections()
 
     assert handler.requests[-1].headers["Authorization"] == sent
 
 
-@pytest.mark.parametrize(("auth_key", "sent"), [("guest", "Bearer guest"), ("", _ADMIN), (None, _ADMIN)])
-def test_async_manager_sends_chosen_key_and_admin_when_empty(handler, auth_key, sent):
-    """생성자로 고른 키를 싣고, 비우면 admin 이다."""
+@pytest.mark.parametrize(("auth_key", "sent"), [("guest", "Bearer guest"), ("", "Bearer "), (None, _ADMIN)])
+def test_async_manager_sends_chosen_key_as_is_and_admin_when_not_given(handler, auth_key, sent):
+    """생성자로 고른 키를 그대로 싣고, 주지 않으면 admin 이다 — 빈 문자열은 그대로 실려 401 로 드러난다."""
     asyncio.run(_async_calls(AsyncMongoDBManager(auth_key=auth_key)))
 
     assert handler.requests[-1].headers["Authorization"] == sent
