@@ -17,7 +17,7 @@ PostgreSQL 공개 클라이언트. rdb-handler 서비스(HTTP)에 요청을 보�
 참고: PostgreSQL 바인드 변수 형식은 %(name)s 입니다.
 
 조회·DML 은 keyword 인자 database 로 접속할 database 를 고를 수 있습니다. 고르지 않으면
-핸들러의 기본 database(kw_ai)에 붙습니다(README 「database 고르기」).
+핸들러의 기본 database 에 붙습니다(README 「database 고르기」).
 
 Handler 접속 URL은 운영 서버(http://192.7.9.45:8700)로 고정되어 있으며,
 환경변수나 configure(base_url=...)로 변경할 수 없습니다. timeout 등 기타

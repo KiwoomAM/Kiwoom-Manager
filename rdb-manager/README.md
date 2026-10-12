@@ -8,7 +8,7 @@ PostgreSQL 공개 클라이언트. rdb-handler **서비스(HTTP)** 를 호출하
     from rdb_manager import query_to_dataframe, fetch_all_dict, execute_dml
     import rdb_manager.aio as aio   # async
 
-핸들러 URL(`http://192.7.9.45:8700`)은 SDK 내부에 고정되어 있어 env 나 `configure(base_url=...)` 로 바꿀 수 없다 (timeout 만 조정 가능).
+핸들러 URL(`http://192.7.9.45:8700`)은 SDK 내부에 고정되어 있어 env 나 `configure(base_url=...)` 로 바꿀 수 없다 (timeout 은 조정 가능).
 
 ```
 [agent code]  →  rdb_manager (httpx)  →  RDB Handler Service (:8700)  →  PostgreSQL
@@ -36,11 +36,11 @@ pip install "git+https://github.com/KiwoomAM/Kiwoom-Manager.git@main#subdirector
 ## 설정
 
 이 클라이언트는 DB 자격증명이나 호스트/포트를 **읽지 않는다** — 그것들은 핸들러 서비스의 몫이다.
-핸들러 URL 은 `http://192.7.9.45:8700` 으로 고정되어 있으며, 필요하면 timeout 만 조정한다:
+핸들러 URL 은 `http://192.7.9.45:8700` 으로 고정되어 있으며, 필요하면 timeout 을 조정한다:
 
 ```python
 import rdb_manager
-rdb_manager.configure(timeout=60.0)   # base_url 인자는 무시됨 (URL 고정), timeout 만 적용
+rdb_manager.configure(timeout=60.0)   # base_url 인자는 무시됨 (URL 고정), timeout 적용
 ```
 
 ### 연결 테스트
@@ -193,7 +193,7 @@ sync(`from rdb_manager import ...`)와 async(`from rdb_manager.aio import ...`)�
 | `execute_insert(sql, params, *, database=None)` | `int` | `execute_dml` 별칭 (의미상 INSERT 용도) |
 | `execute_update(sql, params, *, database=None)` | `int` | `execute_dml` 별칭 (의미상 UPDATE 용도) |
 | `check_database_connection()` | `bool` | 연결 테스트 |
-| `configure(base_url=None, timeout=30.0)` | `None` | timeout 만 적용 (base_url 무시, URL 고정) |
+| `configure(base_url=None, timeout=30.0)` | `None` | timeout 적용 (base_url 무시, URL 고정) |
 | `close()` | `None` | 클라이언트/풀 정리 (async 는 `await close()`) |
 
 > `params` 는 PostgreSQL named bind 형식(`%(name)s`)을 사용합니다.

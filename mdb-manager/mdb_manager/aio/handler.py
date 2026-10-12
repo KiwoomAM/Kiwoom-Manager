@@ -108,7 +108,8 @@ class AsyncMongoDBManager:
         timeout: float | None = None,
         auth_key: str | None = None,
     ) -> None:
-        """
+        """기본 database·collection 과 접근 키로 클라이언트를 만든다.
+
         Args:
             database: 기본 database. 없으면 kw_ai.
             collection: 기본 collection. 없으면 agent_data.

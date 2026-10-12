@@ -130,7 +130,11 @@ def log_if_access_rejected(error: Exception) -> None:
         error: 연결 점검 중에 난 예외.
     """
     if isinstance(error, HandlerError) and error.status_code in _ACCESS_REJECTED:
-        logger.error("연결 점검 거절됨 (HTTP %d) — DB 연결 실패가 아니라 접근 키·등급 문제: %s", error.status_code, error)
+        logger.error(
+            "DB 연결 확인 거절됨 (HTTP %d: %s) — DB 연결 실패가 아니라 접근 키·등급 문제",
+            error.status_code,
+            error,
+        )
 
 
 def error_from_response(response: httpx.Response) -> HandlerError:

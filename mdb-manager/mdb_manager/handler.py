@@ -120,15 +120,16 @@ class MongoDBManager:
         collection: str = None,
         auth_key: str | None = None,
     ):
-        """
+        """기본 database·collection 과 접근 키로 클라이언트를 만든다.
+
+        Singleton 이라 처음 생성할 때의 인자만 쓰이고, 이후 생성자 인자는 무시된다(auth_key 도 같다).
+
         Args:
             uri: 무시된다 — Service 측 설정을 쓴다.
             database: 기본 database. 없으면 kw_ai.
             collection: 기본 collection. 없으면 agent_data.
             auth_key: 핸들러의 접근 등급을 정하는 키(레포 루트 CONTEXT.md 「auth_key」). 비워 두면
                 admin 키를 싣는다. 기본값으로 두고, guest 동작을 시험할 때만 바꾼다.
-
-        Singleton 이라 처음 생성할 때의 인자만 쓰이고, 이후 생성자 인자는 무시된다(auth_key 도 같다).
         """
         if self._initialized:
             return

@@ -112,3 +112,21 @@ def test_access_rejection_is_handler_error_with_status_and_message(handler, stat
     assert caught.value.status_code == status
     assert message in str(caught.value)
     assert len(handler.requests) == 1
+
+
+@pytest.mark.parametrize(("status", "message"), _REJECTIONS, ids=["401", "403"])
+def test_async_access_rejection_is_handler_error_with_status_and_message(handler, status, message):
+    """비동기 매니저도 접근 거절을 상태코드와 핸들러 메시지를 실은 MDBHandlerError 로 올린다."""
+    handler.fail_with(status, {"error": message})
+
+    async def list_collections() -> None:
+        async with AsyncMongoDBManager() as manager:
+            await manager.list_collections()
+
+    with pytest.raises(MDBHandlerError) as caught:
+        asyncio.run(list_collections())
+
+    assert type(caught.value) is MDBHandlerError
+    assert caught.value.status_code == status
+    assert message in str(caught.value)
+    assert len(handler.requests) == 1

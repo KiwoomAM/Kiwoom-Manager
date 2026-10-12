@@ -39,7 +39,7 @@ def log_check_failure(error: Exception) -> None:
     """
     if isinstance(error, HandlerError) and error.status_code in _ACCESS_REJECTED:
         logger.error(
-            "[RDB 핸들러] 연결 점검 거절됨 (HTTP %d) — DB 연결 실패가 아니라 접근 키·등급 문제: %s",
+            "[RDB 핸들러] DB 연결 확인 거절됨 (HTTP %d: %s) — DB 연결 실패가 아니라 접근 키·등급 문제",
             error.status_code,
             error,
         )

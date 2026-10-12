@@ -50,6 +50,11 @@ MongoDB HTTP 클라이언트 패키지. MDB Handler Service(`packages/mdb-handle
 - **Singleton(sync) poisoning 방지**: 생성 실패 시 `MongoDBManager.__init__`이 `_instance`를
   비운다. 그래서 SERVICE_NAME 누락으로 실패한 뒤 env를 채우고 다시 생성하면 정상 동작.
   (SERVICE_NAME은 더 이상 생성 실패 요인이 아니지만, 다른 생성 오류에 대한 일반 방어로 유지.)
+- **접근 키 (Authorization)**: `_default_headers(auth_key)` 가 X-Caller-Service 와 함께
+  `Authorization: Bearer <키>` 를 싣는다. 비워 두면 `_config._ADMIN_KEY`(핸들러가 admin 으로 판정하는 키)다 —
+  SDK 를 거친 호출이 모두 admin 이 되게 하는 장치다(레포 루트 CONTEXT.md 「auth_key」, Kiwoom-Handler
+  `docs/adr/0001`). 바꾸는 자리는 두 매니저 생성자의 `auth_key` 뿐이고, 동기 싱글톤은 처음 생성한 값이 이긴다.
+  핸들러가 거절하면 401·403 이 전용 예외 없이 `MDBHandlerError.status_code` 로 올라온다.
 - **HANDLER URL은 고정 기본값**: `MDB_HANDLER_URL` 미설정 시 `http://192.7.9.45:8300`.
   사용자는 보통 설정하지 않는다. env override는 테스트/특수 환경용 escape hatch.
 - **AsyncMongoDBManager는 Singleton 아님**: 명시적 `aclose()` 필요 (`async with` 또는 FastAPI
