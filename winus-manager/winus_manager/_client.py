@@ -7,6 +7,8 @@ import httpx
 import pandas as pd
 
 from winus_manager._wire import (
+    access_headers,
+    log_check_failure,
     dml_body,
     dml_many_body,
     ExecutionOptions,
@@ -28,8 +30,8 @@ from winus_manager.models import (
 class AsyncClient:
     """WINUS Handler 서비스와 통신하는 비동기 클라이언트."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+    def __init__(self, base_url: str, timeout: float = 30.0, auth_key: str | None = None) -> None:
+        self._http = httpx.AsyncClient(base_url=base_url, timeout=timeout, headers=access_headers(auth_key))
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -151,5 +153,6 @@ class AsyncClient:
         try:
             resp = await self._request("GET", "/v1/check")
             return resp.json().get("connected", False)
-        except Exception:
+        except Exception as e:
+            log_check_failure(e)
             return False

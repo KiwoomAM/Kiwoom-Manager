@@ -10,6 +10,8 @@ from winus_manager.exceptions import (
     QueryExecutionException,
 )
 from winus_manager._wire import (
+    access_headers,
+    log_check_failure,
     dml_body,
     dml_many_body,
     ExecutionOptions,
@@ -32,8 +34,8 @@ logger = logging.getLogger(__name__)
 class SyncClient:
     """WINUS Handler 서비스와 통신하는 동기 클라이언트."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        self._http = httpx.Client(base_url=base_url, timeout=timeout)
+    def __init__(self, base_url: str, timeout: float = 30.0, auth_key: str | None = None) -> None:
+        self._http = httpx.Client(base_url=base_url, timeout=timeout, headers=access_headers(auth_key))
 
     def close(self) -> None:
         self._http.close()
@@ -165,5 +167,6 @@ class SyncClient:
         try:
             resp = self._request("GET", "/v1/check")
             return resp.json().get("connected", False)
-        except Exception:
+        except Exception as e:
+            log_check_failure(e)
             return False

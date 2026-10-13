@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from mdb_manager._config import _ADMIN_KEY
 from mdb_manager.exceptions import (
     MDBConnectionError,
     MDBHandlerError,
@@ -16,27 +17,31 @@ from mdb_manager.exceptions import (
 BASE_URL = os.environ.get("MDB_HANDLER_URL", "http://192.7.9.45:8300")
 
 
-def _default_headers() -> dict[str, str]:
-    """SERVICE_NAME이 설정돼 있으면 X-Caller-Service 헤더로 부착한다.
+def _default_headers(auth_key: str | None = None) -> dict[str, str]:
+    """요청마다 싣는 기본 헤더 — 접근 키와, SERVICE_NAME 이 있으면 X-Caller-Service.
 
-    SERVICE_NAME 미설정 시 헤더 없이 통과한다 (클라이언트 생성은 항상 성공).
+    접근 키는 핸들러의 접근 등급을 정한다(레포 루트 CONTEXT.md 「auth_key」). 주지 않으면(None) admin 키를
+    싣고, 빈 문자열은 그대로 실어 핸들러가 401 로 거절한다 — 비어 있는 키가 조용히 admin 이 되지 않게.
+
+    SERVICE_NAME 미설정 시 X-Caller-Service 없이 통과한다 (클라이언트 생성은 항상 성공).
     caller가 실제로 필요한 envelope 진입점(get_agent_data/get_agent_output)에서만
     fail-fast 하므로, blocks read 등 caller 불필요 작업은 SERVICE_NAME 없이 동작한다.
     """
+    headers = {"Authorization": f"Bearer {_ADMIN_KEY if auth_key is None else auth_key}"}
     service_name = os.environ.get("SERVICE_NAME")
     if service_name:
-        return {"X-Caller-Service": service_name}
-    return {}
+        headers["X-Caller-Service"] = service_name
+    return headers
 
 
 class SyncClient:
     """MDB Handler Service와 통신하는 동기 HTTP 클라이언트."""
 
-    def __init__(self, timeout: float = 30.0) -> None:
+    def __init__(self, timeout: float = 30.0, auth_key: str | None = None) -> None:
         self._http = httpx.Client(
             base_url=BASE_URL,
             timeout=timeout,
-            headers=_default_headers(),
+            headers=_default_headers(auth_key),
         )
 
     def close(self) -> None:

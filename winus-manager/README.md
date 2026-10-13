@@ -104,4 +104,8 @@ except HandlerError as e:
 
 ## 운영 정책 (엔드포인트 잠금)
 
-Handler 접속 URL은 `http://192.7.9.45:8200`로 코드에 고정되어 있다. `configure(base_url=...)` 인자와 `WINUS_HANDLER_URL` 환경변수는 무시된다. 자격증명/timeout만 유효.
+Handler 접속 URL은 `http://192.7.9.45:8200`로 코드에 고정되어 있다. `configure(base_url=...)` 인자와 `WINUS_HANDLER_URL` 환경변수는 무시된다. 소비자가 정할 것은 timeout 뿐이고, 접근 키는 SDK 가 싣는다(아래 「접근 등급」).
+
+## 접근 등급
+
+SDK 는 요청마다 핸들러의 접근 등급을 정하는 키를 함께 보낸다(Kiwoom-Handler `docs/adr/0001`). 소비자가 설정할 것은 없다 — SDK 를 거친 호출은 지금처럼 모든 기능을 쓴다. 핸들러가 키를 거절하면 `HandlerError` 의 `status_code` 가 `401`(키를 알아볼 수 없음)이나 `403`(그 등급에서 쓸 수 없는 경로)이다. 재시도하지 말고 SDK 버전을 확인한다. `check_database_connection()` 은 이때도 `False` 를 돌려주되 원인을 ERROR 로그로 남긴다.

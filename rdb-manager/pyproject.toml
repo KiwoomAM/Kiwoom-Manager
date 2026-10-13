@@ -1,6 +1,6 @@
 [project]
 name = "kiwoom-rdb-manager"
-version = "1.0.0"
+version = "1.1.0"
 description = "Kiwoom 프로젝트 PostgreSQL 매니저 (공개 클라이언트)"
 requires-python = ">=3.10"
 dependencies = [
